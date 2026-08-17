@@ -74,6 +74,9 @@ class MainActivity : ComponentActivity() {
     private var diagnostics by mutableStateOf(DiagnosticsState())
     private var locationGranted by mutableStateOf(false)
 
+    /** T-3.13: scanned once at launch, so the offer is there before anything else is touched. */
+    private var resumable by mutableStateOf<SessionRecovery.Resumable?>(null)
+
     private val pointingSource by lazy { PointingSource(this) }
     private val framing by lazy { FramingController(this, lifecycleScope) }
     private val setup by lazy { SetupController(this, lifecycleScope) }
@@ -177,6 +180,7 @@ class MainActivity : ComponentActivity() {
         }
 
         locationGranted = pointingSource.hasLocationPermission()
+        resumable = runCatching { SessionRecovery.mostRecent(sessionStore()) }.getOrNull()
 
         setContent {
             StarStackerTheme {
@@ -238,6 +242,30 @@ class MainActivity : ComponentActivity() {
                         onOpenabilityTest = { scope.launch { runOpenabilityTest(current) } },
                         onCaptureRaw = { exposureNs -> scope.launch { runCapture(exposureNs) } },
                         onOpenFraming = { screen = Screen.FRAMING },
+                        resumable = resumable.takeIf { !CaptureService.running },
+                        onResumeSession = {
+                            val session = resumable ?: return@ProbeScreen
+                            CaptureService.start(
+                                context = this@MainActivity,
+                                request = CaptureEngine.Request(
+                                    cameraId = session.log.info.cameraId,
+                                    iso = session.log.info.plannedIso,
+                                    exposureNs = session.log.info.plannedExposureNs,
+                                    focusDiopters = session.log.info.focusDiopters,
+                                    lightCount = session.log.info.plannedLightCount,
+                                    darkCount = session.log.info.plannedDarkCount,
+                                ),
+                                label = "resumed",
+                                resumeFolder = session.folderName,
+                            )
+                            resumable = null
+                            screen = Screen.CAPTURE
+                        },
+                        onDiscardResumable = {
+                            val session = resumable ?: return@ProbeScreen
+                            SessionRecovery.abandon(sessionStore(), session.folderName)
+                            resumable = null
+                        },
                     )
 
                     Screen.FRAMING -> FramingScreen(
@@ -487,6 +515,10 @@ class MainActivity : ComponentActivity() {
         }
         return stops
     }
+
+    private fun sessionStore() = FileSessionStore(
+        File(getExternalFilesDir(null) ?: filesDir, "sessions").apply { mkdirs() },
+    )
 
     private fun hasCameraPermission() =
         ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==

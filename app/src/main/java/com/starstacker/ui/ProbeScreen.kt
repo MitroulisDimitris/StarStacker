@@ -36,6 +36,7 @@ import com.starstacker.device.DeviceQualification
 import com.starstacker.device.Discovery
 import com.starstacker.device.Tier
 import com.starstacker.device.Verdict
+import com.starstacker.session.SessionRecovery
 import com.starstacker.ui.theme.Night
 import com.starstacker.ui.theme.NumFamily
 
@@ -65,6 +66,10 @@ fun ProbeScreen(
     onOpenabilityTest: () -> Unit,
     onCaptureRaw: (Long) -> Unit,
     onOpenFraming: () -> Unit,
+    /** An interrupted session found on disk at launch (T-3.13), or null. */
+    resumable: SessionRecovery.Resumable? = null,
+    onResumeSession: () -> Unit = {},
+    onDiscardResumable: () -> Unit = {},
 ) {
     LazyColumn(
         modifier = Modifier
@@ -115,6 +120,34 @@ fun ProbeScreen(
                     profile.concurrentCameraIdSets.forEach {
                         Mono(it.joinToString(" + "), color = Night.Txt2)
                     }
+                }
+            }
+        }
+
+        // FR-6.4 / T-3.13. Offered on the landing screen because the situation it exists for is
+        // finding the phone in the morning after something killed the session at 03:40 — at
+        // which point walking back through framing and setup to reach a resume would mean
+        // re-deriving decisions that were already made correctly under a sky that has now set.
+        if (resumable != null) {
+            item { Eyebrow("Unfinished session") }
+            item {
+                Card {
+                    Mono(resumable.folderName, color = Night.Txt, size = 12.sp)
+                    Spacer(Modifier.height(4.dp))
+                    Mono(resumable.describe(), color = Night.Txt3, size = 10.5.sp)
+                    Spacer(Modifier.height(10.dp))
+                    QuietButton(
+                        text = "Resume — ${resumable.lightsRemaining} frames left",
+                        onClick = onResumeSession,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    QuietButton(text = "Leave it", onClick = onDiscardResumable)
+                    Spacer(Modifier.height(8.dp))
+                    Mono(
+                        "Leaving it keeps every frame on disk — it only stops the offer.",
+                        color = Night.Txt3,
+                        size = 10.sp,
+                    )
                 }
             }
         }
