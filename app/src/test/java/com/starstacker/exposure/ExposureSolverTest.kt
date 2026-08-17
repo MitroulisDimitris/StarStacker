@@ -237,16 +237,46 @@ class ExposureSolverTest {
         assertEquals("test sensor", solution.noiseSource)
     }
 
+    /**
+     * Found on the device, 2026-08-17: with a clipped test frame the solver returned a confident
+     * "ISO 50 · 1.5 s" while the advisory alongside it said nothing could be measured. Every
+     * number in the solve descends from the sky rate, and a sky rate read off a clipped frame is
+     * a lower bound with unknown slack — so the recommendation is not merely uncertain, it is
+     * unfounded. Same failure shape as the star detector reading a white frame as a focused sky.
+     */
     @Test
-    fun `a clipped test frame is called out rather than silently solved`() {
+    fun `a clipped test frame yields no recommendation at all, not a confident one`() {
         val sky = skyOf(whiteLevel.toDouble(), 4.0)
         assertTrue(sky.clipped)
 
         val solution = solve(sky)
+
+        assertNull(solution.chosen, "recommended ${solution.headline} from a clipped frame")
         assertTrue(
             solution.advisory.contains("clipped"),
             "a clipped measurement must say so: ${solution.advisory}",
         )
+        assertNotNull(solution.failureReason)
+    }
+
+    /**
+     * Under a bright sky every candidate is clipping-limited to the same background fraction, so
+     * the headroom tiebreak is degenerate and the longest sub must win — same light, fewer
+     * frames, less storage. Measured on the device: nine ISOs all reporting "1.6 stops of
+     * headroom", where the answer was being decided by list order.
+     */
+    @Test
+    fun `when headroom ties, the longest sub wins`() {
+        val solution = solve(skyOf(blackLevel + 300.0, 0.5))
+        val usable = solution.candidates.filter { it.usable }
+
+        assertTrue(usable.size > 1)
+        assertEquals(
+            usable.maxOf { it.exposureSeconds },
+            solution.chosen!!.exposureSeconds,
+            1e-9,
+        )
+        assertEquals(400, solution.chosen.iso, "the lowest ISO gives the longest sub")
     }
 
     @Test

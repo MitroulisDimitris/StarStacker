@@ -79,7 +79,7 @@ Two consequences to accept deliberately:
 | 0 | 9 | 1 | in progress — skeleton builds and installs; shared components extracted (T-0.2 part) |
 | 1A | 6 | 6 | **complete** — probe, qualification, camera lifecycle, first light, DNG reader |
 | 1B | 7 | 2 | **hardware-verified except what needs darkness** — see §5 and §1.7 |
-| 1C | 14 | 0 | not started |
+| 1C | 14 | 0 | **exposure engine written and validated on the sensor** (T-3.1/3.2/3.3/3.5); capture engine next |
 | 2+ | outlined | 0 | not started |
 
 > **Phase 1B has now met every acceptance that does not require a night sky** (2026-08-17). The
@@ -244,6 +244,62 @@ to the T-3.6 foreground service, and is re-filed there (**OI-20**).
 
 One number worth keeping for the Phase 1C budget: with the screen off, per-frame analysis rose
 from ~80 ms to ~340 ms as the CPU clocked down. Still small against a 12 s sub, but it is 4×.
+
+---
+
+## 1.8 The sensor's own noise figures — measured 2026-08-17
+
+The exposure engine runs on `SENSOR_NOISE_PROFILE` at Functional tier (T-3.1), so the first
+question is whether this device reports anything real. It does. Swept across the ISO ladder with
+the framing loop and read out of each frame's metadata:
+
+| ISO | Full scale (e⁻) | Read noise (e⁻) | e⁻/ADU |
+|---|---|---|---|
+| 50 | 3785 | 5.64 | 3.95 |
+| 100 | 3540 | 5.28 | 3.69 |
+| 200 | 3134 | 4.70 | 3.27 |
+| 400 | 2550 | 3.89 | 2.66 |
+| 800 | 1858 | 3.01 | 1.94 |
+| 1600 | 1204 | 2.35 | 1.26 |
+| 3200 | 707 | 2.07 | 0.74 |
+| 6400 | 387 | 2.03 | 0.40 |
+| 12800 | 203 | 2.07 | 0.21 |
+
+Read noise falls smoothly by a factor of 2.7 across the range and then flattens above ISO 3200 —
+the ordinary "ADC noise divided by the gain in front of it" curve. **No dual conversion gain step
+is visible**: the largest ratio between adjacent stops is 1.29 (ISO 400 → 800) against a
+neighbourhood of 1.14–1.28, which is a trend and not a switch. `dualGainIso()` correctly reports
+none, and FR-5.2's "ISOs at or above the dual-gain point" is therefore unconstrained here.
+
+Two cautions recorded rather than resolved:
+
+- **Full scale does not go as 1/ISO.** From ISO 50 to 12800 is 256×, but the reported full scale
+  falls only 18.6×. A pure analog-gain model would predict the former. Either the OEM's profile
+  is a fit that includes more than shot noise, or the reported figures are not what the derivation
+  assumes. It does not affect the *relative* comparison the solver makes between ISOs, which is
+  why it is a caution and not a blocker — but it is the reason OI-9 stays open until Phase 6 has
+  a measured series to check the absolutes against.
+- **Short test exposures broke frame/metadata pairing.** `RESULT_CACHE` was sized in entries, so
+  at a 20 ms request it held 160 ms of history and nothing ever paired — every frame reported
+  `settled=false` and the sweep collected nothing. Raised to 64.
+
+### What the solver does with it
+
+Run indoors under room light — a "sky" of 3659 e⁻/s, which is what a very light-polluted sky
+looks like arithmetically — the engine lands where it should: **clipping-limited**, recommending
+ISO 50 at 341 ms, with every candidate reporting the same 1.6 stops of headroom because they are
+all held at the same background fraction. That degeneracy exposed a real gap: with headroom tied,
+the choice was falling out of list order. The tiebreak is now explicit — longest sub wins, which
+is the same light in fewer frames.
+
+**And a bug of the same family as the saturation trap.** With a clipped test frame the solver
+returned a confident `ISO 50 · 1.5 s` while the advisory printed beside it read *"the test frame's
+own background is clipped — nothing can be measured from it"*. Every number in a solve descends
+from the sky rate, and a sky rate read off a clipped frame is a lower bound with unknown slack, so
+the recommendation was not uncertain but unfounded. A clipped measurement now yields no
+recommendation at all. The diagnostic had the matching flaw — it measured the sky from whichever
+frame came last, which is the *highest* ISO of the sweep and so the likeliest to be saturated; it
+now takes the brightest unclipped frame.
 
 ---
 
@@ -637,23 +693,23 @@ Goal: FR-13/M3 — *press start, walk away, come back to a folder of good subs.*
 
 ### Exposure engine (§5)
 
-- [ ] **T-3.1** Sky measurement: capture a test frame, measure sky background level and per-ISO
+- [~] **T-3.1** Sky measurement: capture a test frame, measure sky background level and per-ISO
   read noise (from the probe's `SENSOR_NOISE_PROFILE` at Functional tier; from the measured model
   once Phase 6 exists — one interface, two providers).
-- [ ] **T-3.2** Trailing limit: NPF-style using measured pixel pitch and focal length, corrected by
+- [~] **T-3.2** Trailing limit: NPF-style using measured pixel pitch and focal length, corrected by
   field-centre declination, relaxed near the pole. User-visible tolerance defaulting to ~1.5 px
   star elongation (FR-5.1.1).
   *Accept:* unit tests against hand-computed values for several focal lengths and declinations —
   **plus one real-sky sanity check**, because a 2× pixel-pitch error (OI-17) passes every unit test
   and only shows up as trailed stars in frames the app declared safe. Shoot one sub at the computed
   limit and one at 2× it; the first must be round and the second visibly elongated.
-- [ ] **T-3.3** Sky-limited solver (FR-5.2): for each ISO ≥ dual-gain point, exposure to reach
+- [~] **T-3.3** Sky-limited solver (FR-5.2): for each ISO ≥ dual-gain point, exposure to reach
   3–5× read noise in variance; clamp to trailing limit; pick the pair with the most clipping
   headroom. Emits a **derivation object** — every candidate and why it lost — not just the answer.
 - [ ] **T-3.4** Solve UI (prototype screen 02): the one-line answer, `Show work` expanding to the
   full derivation, and **pinning** any value with a re-solve around it (FR-5.3).
   *Accept:* pinning ISO re-solves exposure and vice versa; nothing downstream is disabled by a pin.
-- [ ] **T-3.5** Session planner (FR-5.4): input total time *or* target integration; output sub
+- [~] **T-3.5** Session planner (FR-5.4): input total time *or* target integration; output sub
   length, ISO, frame count, dark allocation, **storage budget** (warn before start if short),
   **battery budget**, estimated end time, and predicted common-area loss from field rotation.
   *Accept:* the prototype's Plan card is fully live; a deliberately under-provisioned storage
@@ -816,7 +872,7 @@ with, even with zero stacking.
 ## 14. Open issues
 
 **Needed-by** is the phase that cannot finish without a resolution.
-**Status: 13 resolved · 6 open pending measurement · 2 deferred · 0 blocking.**
+**Status: 13 resolved · 7 open pending measurement · 2 deferred · 0 blocking.**
 An issue is only "open" here if it can actually change the shape of the code. Questions with an
 obvious default and a defined experiment are listed with that default already in force, so they
 never block work.
@@ -837,7 +893,8 @@ when the number comes back.
 | **OI-20** | **Screen-off capture needs a foreground service, not just a surface-free session.** Measured 2026-08-17: the framing loop is frozen a few seconds after the screen goes off, process still alive. D-22 dissolved the *surface* problem but not the *lifecycle* one (§1.7) | Assume the `camera`-type FGS of D-12 is sufficient — it is what the type exists for | T-3.6's own acceptance: a 45-minute sequence with the screen off and the app backgrounded, then repeated with battery optimisation left on | 1C |
 | **OI-4** | Framing preview exposure length | 1 s, boost to 4 s, auto-stop after 2 min idle — **now implemented as the default** (T-2.2), so the experiment is a tuning pass rather than a build | Real-sky trial: shortest exposure at which framing is workable | 1B |
 | **OI-5** | SAF write throughput and root-scan cost | Cached index assumed necessary (D-5) | T-0.5: sustained MB/s for 25 MB files; wall-clock scan of ~12 sessions × ~200 files | 0 |
-| **OI-9** | Is the OEM `SENSOR_NOISE_PROFILE` good enough to pick a sane ISO at Functional tier? | Yes — use it | **Trigger:** run the T-3.3 solver twice, once on OEM data and once on read noise measured from a quick bias pair. If the chosen ISO differs by more than one stop, promote the §4.1.1 noise model out of Phase 6 into 1C | 1C |
+| **OI-9** | Is the OEM `SENSOR_NOISE_PROFILE` good enough to pick a sane ISO at Functional tier? | Yes — use it. **Half-answered 2026-08-17: the profile is a real per-ISO measurement, not a stub** — nine distinct read-noise values across nine ISOs, falling smoothly from 5.64 e⁻ at ISO 50 to 2.07 e⁻ at ISO 3200 (§1.8). No dual-gain step is visible; the decline is the ordinary ADC-noise-over-gain trend. What remains is whether the *absolute* figures are right, which needs the Phase 6 bias series to compare against | **Trigger:** run the T-3.3 solver twice, once on OEM data and once on read noise measured from a quick bias pair. If the chosen ISO differs by more than one stop, promote the §4.1.1 noise model out of Phase 6 into 1C | 1C |
+| **OI-21** | **Battery drain per hour of capture is unmeasured.** `SessionPlanner` warns against a placeholder of 18 %/h, chosen pessimistically so the warning fires early rather than late | 18 %/h | T-3.9's session log already records battery level per frame; a single 45-minute session yields the real figure | 1C |
 | **OI-11** | Thermal pacing aggressiveness | No pacing; log only | T-3.9 logs temperature and dropped frames across a full 45-min session, then set the threshold from the curve. Tuning a pacing rule before seeing one real thermal curve is guesswork | 1C |
 
 ### Deferred
@@ -912,6 +969,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-08-17 | **Phase 1C exposure engine written and validated against the sensor** (T-3.1, T-3.2, T-3.3, T-3.5). 152 JVM tests (112 before). §1.8 records what the device's own `SENSOR_NOISE_PROFILE` actually says: a real per-ISO curve, read noise 5.64 e⁻ at ISO 50 falling to 2.07 e⁻ by ISO 3200, **no dual conversion gain step** — which half-answers **OI-9**. Three findings came out of running it rather than testing it: **a clipped test frame produced a confident recommendation** while the advisory beside it said nothing could be measured (same family as the star detector's saturation trap — every number descends from a sky rate that a clipped frame cannot supply, so there is now no recommendation at all); **the headroom tiebreak was degenerate** under a bright sky, where all candidates sit at the same background fraction, so the answer was falling out of list order and the longest sub now wins explicitly; and **`RESULT_CACHE` was sized in entries**, holding only 160 ms of history at a 20 ms request, so short test frames never paired with their metadata and never settled. Two design points worth keeping: FR-5.2's sky-limited criterion is a **floor, not a target** — treating it as the answer recommends 20 ms subs — and FR-5.1's pole relaxation must be computed from the fastest-moving star *in the field*, since a phone's 85° diagonal makes the naive `cos(δ_centre)` form unbounded at Polaris while the corners still trail at two-thirds of the equatorial rate. New **OI-21**: battery drain per hour is a placeholder, not a measurement. |
 | 2026-08-17 | **Phase 1B met on hardware, except what needs darkness.** A device was attached for the first time since the phase was written, and it found four HAL behaviours that were silently breaking it (**§1.7**): a **9–10 frame** request pipeline, focus quantised to ~0.0374 dioptre steps, a request of exactly 0.0 dioptres answered with *hyperfocal* rather than the far stop, and `LENS_STATE` reporting STATIONARY mid-move. Together these made `settled` false on **every frame ever taken**, which would have timed out every focus sweep and reported the sky as starless. Fixed by stamping requests with `CaptureRequest.setTag()` and reading the generation back off the result, so a frame is judged against the request that made it regardless of the HAL's queue; by `FocusSweep.NEAR_INFINITY`; and by `awaitStableFrame`, which waits for the lens to *arrive* rather than merely to be settled. Separately, the star detector was reading a **fully clipped frame as 24–41 stars at HFR 0.95 px** — saturation zeroes the noise estimate and the threshold was a multiple of it; `FrameStars.saturatedFrame` is now a third answer distinct from "no stars", since the two call for opposite remedies (FR-7.5). **T-2.1 confirmed** — the device names its own guarantee, *"In-app processing plus DNG capture"* — but its **screen-off half is re-filed to T-3.6 as OI-20**: the loop freezes seconds after the screen goes off with the process still alive, so D-22's surface argument, while correct, does not cover process lifecycle. 112 JVM tests pass. New `diag/FieldDiagnostics.kt` drives the camera acceptances from `adb`, which is what made any of this visible. |
 | 2026-08-16 | **Phase 1B written — code-complete, field-unverified.** All seven tasks implemented: stream planning with the device's own guarantee check (T-2.1), the night framing preview (T-2.2), focus sweep and store (T-2.4), verification and drift monitoring (T-2.5), pointing (T-2.6) and the derived camera picker (T-2.7). **109 JVM tests pass** (43 before), `:app:assembleDebug` → 25.7 MB. **No device was attached, so nothing here has met its acceptance criterion** — every box is `[~]`. Three decisions came out of writing it: **D-22** (the preview is rendered from the RAW stream, which dissolves T-2.1's screen-off case instead of handling it), **D-23** (D-20's second surface must be a *drained* YUV reader — an unconsumed `SurfaceTexture` cannot be drained without a GL context and would stall a repeating request, which T-1.4 never noticed because it stopped after one frame) and **D-24** (own the JSON reader, since D-5 requires reading `session.json` back). Shared UI components extracted (T-0.2 part), and the FR-6.1 request profile de-duplicated into `ManualRequest` so there is one definition of "OEM processing off" rather than two that can drift. |
 | 2026-08-16 | Plan created. Phases defined, capture prioritised ahead of calibration, 16 open issues registered. |

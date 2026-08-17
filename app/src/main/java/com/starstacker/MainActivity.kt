@@ -315,7 +315,22 @@ class MainActivity : ComponentActivity() {
                             log = log,
                         )
 
-                        else -> log("unknown diag mode '$mode' — expected framing or focus")
+                        "solve" -> {
+                            val camera = profile?.cameras?.firstOrNull { it.id == MAIN_CAMERA_ID }
+                            if (camera == null) {
+                                log("no profile for camera $MAIN_CAMERA_ID")
+                            } else {
+                                FieldDiagnostics.solveExposure(
+                                    access = access,
+                                    camera = camera,
+                                    isos = isoLadder(camera.isoMin, camera.isoMax),
+                                    exposureNs = exposureMs * 1_000_000L,
+                                    log = log,
+                                )
+                            }
+                        }
+
+                        else -> log("unknown diag mode '$mode' — expected framing, focus, lens or solve")
                     }
                 }
             }
@@ -326,6 +341,19 @@ class MainActivity : ComponentActivity() {
             diagnostics = diagnostics.copy(busy = null, captureLines = lines.takeLast(24))
             log("=== $mode complete ===")
         }
+    }
+
+    /** Full stops across the sensor's range — the ISOs a solve actually has to consider. */
+    private fun isoLadder(min: Int?, max: Int?): List<Int> {
+        val lo = (min ?: 50).coerceAtLeast(25)
+        val hi = (max ?: 3200).coerceAtLeast(lo)
+        val stops = mutableListOf<Int>()
+        var iso = lo
+        while (iso <= hi) {
+            stops += iso
+            iso *= 2
+        }
+        return stops
     }
 
     private fun hasCameraPermission() =

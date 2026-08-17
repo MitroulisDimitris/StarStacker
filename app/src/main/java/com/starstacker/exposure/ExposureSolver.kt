@@ -155,14 +155,26 @@ object ExposureSolver {
 
         val considered = candidates.filter { it.verdict != Verdict.BELOW_DUAL_GAIN }
         val chosen = when {
+            // A clipped test frame measured nothing. Every number below is derived from the sky
+            // rate, and the sky rate derived from a clipped frame is a lower bound of unknown
+            // slack — so there is no answer here, only an answer-shaped object. Measured
+            // 2026-08-17: indoors the solver happily recommended "ISO 50 · 1.5 s" from a frame
+            // pinned at the white level.
+            sky.clipped -> null
+
             // A pinned ISO is the answer whether or not it won on merit — the user asked.
             pinnedIso != null -> candidates.firstOrNull { it.iso == pinnedIso }
 
-            // Among sky-limited candidates, most clipping headroom wins. They are equivalent in
+            // Among sky-limited candidates, most clipping headroom wins: they are equivalent in
             // noise by construction — that is what reaching the floor *means* — so headroom is
-            // the only axis left that distinguishes them, and it favours the lowest ISO.
-            considered.any { it.usable } ->
-                considered.filter { it.usable }.maxByOrNull { it.clippingHeadroomStops }
+            // the only axis left that distinguishes them. Where clipping set the exposure the
+            // headroom is identical at every ISO, and the longest sub then wins: same light,
+            // fewer frames, less storage and less write bandwidth.
+            considered.any { it.usable } -> considered.filter { it.usable }
+                .maxWithOrNull(
+                    compareBy<Candidate> { round(it.clippingHeadroomStops) }
+                        .thenBy { it.exposureSeconds },
+                )
 
             // A dark sky reaches nothing. Still answer: the longest sub the trailing limit
             // allows, at the ISO whose read noise costs least. Refusing here would be correct
@@ -296,6 +308,12 @@ object ExposureSolver {
 
     /** Below this the sky is dark enough that the required exposure is effectively unbounded. */
     private const val MIN_SKY_RATE = 1e-6
+
+    /**
+     * Headroom compared to a tenth of a stop, so that values differing only by float noise count
+     * as the tie they are and the exposure-length tiebreak gets to decide.
+     */
+    private fun round(stops: Double) = kotlin.math.round(stops * 10.0) / 10.0
 
     fun formatSeconds(seconds: Double): String = when {
         !seconds.isFinite() -> "∞"

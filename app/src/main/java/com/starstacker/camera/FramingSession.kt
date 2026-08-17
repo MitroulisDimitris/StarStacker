@@ -10,6 +10,7 @@ import android.hardware.camera2.TotalCaptureResult
 import android.media.Image
 import android.media.ImageReader
 import android.util.Log
+import com.starstacker.device.NoiseProfileEntry
 import com.starstacker.imaging.Autostretch
 import com.starstacker.imaging.GrayImage
 import com.starstacker.stars.BinnedPlane
@@ -53,6 +54,11 @@ class FramingFrame(
     val appliedIso: Int?,
     val appliedExposureNs: Long?,
     val appliedFocus: Float?,
+    /**
+     * `SENSOR_NOISE_PROFILE` for this frame. A result key, so it is per-ISO and only readable
+     * here — the exposure engine's read-noise figures at Functional tier come from it (T-3.1).
+     */
+    val noiseProfile: List<NoiseProfileEntry>?,
     val lensStationary: Boolean,
     /**
      * D-21: the frame's own metadata agrees with what was requested. An unsettled frame is not
@@ -146,6 +152,7 @@ class FramingSession private constructor(
         val iso: Int?,
         val exposureNs: Long?,
         val focus: Float?,
+        val noiseProfile: List<NoiseProfileEntry>?,
         val lensStationary: Boolean,
         /** Read back off the request's tag, so it names the request that *made* this frame. */
         val generation: Int,
@@ -162,6 +169,8 @@ class FramingSession private constructor(
                 iso = result.get(CaptureResult.SENSOR_SENSITIVITY),
                 exposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME),
                 focus = result.get(CaptureResult.LENS_FOCUS_DISTANCE),
+                noiseProfile = result.get(CaptureResult.SENSOR_NOISE_PROFILE)
+                    ?.map { NoiseProfileEntry(it.first, it.second) },
                 lensStationary = ManualRequest.lensStationary(result.get(CaptureResult.LENS_STATE)),
                 generation = request.tag as? Int ?: -1,
             )
@@ -364,6 +373,7 @@ class FramingSession private constructor(
                         appliedIso = info?.iso,
                         appliedExposureNs = info?.exposureNs,
                         appliedFocus = info?.focus,
+                        noiseProfile = info?.noiseProfile,
                         lensStationary = info?.lensStationary ?: false,
                         settled = settled,
                         timestampNs = raw.timestampNs,
@@ -408,7 +418,15 @@ class FramingSession private constructor(
     companion object {
         private const val TAG = "FramingSession"
         private const val POOL_DEPTH = 2
-        private const val RESULT_CACHE = 8
+        /**
+         * Results kept for pairing against their pixels, by `SENSOR_TIMESTAMP`.
+         *
+         * Sized in *entries*, so its reach in time shrinks as the exposure does — at 8 entries a
+         * 20 ms framing request kept only 160 ms of history and nothing ever paired, so nothing
+         * ever settled. The exposure engine's test frames are deliberately short (T-3.1), which
+         * is exactly where the old value fell over. These are a few dozen bytes each.
+         */
+        private const val RESULT_CACHE = 64
 
         /**
          * Generations kept addressable. Must comfortably exceed the request pipeline depth: a

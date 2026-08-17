@@ -13,6 +13,21 @@ package com.starstacker.stars
  */
 object CfaBinner {
 
+    /** The fallback when the arrangement is unknown — GRBG, as on the reference device. */
+    val DEFAULT_CFA_CODES = listOf(1, 0, 2, 1)
+
+    /**
+     * CFA codes from the arrangement's name, for the paths that have a [DeviceProfile] rather
+     * than live `CameraCharacteristics` — the exposure engine reads the profile, not the camera.
+     */
+    fun codesFor(arrangement: String?): List<Int> = when (arrangement?.uppercase()) {
+        "RGGB" -> listOf(0, 1, 1, 2)
+        "GRBG" -> listOf(1, 0, 2, 1)
+        "GBRG" -> listOf(1, 2, 0, 1)
+        "BGGR" -> listOf(2, 1, 1, 0)
+        else -> DEFAULT_CFA_CODES
+    }
+
     /**
      * @param cfaCodes the CFAPattern tag, row-major over a 2x2 cell: 0 = red, 1 = green, 2 = blue
      * @param factor total downsample factor, in raw pixels. Must be an even multiple of the 2x2
