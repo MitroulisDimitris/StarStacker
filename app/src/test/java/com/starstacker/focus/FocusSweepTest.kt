@@ -32,9 +32,31 @@ class FocusSweepTest {
 
         assertEquals(9, positions.size)
         assertEquals(0.4f, positions.first(), 1e-6f)
-        assertEquals(0.0f, positions.last(), 1e-6f)
+        assertEquals(FocusSweep.NEAR_INFINITY, positions.last(), 1e-6f)
         for (i in 1 until positions.size) {
             assertTrue(positions[i] < positions[i - 1], "positions are not descending: $positions")
+        }
+    }
+
+    /**
+     * Measured on the reference device 2026-08-17, and the reason [FocusSweep.NEAR_INFINITY]
+     * exists: a request of exactly 0.0 dioptres is answered with the *hyperfocal* position
+     * (0.1216 there), while 0.05 reaches 0.0468 — well past it. A sweep that asks for zero
+     * therefore never reaches the far end, and files the sample it did get under the wrong
+     * position. Nothing about that failure is visible in the resulting curve, which is what
+     * makes it worth a test of its own.
+     */
+    @Test
+    fun `no sweep asks for exactly zero dioptres`() {
+        val cold = FocusSweep.infinitySweep(span = 0.4f, steps = 9)
+        val local = FocusSweep.localSweep(centre = 0.02f, span = 0.12f, steps = 5)
+        val clamped = FocusSweep.infinitySweep(span = 0.4f, steps = 5, maxDiopters = 0.1f)
+
+        for (positions in listOf(cold, local, clamped)) {
+            assertTrue(
+                positions.all { it > 0f },
+                "a position of exactly 0.0 means hyperfocal on some lenses: $positions",
+            )
         }
     }
 
@@ -61,7 +83,7 @@ class FocusSweepTest {
         assertTrue(around.any { it < 0.05f }, "local sweep did not bracket the centre: $around")
 
         val atInfinity = FocusSweep.localSweep(centre = 0.0f, span = 0.12f, steps = 5)
-        assertEquals(0.0f, atInfinity.last(), 1e-6f)
+        assertEquals(FocusSweep.NEAR_INFINITY, atInfinity.last(), 1e-6f)
     }
 
     @Test
@@ -81,16 +103,20 @@ class FocusSweepTest {
     @Test
     fun `a curve that never turns around is reported as such, not as a focus position`() {
         val positions = FocusSweep.infinitySweep(span = 0.4f, steps = 9)
-        // Monotonic: still improving at 0.0, so the true minimum is past the hard stop.
+        // Monotonic: still improving at the far end, so the true focus is past what the lens
+        // can reach.
         val samples = positions.map { FocusSample(it, 2.0 + 8.0 * it, 100) }
 
         val curve = FocusSweep.analyse(samples)
 
         assertEquals(FocusVerdict.MINIMUM_AT_EDGE, curve.verdict)
-        assertEquals(0.0f, curve.bestDiopters, 1e-6f)
+        assertEquals(positions.last(), curve.bestDiopters, 1e-6f)
         assertFalse(curve.interpolated)
         assertTrue(curve.usable, "an edge minimum is still the best position available")
-        assertTrue(curve.note.contains("infinity stop"), "note was: ${curve.note}")
+        assertTrue(
+            curve.note.contains("furthest this lens reached"),
+            "note was: ${curve.note}",
+        )
     }
 
     @Test

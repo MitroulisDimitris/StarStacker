@@ -209,6 +209,41 @@ class StarDetectorTest {
         return frame
     }
 
+    /**
+     * Measured on the device 2026-08-17, indoors: a fully clipped frame reported 24–41 stars
+     * with a median HFR of 0.95 px — numbers that look exactly like a well-focused sky.
+     *
+     * The mechanism is that saturation flattens the frame, the MAD noise estimate goes to zero,
+     * and a threshold expressed as a multiple of the noise goes to zero with it. Everything the
+     * bilinear background model dips below 1023 then reads as a detection. This matters well
+     * beyond the focus sweep: FR-7.5 diagnoses a collapse in star count as cloud, and phantom
+     * stars would keep that collapse from ever being seen.
+     */
+    @Test
+    fun `a clipped frame reports saturation rather than phantom stars`() {
+        val white = 1023.0
+        val clipped = FloatArray(width * height) { white.toFloat() }
+
+        val found = StarDetector(saturationLevel = white).detect(clipped, width, height)
+
+        assertTrue(found.saturatedFrame, "a clipped frame should be diagnosed as clipped")
+        assertEquals(0, found.count, "found ${found.count} phantom stars in a clipped frame")
+    }
+
+    /**
+     * The other half of the same guard: the threshold floor must be a statement about the sensor,
+     * not about floating point. Sub-ADU structure is quantisation.
+     */
+    @Test
+    fun `a flat frame just short of saturation still finds nothing`() {
+        val flat = FloatArray(width * height) { 900f }
+
+        val found = StarDetector(saturationLevel = 1023.0).detect(flat, width, height)
+
+        assertFalse(found.saturatedFrame, "900 ADU is not saturated")
+        assertEquals(0, found.count, "found ${found.count} stars in a featureless frame")
+    }
+
     private fun addStar(
         frame: FloatArray,
         cx: Double,

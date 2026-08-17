@@ -118,6 +118,9 @@ class FramingSession private constructor(
 
     private val results = HashMap<Long, ResultInfo>()
 
+    /** Generation → the request that generation asked for, so a late frame is judged against it. */
+    private val requests = HashMap<Int, FramingRequest>()
+
     @Volatile
     private var generation = 0
 
@@ -137,8 +140,6 @@ class FramingSession private constructor(
         val width: Int,
         val height: Int,
         val timestampNs: Long,
-        val generation: Int,
-        val request: FramingRequest,
     )
 
     private class ResultInfo(
@@ -146,6 +147,7 @@ class FramingSession private constructor(
         val exposureNs: Long?,
         val focus: Float?,
         val lensStationary: Boolean,
+        /** Read back off the request's tag, so it names the request that *made* this frame. */
         val generation: Int,
     )
 
@@ -161,7 +163,7 @@ class FramingSession private constructor(
                 exposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME),
                 focus = result.get(CaptureResult.LENS_FOCUS_DISTANCE),
                 lensStationary = ManualRequest.lensStationary(result.get(CaptureResult.LENS_STATE)),
-                generation = generation,
+                generation = request.tag as? Int ?: -1,
             )
             synchronized(results) {
                 results[timestamp] = info
@@ -182,7 +184,7 @@ class FramingSession private constructor(
             var image: Image? = null
             try {
                 image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
-                val request = pending ?: return@setOnImageAvailableListener
+                if (pending == null) return@setOnImageAvailableListener
                 val buffer = pool.poll()
                 if (buffer == null) {
                     // Analysis is still busy with both buffers. Dropping a framing frame is the
@@ -195,8 +197,6 @@ class FramingSession private constructor(
                     width = image.width,
                     height = image.height,
                     timestampNs = image.timestamp,
-                    generation = generation,
-                    request = request,
                 )
                 if (!incoming.trySend(frame).isSuccess) pool.offer(buffer)
             } catch (t: Throwable) {
@@ -223,7 +223,8 @@ class FramingSession private constructor(
     fun apply(request: FramingRequest) {
         check(!closed) { "framing session is closed" }
         val targets = listOf(rawReader.surface, secondaryReader.surface)
-        val built = ManualRequest.build(
+        val next = generation + 1
+        val built = ManualRequest.builder(
             device = device,
             chars = chars,
             targets = targets,
@@ -231,9 +232,22 @@ class FramingSession private constructor(
             exposureNs = request.exposureNs,
             focusDiopters = request.focusDiopters ?: 0f,
             frameDurationNs = request.exposureNs,
-        )
+        ).apply {
+            // Measured on this HAL: a focus change takes nine or ten *frames* to appear in the
+            // results, no matter how many requests are issued meanwhile. Stamping the request
+            // with its generation and reading it back off `CaptureRequest.tag` in the result is
+            // the only way to know which request a frame answers — the alternative is guessing
+            // the pipeline depth, and the depth is a property of the OEM's HAL, not of us.
+            setTag(next)
+        }.build()
+        synchronized(requests) {
+            requests[next] = request
+            if (requests.size > REQUEST_CACHE) {
+                requests.keys.minOrNull()?.let { requests.remove(it) }
+            }
+        }
         pending = request
-        generation++
+        generation = next
         captureSession.setRepeatingRequest(built, captureCallback, access.handler)
     }
 
@@ -250,11 +264,54 @@ class FramingSession private constructor(
         }
     }
 
+    /**
+     * The next settled frame whose **lens position has also stopped changing** — the same
+     * position as the settled frame before it.
+     *
+     * Settling and arriving are two different events on this HAL. The request tag tells you the
+     * frame was taken under the current settings; it says nothing about whether the voice-coil
+     * motor has finished travelling, and `LENS_STATE` cannot be used to fill the gap because it
+     * reports STATIONARY at intermediate positions mid-move (measured 2026-08-17). A sweep that
+     * trusts the first settled frame gets a real HFR filed under the position the lens was
+     * leaving rather than the one it was going to, which does not look like an error — it looks
+     * like a slightly shifted focus curve.
+     *
+     * Costs one extra frame per position. That is the cheapest honest answer available.
+     */
+    suspend fun awaitStableFrame(
+        timeoutMs: Long,
+        tolerance: Float = FOCUS_STABLE_TOLERANCE,
+    ): FramingFrame {
+        val target = generation
+        var previous: FramingFrame? = null
+        return withTimeout(timeoutMs) {
+            frames.first { frame ->
+                if (frame.generation < target || !frame.settled) return@first false
+                val last = previous
+                previous = frame
+                last != null && ManualRequest.focusMatches(
+                    applied = frame.appliedFocus,
+                    requested = last.appliedFocus,
+                    tolerance = tolerance,
+                )
+            }
+        }
+    }
+
     private suspend fun analyse() {
         for (raw in incoming) {
             val started = System.nanoTime()
             try {
                 val info = awaitResult(raw.timestampNs)
+
+                // The generation the *frame* belongs to is the one carried on its own request,
+                // not whatever was current when its pixels turned up. Those differ by the
+                // pipeline depth, which is nine or ten frames here.
+                val frameGeneration = info?.generation?.takeIf { it >= 0 } ?: -1
+                val frameRequest = synchronized(requests) { requests[frameGeneration] }
+                    ?: pending
+                    ?: continue
+
                 val binned = CfaBinner.binGreen(
                     pixels = raw.buffer,
                     width = raw.width,
@@ -281,16 +338,25 @@ class FramingSession private constructor(
                 val preview = GrayImage(gray, binned.width, binned.height)
                     .rotated(sensorOrientation)
 
+                // D-21, per frame. Exposure is checked against the value that was asked for,
+                // because a frame that quietly used a different one is undetectable downstream.
+                //
+                // Focus is *not* checked for equality with the request, and that is deliberate.
+                // `LENS_FOCUS_DISTANCE` on this lens is APPROXIMATE-calibration: the position is
+                // quantised to a ~0.037-dioptre motor step, and a request of exactly 0.0 is
+                // answered with the hyperfocal position (0.1216 here) rather than the hard stop.
+                // Demanding equality would reject every frame forever. What matters for focus is
+                // knowing where the lens *is* — which the result reports, and which the sweep
+                // records as the sample's position — and that it has stopped moving.
                 val settled = info != null &&
-                    info.generation >= raw.generation &&
-                    ManualRequest.exposureMatches(info.exposureNs, raw.request.exposureNs) &&
-                    ManualRequest.focusMatches(info.focus, raw.request.focusDiopters) &&
+                    frameGeneration >= generation &&
+                    ManualRequest.exposureMatches(info.exposureNs, frameRequest.exposureNs) &&
                     info.lensStationary
 
                 _frames.emit(
                     FramingFrame(
-                        generation = raw.generation,
-                        request = raw.request,
+                        generation = frameGeneration,
+                        request = frameRequest,
                         plane = binned,
                         stars = stars,
                         preview = preview,
@@ -343,6 +409,28 @@ class FramingSession private constructor(
         private const val TAG = "FramingSession"
         private const val POOL_DEPTH = 2
         private const val RESULT_CACHE = 8
+
+        /**
+         * Generations kept addressable. Must comfortably exceed the request pipeline depth: a
+         * frame landing now was requested [PIPELINE_DEPTH_FRAMES] generations ago and still has
+         * to find its own request to be judged against.
+         */
+        private const val REQUEST_CACHE = 64
+
+        /**
+         * Measured on the reference device 2026-08-17: a change to `LENS_FOCUS_DISTANCE` takes
+         * nine to ten frames to appear in the capture results, independent of exposure length
+         * and of how many requests are issued in between. Callers that wait for a frame to
+         * answer their request must budget in frames, not in seconds.
+         */
+        const val PIPELINE_DEPTH_FRAMES = 10
+
+        /**
+         * Two lens positions this close are the same motor step. The measured step on the
+         * reference device is ~0.037 dioptres, so a tenth of that is comfortably inside the
+         * quantisation without being at the mercy of float noise.
+         */
+        const val FOCUS_STABLE_TOLERANCE = 0.004f
         private const val RESULT_WAIT_MS = 500L
         private const val RESULT_POLL_MS = 5L
 

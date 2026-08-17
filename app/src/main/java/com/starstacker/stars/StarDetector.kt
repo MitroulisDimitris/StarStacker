@@ -40,6 +40,17 @@ data class FrameStars(
     /** Robust noise estimate (MAD-derived sigma), in ADU. */
     val noise: Double,
     val stars: List<Star>,
+    /**
+     * The frame's own background is at the white level: the sensor is clipped and there is no
+     * signal left to measure.
+     *
+     * This is a third answer, distinct from "stars found" and from "no stars found", and it has
+     * to be, because the remedies are opposite. A starless dark sky means cloud and the advice is
+     * to wait (FR-7.5); a clipped frame means the exposure or ISO is far too high, or the lens is
+     * pointed at something lit, and waiting will not help. Measured indoors 2026-08-17, where a
+     * fully saturated frame yielded 24–41 phantom "stars" with an entirely plausible HFR.
+     */
+    val saturatedFrame: Boolean = false,
 ) {
     val count: Int get() = stars.size
 
@@ -78,6 +89,19 @@ class StarDetector(
 
         val background = BackgroundModel.fit(plane, width, height, backgroundTile)
         val noise = estimateNoise(plane, width, height, background)
+
+        // A clipped frame has no stars in it, only edges of the clipping. Detecting on it
+        // produces phantoms rather than nothing, because a saturated background makes the noise
+        // estimate collapse to zero and the threshold with it.
+        if (background.medianLevel >= saturationLevel) {
+            return FrameStars(
+                background = background.medianLevel,
+                noise = noise,
+                stars = emptyList(),
+                saturatedFrame = true,
+            )
+        }
+
         val threshold = max(noise * thresholdSigma, MIN_ABSOLUTE_THRESHOLD)
 
         val stars = segment(plane, width, height, background, threshold)
@@ -250,7 +274,17 @@ class StarDetector(
     private companion object {
         const val MAD_TO_SIGMA = 1.4826
         const val MIN_NOISE = 1e-6
-        const val MIN_ABSOLUTE_THRESHOLD = 1e-6
+
+        /**
+         * The detection threshold can never fall below half an ADU.
+         *
+         * This used to be 1e-6, as a guard against dividing by a zero noise estimate — but a
+         * threshold of 1e-6 ADU does not guard anything, it detects everything. The sensor
+         * quantises to whole ADU; a blob standing half a count above its local background is
+         * rounding, not a star. Half an ADU is the smallest floor that is a statement about the
+         * data rather than about floating point.
+         */
+        const val MIN_ABSOLUTE_THRESHOLD = 0.5
         const val SAMPLE_STRIDE = 7
         const val STACK_CAPACITY = 8192
     }

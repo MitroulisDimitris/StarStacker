@@ -146,12 +146,14 @@ class FocusRunner(
 
     private suspend fun park(diopters: Float, iso: Int, exposureNs: Long) {
         session.apply(FramingRequest(iso, exposureNs, diopters))
-        runCatching { session.awaitSettledFrame(timeoutFor(exposureNs)) }
+        runCatching { session.awaitStableFrame(timeoutFor(exposureNs)) }
     }
 
     private suspend fun measureAt(diopters: Float, iso: Int, exposureNs: Long): FocusSample {
         session.apply(FramingRequest(iso, exposureNs, diopters))
-        val frame = runCatching { session.awaitSettledFrame(timeoutFor(exposureNs)) }.getOrNull()
+        // Stable, not merely settled: the sample is filed under the position the lens reports,
+        // so measuring before the motor has arrived files a real HFR under the wrong position.
+        val frame = runCatching { session.awaitStableFrame(timeoutFor(exposureNs)) }.getOrNull()
             ?: return FocusSample(diopters, null, 0)
         return FocusSample(
             diopters = frame.appliedFocus ?: diopters,
@@ -161,10 +163,16 @@ class FocusRunner(
     }
 
     /**
-     * Generous on purpose: sensor settings take several frames to apply (T-1.4), and at a
-     * four-second framing exposure "several frames" is most of a minute.
+     * Budgeted in **frames**, not in seconds.
+     *
+     * The pipeline is ten frames deep on the reference device
+     * ([FramingSession.PIPELINE_DEPTH_FRAMES]), so the wait has to scale with the exposure: a
+     * fixed six-second allowance is ample at a 200 ms exposure and hopelessly short at four
+     * seconds, where ten frames is forty. Getting this wrong does not fail loudly — it times
+     * out at every position and reports the sky as starless.
      */
-    private fun timeoutFor(exposureNs: Long): Long = exposureNs / 1_000_000 * 6 + 8_000L
+    private fun timeoutFor(exposureNs: Long): Long =
+        exposureNs / 1_000_000 * (FramingSession.PIPELINE_DEPTH_FRAMES + 6) + 8_000L
 
     private companion object {
         const val TAG = "FocusRunner"

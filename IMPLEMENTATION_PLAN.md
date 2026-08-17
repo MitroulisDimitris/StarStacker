@@ -78,14 +78,20 @@ Two consequences to accept deliberately:
 |---|---|---|---|
 | 0 | 9 | 1 | in progress — skeleton builds and installs; shared components extracted (T-0.2 part) |
 | 1A | 6 | 6 | **complete** — probe, qualification, camera lifecycle, first light, DNG reader |
-| 1B | 7 | 1 | **all seven written and unit-tested; six await a night sky** — see §5 |
+| 1B | 7 | 2 | **hardware-verified except what needs darkness** — see §5 and §1.7 |
 | 1C | 14 | 0 | not started |
 | 2+ | outlined | 0 | not started |
 
-> **Phase 1B is code-complete and field-unverified.** Every task builds, and 109 JVM tests pass,
-> but nothing in this phase has been run against a real sky — or against a real camera, since no
-> device was attached when it was written. The boxes stay `[~]` until they are, per §0: a ticked
-> box means demonstrated on hardware, not compiled.
+> **Phase 1B has now met every acceptance that does not require a night sky** (2026-08-17). The
+> camera half is demonstrated: the device confirms the two-stream configuration by name, the
+> repeating one-second RAW loop delivers at a metronomic 1000 ms, and the focus sweep steps the
+> lens across its full range and reports each position correctly. Doing so found four HAL
+> behaviours that were silently breaking the phase — §1.7 — of which the worst produced *plausible
+> numbers from a saturated frame* rather than an error.
+>
+> What is left is genuinely the sky: stars visible in the preview (T-2.2), a focus curve with a
+> real minimum and repeat sweeps agreeing (T-2.4), deliberate defocus recovered (T-2.5), and
+> alt/az checked against a known star (T-2.6). Those boxes stay `[~]`, per §0.
 
 ---
 
@@ -178,6 +184,66 @@ originally assumed.
 **Storage implication:** 24.0 MiB per frame. A 150-frame session is **3.6 GB**, and an hour of
 12 s subs is ≈ **7.2 GB** — at the top of the requirements' "5–6 GB per hour" estimate (FR-5.4).
 The planner's storage budget should use the measured figure, not the estimate.
+
+---
+
+## 1.7 The lens and the request pipeline — measured 2026-08-17
+
+Phase 1B was written with no device attached. Running it against the real camera produced four
+facts that no amount of reading the Camera2 documentation would have supplied, and three of them
+were breaking the phase outright.
+
+| What | Measured | Consequence |
+|---|---|---|
+| **Request pipeline depth** | A change to `LENS_FOCUS_DISTANCE` takes **9–10 frames** to appear in the capture results — independent of exposure length, and independent of how many requests are issued meanwhile | Every wait must be budgeted in *frames*, not seconds. `FramingSession.PIPELINE_DEPTH_FRAMES` |
+| **Focus quantisation** | The VCM moves in steps of **~0.0374 dioptres**. A request lands on the nearest step | Sweep positions closer together than one step measure the same physical place twice |
+| **Focus request of exactly 0.0** | Answered with the **hyperfocal** position (0.1216 dioptres), *not* the far stop. A request of 0.05 reaches 0.0468, and 0.010 reaches 0.009 — so 0.0 is a special case, not a limit | `FocusSweep.NEAR_INFINITY` — no sweep asks for exactly zero |
+| **`LENS_STATE`** | Reports `STATIONARY` at intermediate positions **mid-move** | Arrival cannot be detected from `LENS_STATE`. `awaitStableFrame` requires two consecutive settled frames at the same position |
+
+**The bug all four combined into.** `FramingFrame.generation` was stamped when the *pixels*
+arrived, so with a ten-frame pipeline it named a request ten generations newer than the one that
+actually produced the frame; `settled` then compared that number against an equally arbitrary one
+and additionally demanded `appliedFocus == requestedFocus`, which on this lens is false forever.
+The visible result was `settled=false` on every frame ever taken — which would have timed out
+every position of every focus sweep, reported the sky as starless, and left the framing preview
+permanently captioned *settling*.
+
+The fix is not a widened tolerance. Requests now carry their generation on
+`CaptureRequest.setTag()` and it is read back off the result, so a frame is judged against the
+request that made it whatever the HAL's internal queue is doing. Exposure is still verified
+exactly (D-21 — a frame that lies about its exposure is undetectable downstream). Focus is not:
+the applied position is *recorded* rather than demanded, because with quantisation and a
+hyperfocal special case, "where the lens actually is" is the useful fact and "where we asked it
+to be" is not.
+
+### The saturation trap
+
+Indoors, a fully clipped frame reported **24–41 stars with a median HFR of 0.95 px** — numbers
+indistinguishable from a well-focused sky. Saturation flattens the frame, the MAD noise estimate
+collapses to zero, and a threshold expressed as a multiple of the noise collapses with it; the
+detection floor was `1e-6` ADU, which is not a guard but a licence to detect everything.
+
+`FrameStars.saturatedFrame` is now a **third answer**, distinct from "stars" and "no stars",
+because the remedies are opposite: a starless dark sky means cloud and the advice is to wait
+(FR-7.5), while a clipped frame means the exposure is far too high and waiting will not help.
+The threshold floor is now half an ADU — a statement about the sensor's quantisation rather than
+about floating point. This matters well past the focus sweep: FR-7.5 diagnoses a *collapse* in
+star count as cloud, and phantom stars would have kept that collapse from ever being visible.
+
+### Screen-off: D-22's argument is right and incomplete
+
+Measured: the framing loop runs at a metronomic 1000 ms with the screen off — for about five
+seconds. Then it stops. The process is **still alive** (Android's cached-app freezer, not a
+crash), and 20/20 frames complete with the screen on as a control.
+
+D-22 argued the screen-off case dissolves by construction, since no display surface is ever in
+the capture session. That is true *about surfaces* and it is not what stops the loop — **process
+lifecycle** is. Nothing an Activity owns survives the screen going off, however few surfaces it
+holds. T-2.1's screen-off acceptance is therefore not achievable in Phase 1B at all; it belongs
+to the T-3.6 foreground service, and is re-filed there (**OI-20**).
+
+One number worth keeping for the Phase 1C budget: with the screen off, per-frame analysis rose
+from ~80 ms to ~340 ms as the CPU clocked down. Still small against a 12 s sub, but it is 4×.
 
 ---
 
@@ -396,8 +462,14 @@ sky you can't see on a normal preview.
   the RAW frames, so no display surface is ever in the session. There is nothing to lose when the
   screen goes off, and "resumes without dropping a frame" is true by construction. That is a
   stronger property than the acceptance asked for, and it still needs demonstrating on hardware.
-  **Remaining:** run it on the device — confirm `isSessionConfigurationSupported()` returns true
-  for RAW 4096×3072 + YUV 1440×1080, and watch a loop survive the screen going off.
+  **Verified on hardware 2026-08-17.** `isSessionConfigurationSupported()` returns **true** for
+  RAW 4096×3072 + YUV 1440×1080, and the device names its own guarantee for it:
+  *"In-app processing plus DNG capture"*. The planner's choice and the device's answer agree
+  without any hard-coded table.
+  **The screen-off half is re-filed, not met.** The loop keeps running with the screen off for
+  about five seconds and is then frozen with the process still alive — D-22's surface argument is
+  correct and does not cover process lifecycle (§1.7). This acceptance moves to T-3.6, where the
+  foreground service that can actually satisfy it lives. Tracked as **OI-20**.
 - [~] **T-2.2** **Night framing preview** — a repeating request at long exposure (~0.5–2 s) and high
   ISO, autostretched (MTF from median/MAD) for display only. This is the difference between
   framing being possible and impossible; a normal preview of a dark sky is a black rectangle.
@@ -421,6 +493,11 @@ sky you can't see on a normal preview.
   - **The preview is rotated in pixels, not in layout.** A 90° `graphicsLayer` on a laid-out
     image leaves it letterboxed to the wrong axis; transposing the 786 KB grey raster costs a few
     milliseconds and makes the UI trivial.
+  **Loop verified on hardware 2026-08-17.** Frames land at 1000 ± 40 ms with analysis at 68–100 ms
+  warm (416 ms on the JIT-cold first frame) — comfortably inside the one-second budget, and a
+  quarter of the 200 ms T-2.3 allowed for. The per-frame metadata check now works for the first
+  time: `settled` was false on *every frame ever taken* before §1.7's tag fix, which would have
+  made the focus sweep unusable and captioned the preview *settling* forever.
   **Remaining:** the acceptance itself — a real sky. Also **OI-4**: 1 s and 4 s are defaults, not
   measurements.
 - [x] **T-2.3** Star detection module (Kotlin, pure, unit-tested): local background estimate,
@@ -461,7 +538,16 @@ sky you can't see on a normal preview.
   shape it predicted — worth remembering before the Phase 3 accumulator is written.
 
   The disk read will not exist in the live path (T-3.10 bins straight from the in-memory sensor
-  buffer), so the live per-frame cost is ≈ 130 ms against a 12 s sub.
+  buffer), so the live per-frame cost is ≈ 130 ms against a 12 s sub. **Confirmed live
+  2026-08-17:** 68–100 ms per frame in the framing loop, rising to ~340 ms with the screen off as
+  the CPU clocks down.
+
+  **Amended 2026-08-17 — the saturation trap (§1.7).** The detector reported 24–41 stars at a
+  median HFR of 0.95 px on a *fully clipped* frame, because a saturated frame has zero measured
+  noise and the threshold was a multiple of the noise with a `1e-6` floor. `saturatedFrame` is now
+  a distinct answer from "no stars", and the floor is half an ADU. Two tests pin it. This was
+  found only by pointing the phone at a lit room — the synthetic frames the original 12 tests use
+  are never saturated, which is exactly the blind spot synthetic tests have.
 - [~] **T-2.4** Focus sweep (§4.1.4): `LENS_FOCUS_DISTANCE` micro-steps around 0.0, HFR per
   position, always approach from the same direction (hysteresis), record the elevation it was
   calibrated at (gravity sag), store per camera. Fixed-focus cameras record "fixed focus"
@@ -481,6 +567,16 @@ sky you can't see on a normal preview.
     `TOO_FEW_STARS` are distinct verdicts, because "best HFR at the 0.0 hard stop", "the sweep was
     too narrow to see the curve" and "there are no stars tonight" call for three different
     actions, and merging them into one confident number is how a session ends up soft.
+  **Mechanics verified on hardware 2026-08-17.** A nine-position sweep completes in 44 s with no
+  timeouts, and every position lands on its nearest motor step in monotonic order —
+  0.383, 0.346, 0.309, 0.271, 0.196, 0.159, 0.122, 0.047, 0.009 dioptres. Getting there needed
+  three fixes from §1.7: the generation tag, `NEAR_INFINITY` (a request of exactly 0.0 returns
+  hyperfocal, so the sweep never reached its own far end), and `awaitStableFrame` (two of the nine
+  positions were reporting the position the lens was *leaving*, which files a real HFR under the
+  wrong position and shifts the whole curve — a failure that looks like data, not like an error).
+  Indoors the verdict is correctly `TOO_FEW_STARS`. That is worth stating plainly: before the
+  saturation fix the same sweep would have returned a **confident bogus curve** built from ~30
+  phantom stars per position.
   **Remaining:** the acceptance — a real sweep on stars, and repeat sweeps agreeing.
 - [~] **T-2.5** Focus verification at session start + live HFR/star-count readout + mid-session
   drift alert (FR-6.3).
@@ -720,7 +816,7 @@ with, even with zero stacking.
 ## 14. Open issues
 
 **Needed-by** is the phase that cannot finish without a resolution.
-**Status: 13 resolved · 5 open pending measurement · 2 deferred · 0 blocking.**
+**Status: 13 resolved · 6 open pending measurement · 2 deferred · 0 blocking.**
 An issue is only "open" here if it can actually change the shape of the code. Questions with an
 obvious default and a defined experiment are listed with that default already in force, so they
 never block work.
@@ -738,6 +834,7 @@ when the number comes back.
 | ID | Issue | Default until measured | Experiment | Needed by |
 |---|---|---|---|---|
 | **OI-19** | **Will the hidden cameras also *capture*, not just open?** All five IDs open, but only camera 0 has completed a real RAW capture. An ID that opens can still fail session configuration or never deliver a frame | Assume the tele and ultrawide work; verify before promising them to the user | Run the T-1.4 capture against IDs 2, 3 and 4 — cheap now the harness exists | 7 |
+| **OI-20** | **Screen-off capture needs a foreground service, not just a surface-free session.** Measured 2026-08-17: the framing loop is frozen a few seconds after the screen goes off, process still alive. D-22 dissolved the *surface* problem but not the *lifecycle* one (§1.7) | Assume the `camera`-type FGS of D-12 is sufficient — it is what the type exists for | T-3.6's own acceptance: a 45-minute sequence with the screen off and the app backgrounded, then repeated with battery optimisation left on | 1C |
 | **OI-4** | Framing preview exposure length | 1 s, boost to 4 s, auto-stop after 2 min idle — **now implemented as the default** (T-2.2), so the experiment is a tuning pass rather than a build | Real-sky trial: shortest exposure at which framing is workable | 1B |
 | **OI-5** | SAF write throughput and root-scan cost | Cached index assumed necessary (D-5) | T-0.5: sustained MB/s for 25 MB files; wall-clock scan of ~12 sessions × ~200 files | 0 |
 | **OI-9** | Is the OEM `SENSOR_NOISE_PROFILE` good enough to pick a sane ISO at Functional tier? | Yes — use it | **Trigger:** run the T-3.3 solver twice, once on OEM data and once on read noise measured from a quick bias pair. If the chosen ISO differs by more than one stop, promote the §4.1.1 noise model out of Phase 6 into 1C | 1C |
@@ -779,9 +876,17 @@ when the number comes back.
 | **Field** | The phase checkpoints — a tripod, a dark sky, and a completed session | Manual, logged in the changelog |
 | **External** | DNGs open in Siril/RawTherapee (T-1.5); on-device master compared to Siril/DSS on identical subs (T-5.7) | Desktop |
 
-**109 JVM tests as of Phase 1B** — qualification 21, star detection 12, DNG reader 10, focus sweep
+**112 JVM tests as of Phase 1B** — qualification 21, star detection 14, focus sweep 11, DNG reader
 10, camera picker 10, pointing 11, stream planning 8, JSON 8, autostretch 7, focus monitor 7,
 image rotation 5.
+
+**A sixth level, added 2026-08-17: `diag/FieldDiagnostics.kt`.** Phase 1B's camera acceptances are
+driven from `adb` rather than from the UI —
+`am start -n com.starstacker/.MainActivity --es diag framing|focus|lens` — writing a per-frame
+record to a file, because CamX floods the log buffer and evicts our lines within seconds. This is
+what made §1.7 findable: at roughly one frame per second, watching a preview cannot tell you that
+the lens is reporting the position it is *leaving*, and none of the four HAL behaviours in §1.7
+is visible from a screenshot.
 
 The unit column is deliberately wide, and it is why the Android-free split is worth its cost.
 Fifteen of the eighteen files under `device/`, `dng/`, `stars/`, `focus/`, `imaging/`,
@@ -794,9 +899,12 @@ whether a HAL honours what it was asked.
 The two external checks are the honest ones. §15.2 of the requirements sets the bar as
 *measurably comparable* to a desktop stack — that number goes in the changelog when T-5.7 runs.
 
-**Standing caveat:** JVM tests say the maths is right, not that the app works. Every Phase 1B
-box is `[~]` for exactly that reason — 109 passing tests and a 25.9 MB APK are not a photograph
-of a star.
+**Standing caveat:** JVM tests say the maths is right, not that the app works. Phase 1B's boxes
+stayed `[~]` for exactly that reason, and the first hour on real hardware justified it — 109
+passing tests coexisted with a `settled` flag that was false on every frame ever taken, a focus
+sweep that could never have reached its own far end, and a star detector that read a blank white
+frame as a well-focused sky. None of the three is a maths error, so no unit test was ever going
+to catch them.
 
 ---
 
@@ -804,6 +912,7 @@ of a star.
 
 | Date | Change |
 |---|---|
+| 2026-08-17 | **Phase 1B met on hardware, except what needs darkness.** A device was attached for the first time since the phase was written, and it found four HAL behaviours that were silently breaking it (**§1.7**): a **9–10 frame** request pipeline, focus quantised to ~0.0374 dioptre steps, a request of exactly 0.0 dioptres answered with *hyperfocal* rather than the far stop, and `LENS_STATE` reporting STATIONARY mid-move. Together these made `settled` false on **every frame ever taken**, which would have timed out every focus sweep and reported the sky as starless. Fixed by stamping requests with `CaptureRequest.setTag()` and reading the generation back off the result, so a frame is judged against the request that made it regardless of the HAL's queue; by `FocusSweep.NEAR_INFINITY`; and by `awaitStableFrame`, which waits for the lens to *arrive* rather than merely to be settled. Separately, the star detector was reading a **fully clipped frame as 24–41 stars at HFR 0.95 px** — saturation zeroes the noise estimate and the threshold was a multiple of it; `FrameStars.saturatedFrame` is now a third answer distinct from "no stars", since the two call for opposite remedies (FR-7.5). **T-2.1 confirmed** — the device names its own guarantee, *"In-app processing plus DNG capture"* — but its **screen-off half is re-filed to T-3.6 as OI-20**: the loop freezes seconds after the screen goes off with the process still alive, so D-22's surface argument, while correct, does not cover process lifecycle. 112 JVM tests pass. New `diag/FieldDiagnostics.kt` drives the camera acceptances from `adb`, which is what made any of this visible. |
 | 2026-08-16 | **Phase 1B written — code-complete, field-unverified.** All seven tasks implemented: stream planning with the device's own guarantee check (T-2.1), the night framing preview (T-2.2), focus sweep and store (T-2.4), verification and drift monitoring (T-2.5), pointing (T-2.6) and the derived camera picker (T-2.7). **109 JVM tests pass** (43 before), `:app:assembleDebug` → 25.7 MB. **No device was attached, so nothing here has met its acceptance criterion** — every box is `[~]`. Three decisions came out of writing it: **D-22** (the preview is rendered from the RAW stream, which dissolves T-2.1's screen-off case instead of handling it), **D-23** (D-20's second surface must be a *drained* YUV reader — an unconsumed `SurfaceTexture` cannot be drained without a GL context and would stall a repeating request, which T-1.4 never noticed because it stopped after one frame) and **D-24** (own the JSON reader, since D-5 requires reading `session.json` back). Shared UI components extracted (T-0.2 part), and the FR-6.1 request profile de-duplicated into `ManualRequest` so there is one definition of "OEM processing off" rather than two that can drift. |
 | 2026-08-16 | Plan created. Phases defined, capture prioritised ahead of calibration, 16 open issues registered. |
 | 2026-08-16 | Issue triage. Closed OI-1, 2, 3, 7, 8, 10, 12, 13, 14 → decisions D-12…D-18. OI-4, 5, 9, 11 downgraded to measurements with defaults in force and defined experiments. OI-6 (test device) is the only blocker; OI-15 (framing assistance scope) awaits an owner decision. FGS types and stream-combination handling verified against Android docs; DNG compression corroborated by the requirements' own storage budget. |

@@ -21,6 +21,7 @@ import com.starstacker.focus.FocusStatus
 import com.starstacker.focus.FocusStore
 import com.starstacker.focus.FocusSweep
 import com.starstacker.imaging.GrayImage
+import com.starstacker.stars.FrameStars
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -41,6 +42,8 @@ data class FrameSummary(
     val noise: Double,
     val analysisMs: Long,
     val settled: Boolean,
+    /** The frame is clipped — a distinct condition from a starless one, see [FrameStars]. */
+    val saturated: Boolean,
     val appliedIso: Int?,
     val appliedExposureNs: Long?,
     val appliedFocus: Float?,
@@ -291,6 +294,7 @@ class FramingController(
             noise = frame.stars.noise,
             analysisMs = frame.analysisMs,
             settled = frame.settled,
+            saturated = frame.stars.saturatedFrame,
             appliedIso = frame.appliedIso,
             appliedExposureNs = frame.appliedExposureNs,
             appliedFocus = frame.appliedFocus,

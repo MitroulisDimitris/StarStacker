@@ -26,7 +26,9 @@ import com.starstacker.device.CameraProbe
 import com.starstacker.device.DeviceProfile
 import com.starstacker.device.ProfileJson
 import com.starstacker.device.Qualification
+import com.starstacker.diag.FieldDiagnostics
 import com.starstacker.dng.DngReader
+import com.starstacker.focus.FocusSweep
 import com.starstacker.pointing.PointingFix
 import com.starstacker.pointing.PointingSource
 import com.starstacker.stars.CfaBinner
@@ -88,10 +90,13 @@ class MainActivity : ComponentActivity() {
             requestCamera.launch(Manifest.permission.CAMERA)
         }
 
-        // Debug affordance for Phase 1A iteration:
+        // Debug affordance for on-device iteration:
         //   adb shell am start -n com.starstacker/.MainActivity --ez autodiag true
+        //   adb shell am start -n com.starstacker/.MainActivity --es diag framing --ei frames 12
+        //   adb shell am start -n com.starstacker/.MainActivity --es diag focus
         // Runs the camera checks head-free and logs the results, so a rebuild-measure cycle
-        // does not require tapping through the UI on the device.
+        // does not require tapping through the UI on the device — and, at ~1 fps, so a framing
+        // measurement does not require watching a preview for a minute.
         if (intent?.getBooleanExtra("autodiag", false) == true && hasCameraPermission()) {
             lifecycleScope.launch {
                 profile?.let { runOpenabilityTest(it) }
@@ -100,6 +105,14 @@ class MainActivity : ComponentActivity() {
                 runCapture(10_000_000_000L)
                 Log.i(TAG, "autodiag complete")
             }
+        }
+
+        val fieldDiag = intent?.getStringExtra("diag")
+        if (fieldDiag != null && hasCameraPermission()) {
+            val frames = intent?.getIntExtra("frames", 12) ?: 12
+            val exposureMs = intent?.getIntExtra("exposureMs", 1000) ?: 1000
+            val iso = intent?.getIntExtra("iso", 3200) ?: 3200
+            lifecycleScope.launch { runFieldDiagnostics(fieldDiag, frames, iso, exposureMs) }
         }
 
         locationGranted = pointingSource.hasLocationPermission()
@@ -257,6 +270,61 @@ class MainActivity : ComponentActivity() {
         Log.i(TAG, "capture: " + lines.joinToString(" | "))
         runCatching {
             File(dir, "capture-log.txt").appendText(lines.joinToString("\n") + "\n\n")
+        }
+    }
+
+    /**
+     * Phase 1B's hardware acceptances, run from `adb`. Results go to a file for the same reason
+     * the capture diagnosis does: CamX floods the log buffer and evicts our lines within seconds.
+     */
+    private suspend fun runFieldDiagnostics(mode: String, frames: Int, iso: Int, exposureMs: Int) {
+        val dir = File(getExternalFilesDir(null) ?: filesDir, "first-light").apply { mkdirs() }
+        val out = File(dir, "field-diagnosis.txt")
+        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+        val lines = mutableListOf<String>()
+        val log: (String) -> Unit = { line ->
+            lines += line
+            Log.i(TAG, line)
+            runCatching { out.appendText(line + "\n") }
+        }
+
+        runCatching { out.appendText("\n===== $mode @ $stamp =====\n") }
+        diagnostics = diagnostics.copy(busy = "Field diagnostics: $mode")
+        try {
+            CameraAccess(this).use { access ->
+                withContext(Dispatchers.IO) {
+                    when (mode) {
+                        "framing" -> FieldDiagnostics.framing(
+                            access, MAIN_CAMERA_ID, frames, iso,
+                            exposureMs * 1_000_000L, log,
+                        )
+
+                        "lens" -> FieldDiagnostics.lensRange(
+                            access, MAIN_CAMERA_ID, iso, exposureMs * 1_000_000L,
+                            requests = listOf(0f, 0.20f, 0.40f, 0.10f, 0f),
+                            framesPerPosition = frames,
+                            log = log,
+                        )
+
+                        "focus" -> FieldDiagnostics.focusSweep(
+                            access, MAIN_CAMERA_ID, iso, exposureMs * 1_000_000L,
+                            maxDiopters = profile?.cameras
+                                ?.firstOrNull { it.id == MAIN_CAMERA_ID }
+                                ?.minimumFocusDistanceDiopters
+                                ?.takeIf { it > 0f } ?: FocusSweep.DEFAULT_SPAN,
+                            log = log,
+                        )
+
+                        else -> log("unknown diag mode '$mode' — expected framing or focus")
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            log("FAILED: ${t::class.java.simpleName}: ${t.message}")
+            Log.e(TAG, "field diagnostics failed", t)
+        } finally {
+            diagnostics = diagnostics.copy(busy = null, captureLines = lines.takeLast(24))
+            log("=== $mode complete ===")
         }
     }
 

@@ -71,6 +71,18 @@ object FocusSweep {
     const val MIN_STARS = 5
 
     /**
+     * The far end of a sweep — just short of 0.0 rather than 0.0 itself.
+     *
+     * Measured on the reference device 2026-08-17: a request of *exactly* 0.0 is answered with
+     * the hyperfocal position (0.1216 dioptres) rather than with the lens's furthest position,
+     * while a request of 0.05 lands at 0.0468 — comfortably beyond it. Asking for zero therefore
+     * both fails to reach the far end and drops a sample into the middle of the curve, mislabelled
+     * as its edge. Asking for a hair more than zero costs nothing on a lens without the quirk,
+     * since the position quantises to the nearest motor step either way.
+     */
+    const val NEAR_INFINITY = 0.01f
+
+    /**
      * Positions for a cold sweep, from the near end down to infinity.
      *
      * Descending, so every setpoint is approached from the near side — the same direction, every
@@ -80,7 +92,8 @@ object FocusSweep {
         span: Float = DEFAULT_SPAN,
         steps: Int = 9,
         maxDiopters: Float = Float.MAX_VALUE,
-    ): List<Float> = descending(from = min(span, maxDiopters), to = 0f, steps = steps)
+    ): List<Float> =
+        descending(from = min(span, maxDiopters), to = NEAR_INFINITY, steps = steps)
 
     /** Positions for a re-verification sweep around a stored value (T-2.5). */
     fun localSweep(
@@ -90,7 +103,7 @@ object FocusSweep {
         maxDiopters: Float = Float.MAX_VALUE,
     ): List<Float> = descending(
         from = min(centre + span / 2f, maxDiopters),
-        to = max(centre - span / 2f, 0f),
+        to = max(centre - span / 2f, NEAR_INFINITY),
         steps = steps,
     )
 
@@ -107,7 +120,7 @@ object FocusSweep {
         val hi = max(from, to)
         val lo = min(from, to)
         val step = (hi - lo) / (steps - 1)
-        return List(steps) { i -> (hi - i * step).coerceAtLeast(0f) }
+        return List(steps) { i -> (hi - i * step).coerceAtLeast(lo) }
     }
 
     /**
@@ -164,11 +177,15 @@ object FocusSweep {
                 bestHfr = best.hfr!!,
                 verdict = FocusVerdict.MINIMUM_AT_EDGE,
                 interpolated = false,
-                note = if (best.diopters <= 0f) {
-                    "best HFR is at 0.0 dioptres, the infinity stop — the true focus may be " +
-                        "past it, which is as good as this lens gets"
+                // Which end matters. The lowest sampled position is the furthest the lens
+                // reached, so a minimum there means focus may lie past what the lens can do —
+                // a different situation, and a different remedy, from a minimum at the near end.
+                note = if (bestIndex == 0) {
+                    "best HFR is at %.3f dioptres, the furthest this lens reached — the true focus "
+                        .format(best.diopters) +
+                        "may be past it, which is as good as this lens gets"
                 } else {
-                    "best HFR is at the end of the swept range — widen the sweep to bracket it"
+                    "best HFR is at the near end of the swept range — widen the sweep to bracket it"
                 },
             )
         }

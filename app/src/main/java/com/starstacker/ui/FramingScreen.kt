@@ -270,7 +270,22 @@ private fun MetricsCard(controller: FramingController) {
                 frame?.eccentricity?.let { "%.2f".format(it) } ?: "—",
                 warn = (frame?.eccentricity ?: 0.0) > 0.6,
             )
-            Metric("Sky", frame?.background?.let { "%.0f".format(it) } ?: "—", unit = "ADU")
+            Metric(
+                "Sky",
+                frame?.background?.let { "%.0f".format(it) } ?: "—",
+                unit = "ADU",
+                warn = frame?.saturated == true,
+            )
+        }
+        // "Clipped" and "no stars" look identical in a star count, and they call for opposite
+        // actions — turn the exposure down, or wait for the cloud to pass.
+        if (frame?.saturated == true) {
+            Spacer(Modifier.height(8.dp))
+            Banner(
+                "Frame is clipped — the sensor is saturated, so nothing can be measured. " +
+                    "Drop the ISO or the framing exposure, or point away from the light.",
+                color = Night.Warn,
+            )
         }
         if (frame != null) {
             Spacer(Modifier.height(8.dp))
