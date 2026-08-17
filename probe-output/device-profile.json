@@ -1,0 +1,799 @@
+{
+  "schemaVersion": 1,
+  "capturedAtEpochMs": 1786878674385,
+  "manufacturer": "Nothing",
+  "model": "A059P",
+  "device": "Asteroids",
+  "androidRelease": "16",
+  "sdkInt": 36,
+  "supportedAbis": [
+    "arm64-v8a"
+  ],
+  "sensors": {
+    "accelerometer": true,
+    "magnetometer": true,
+    "gyroscope": true,
+    "gps": true
+  },
+  "concurrentCameraIdSets": [
+    [
+      "1"
+    ],
+    [
+      "0",
+      "1"
+    ]
+  ],
+  "cameras": [
+    {
+      "id": "0",
+      "exposed": true,
+      "discovery": "LISTED",
+      "logicalParentIds": [
+        "4"
+      ],
+      "physicalChildIds": [],
+      "facing": "BACK",
+      "hardwareLevel": "LEVEL_3",
+      "capabilities": [
+        "BACKWARD_COMPATIBLE",
+        "CONSTRAINED_HIGH_SPEED_VIDEO",
+        "RAW",
+        "YUV_REPROCESSING",
+        "PRIVATE_REPROCESSING",
+        "READ_SENSOR_SETTINGS",
+        "MANUAL_SENSOR",
+        "BURST_CAPTURE",
+        "MANUAL_POST_PROCESSING",
+        "STREAM_USE_CASE"
+      ],
+      "sensor": {
+        "pixelArray": "4096x3072",
+        "activeArray": "4096x3072",
+        "physicalSizeMm": [
+          8.192,
+          6.144
+        ],
+        "binningFactor": "2x2",
+        "cfaArrangement": "GRBG",
+        "whiteLevel": 1023,
+        "blackLevelPattern": [
+          64,
+          64,
+          64,
+          64
+        ],
+        "timestampSource": "REALTIME",
+        "maxFrameDurationNs": 49640772500
+      },
+      "raw": {
+        "sizes": [
+          "4096x3072",
+          "2400x1800"
+        ],
+        "maxSize": "4096x3072",
+        "megapixels": 12.58,
+        "naivePixelPitchUm": 2.0,
+        "effectivePixelPitchUm": 2.0,
+        "binningRatio": 1.0,
+        "rawSmallerThanPixelArray": false,
+        "sensorBinsInternally": true
+      },
+      "lens": {
+        "focalLengthsMm": [
+          5.56
+        ],
+        "aperturesF": [
+          1.88
+        ],
+        "horizontalFovDeg": [
+          72.76
+        ],
+        "focusDistanceCalibration": "APPROXIMATE",
+        "minimumFocusDistanceDiopters": 10.0,
+        "hyperfocalDistanceDiopters": 0.12162932,
+        "afAvailableModes": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "focusType": "MOTOR",
+        "oisModes": [
+          0,
+          1
+        ],
+        "eisModes": [
+          0
+        ]
+      },
+      "exposure": {
+        "isoMin": 50,
+        "isoMax": 12800,
+        "exposureMinNs": 42456,
+        "exposureMaxNs": 49640587500,
+        "exposureMaxSeconds": 49.6406
+      },
+      "noiseProfile": null,
+      "mandatoryStreamCombinations": [
+        "Simple preview, GPU video processing, or no-preview video recording: PRIV@4096x3072",
+        "No-viewfinder still image capture: JPEG@4096x3072",
+        "In-application video/image processing: YUV@4096x3072",
+        "Standard still imaging: PRIV@1920x1080 + JPEG@4096x3072",
+        "In-app processing plus still capture: YUV@1920x1080 + JPEG@4096x3072",
+        "Standard recording: PRIV@1920x1080 + PRIV@1920x1080",
+        "Preview plus in-app processing: PRIV@1920x1080 + YUV@1920x1080",
+        "Still capture plus in-app processing: PRIV@1920x1080 + YUV@1920x1080 + JPEG@4096x3072",
+        "High-resolution video recording with preview: PRIV@1920x1080 + PRIV@3840x2160",
+        "High-resolution in-app video processing with preview: PRIV@1920x1080 + YUV@3840x2160",
+        "Two-input in-app video processing: YUV@1920x1080 + YUV@3840x2160",
+        "High-resolution recording with video snapshot: PRIV@1920x1080 + PRIV@3840x2160 + JPEG@3840x2160",
+        "High-resolution in-app processing with video snapshot: PRIV@1920x1080 + YUV@3840x2160 + JPEG@3840x2160",
+        "Two-input in-app processing with still capture: YUV@1920x1080 + YUV@1920x1080 + JPEG@4096x3072",
+        "No-viewfinder still image reprocessing: PRIV@4096x3072 + PRIV@4096x3072 + JPEG@4096x3072",
+        "ZSL(Zero-Shutter-Lag) still imaging: PRIV@4096x3072 + PRIV@4096x3072 + PRIV@1920x1080 + JPEG@4096x3072",
+        "ZSL still and in-app processing imaging: PRIV@4096x3072 + PRIV@4096x3072 + YUV@1920x1080 + JPEG@4096x3072",
+        "ZSL in-app processing with still capture: PRIV@4096x3072 + PRIV@4096x3072 + YUV@1920x1080 + YUV@1920x1080 + JPEG@4096x3072",
+        "No-viewfinder still image reprocessing: YUV@4096x3072 + YUV@4096x3072 + JPEG@4096x3072",
+        "ZSL(Zero-Shutter-Lag) still imaging: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080 + JPEG@4096x3072",
+        "ZSL still and in-app processing imaging: YUV@4096x3072 + YUV@4096x3072 + YUV@1920x1080 + JPEG@4096x3072",
+        "ZSL in-app processing with still capture: YUV@4096x3072 + YUV@4096x3072 + YUV@1920x1080 + YUV@1920x1080 + JPEG@4096x3072",
+        "Maximum-resolution GPU processing with preview: PRIV@1920x1080 + PRIV@4096x3072",
+        "Maximum-resolution in-app processing with preview: PRIV@1920x1080 + YUV@4096x3072",
+        "Maximum-resolution two-input in-app processsing: YUV@1920x1080 + YUV@4096x3072",
+        "Maximum-resolution GPU processing with preview: PRIV@4096x3072 + PRIV@4096x3072",
+        "Maximum-resolution in-app processing with preview: PRIV@4096x3072 + YUV@4096x3072",
+        "Maximum-resolution two-input in-app processing: YUV@4096x3072 + YUV@4096x3072",
+        "Video recording with maximum-size video snapshot: PRIV@1920x1080 + PRIV@1920x1080 + JPEG@4096x3072",
+        "Standard video recording plus maximum-resolution in-app processing: YUV@640x480 + PRIV@1920x1080 + YUV@4096x3072",
+        "Preview plus two-input maximum-resolution in-app processing: YUV@640x480 + YUV@1920x1080 + YUV@4096x3072",
+        "High-resolution ZSL in-app video processing with regular preview: PRIV@4096x3072 + PRIV@4096x3072 + PRIV@1920x1080 + YUV@3840x2160",
+        "Maximum-resolution ZSL in-app processing with regular preview: PRIV@4096x3072 + PRIV@4096x3072 + PRIV@1920x1080 + YUV@4096x3072",
+        "Maximum-resolution two-input ZSL in-app processing: PRIV@4096x3072 + PRIV@4096x3072 + YUV@1920x1080 + YUV@4096x3072",
+        "ZSL still capture and in-app processing: PRIV@4096x3072 + PRIV@4096x3072 + PRIV@1920x1080 + YUV@1920x1080 + JPEG@4096x3072",
+        "Maximum-resolution multi-frame image fusion in-app processing with regular preview: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080",
+        "Maximum-resolution multi-frame image fusion two-input in-app processing: YUV@4096x3072 + YUV@4096x3072 + YUV@1920x1080",
+        "High-resolution ZSL in-app video processing with regular preview: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080 + YUV@3840x2160",
+        "ZSL still capture and in-app processing: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080 + YUV@1920x1080 + JPEG@4096x3072",
+        "No-preview DNG capture: RAW_SENSOR@4096x3072",
+        "Standard DNG capture: PRIV@1920x1080 + RAW_SENSOR@4096x3072",
+        "In-app processing plus DNG capture: YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Video recording with DNG capture: PRIV@1920x1080 + PRIV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Preview with in-app processing and DNG capture: PRIV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Two-input in-app processing plus DNG capture: YUV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Still capture with simultaneous JPEG and DNG: PRIV@1920x1080 + JPEG@4096x3072 + RAW_SENSOR@4096x3072",
+        "In-app processing with simultaneous JPEG and DNG: YUV@1920x1080 + JPEG@4096x3072 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL in-app processing and DNG capture: PRIV@4096x3072 + PRIV@4096x3072 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL in-app processing and preview with DNG capture: PRIV@4096x3072 + PRIV@4096x3072 + PRIV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL two-input in-app processing and DNG capture: PRIV@4096x3072 + PRIV@4096x3072 + YUV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL still capture and preview with DNG capture: PRIV@4096x3072 + PRIV@4096x3072 + PRIV@1920x1080 + JPEG@4096x3072 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL in-app processing with still capture and DNG capture: PRIV@4096x3072 + PRIV@4096x3072 + YUV@1920x1080 + JPEG@4096x3072 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL in-app processing and DNG capture: YUV@4096x3072 + YUV@4096x3072 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL in-app processing and preview with DNG capture: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL two-input in-app processing and DNG capture: YUV@4096x3072 + YUV@4096x3072 + YUV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL still capture and preview with DNG capture: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080 + JPEG@4096x3072 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL in-app processing with still capture and DNG capture: YUV@4096x3072 + YUV@4096x3072 + YUV@1920x1080 + JPEG@4096x3072 + RAW_SENSOR@4096x3072",
+        "In-app viewfinder analysis with dynamic selection of output format: PRIV@1920x1080 + PRIV@640x480 + YUV@4096x3072 + RAW_SENSOR@4096x3072",
+        "In-app viewfinder analysis with dynamic selection of output format: PRIV@1920x1080 + PRIV@640x480 + JPEG@4096x3072 + RAW_SENSOR@4096x3072",
+        "In-app viewfinder analysis with ZSL, RAW, and JPEG reprocessing output: PRIV@4096x3072 + PRIV@4096x3072 + PRIV@1920x1080 + PRIV@640x480 + RAW_SENSOR@4096x3072 + JPEG@4096x3072",
+        "In-app viewfinder analysis with ZSL and RAW: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080 + PRIV@640x480 + RAW_SENSOR@4096x3072",
+        "In-app viewfinder analysis with ZSL, RAW, and JPEG reprocessing output: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080 + PRIV@640x480 + RAW_SENSOR@4096x3072 + JPEG@4096x3072"
+      ]
+    },
+    {
+      "id": "1",
+      "exposed": true,
+      "discovery": "LISTED",
+      "logicalParentIds": [],
+      "physicalChildIds": [],
+      "facing": "FRONT",
+      "hardwareLevel": "LEVEL_3",
+      "capabilities": [
+        "BACKWARD_COMPATIBLE",
+        "RAW",
+        "YUV_REPROCESSING",
+        "PRIVATE_REPROCESSING",
+        "READ_SENSOR_SETTINGS",
+        "MANUAL_SENSOR",
+        "BURST_CAPTURE",
+        "MANUAL_POST_PROCESSING",
+        "STREAM_USE_CASE"
+      ],
+      "sensor": {
+        "pixelArray": "4080x3072",
+        "activeArray": "4080x3072",
+        "physicalSizeMm": [
+          5.2224,
+          3.93216
+        ],
+        "binningFactor": "2x2",
+        "cfaArrangement": "GBRG",
+        "whiteLevel": 1023,
+        "blackLevelPattern": [
+          64,
+          64,
+          64,
+          64
+        ],
+        "timestampSource": "REALTIME",
+        "maxFrameDurationNs": 480313760
+      },
+      "raw": {
+        "sizes": [
+          "4080x3072",
+          "3840x2160"
+        ],
+        "maxSize": "4080x3072",
+        "megapixels": 12.53,
+        "naivePixelPitchUm": 1.28,
+        "effectivePixelPitchUm": 1.28,
+        "binningRatio": 1.0,
+        "rawSmallerThanPixelArray": false,
+        "sensorBinsInternally": true
+      },
+      "lens": {
+        "focalLengthsMm": [
+          3.61
+        ],
+        "aperturesF": [
+          2.2
+        ],
+        "horizontalFovDeg": [
+          71.76
+        ],
+        "focusDistanceCalibration": "APPROXIMATE",
+        "minimumFocusDistanceDiopters": 0.0,
+        "hyperfocalDistanceDiopters": 0.21608184,
+        "afAvailableModes": [
+          0
+        ],
+        "focusType": "FIXED",
+        "oisModes": [
+          0,
+          1
+        ],
+        "eisModes": [
+          0
+        ]
+      },
+      "exposure": {
+        "isoMin": 50,
+        "isoMax": 3200,
+        "exposureMinNs": 52085,
+        "exposureMaxNs": 480240480,
+        "exposureMaxSeconds": 0.4802
+      },
+      "noiseProfile": null,
+      "mandatoryStreamCombinations": [
+        "Simple preview, GPU video processing, or no-preview video recording: PRIV@4080x3072",
+        "No-viewfinder still image capture: JPEG@4080x3072",
+        "In-application video/image processing: YUV@4080x3072",
+        "Standard still imaging: PRIV@1920x1080 + JPEG@4080x3072",
+        "In-app processing plus still capture: YUV@1920x1080 + JPEG@4080x3072",
+        "Standard recording: PRIV@1920x1080 + PRIV@1920x1080",
+        "Preview plus in-app processing: PRIV@1920x1080 + YUV@1920x1080",
+        "Still capture plus in-app processing: PRIV@1920x1080 + YUV@1920x1080 + JPEG@4080x3072",
+        "High-resolution video recording with preview: PRIV@1920x1080 + PRIV@3840x2160",
+        "High-resolution in-app video processing with preview: PRIV@1920x1080 + YUV@3840x2160",
+        "Two-input in-app video processing: YUV@1920x1080 + YUV@3840x2160",
+        "High-resolution recording with video snapshot: PRIV@1920x1080 + PRIV@3840x2160 + JPEG@3840x2160",
+        "High-resolution in-app processing with video snapshot: PRIV@1920x1080 + YUV@3840x2160 + JPEG@3840x2160",
+        "Two-input in-app processing with still capture: YUV@1920x1080 + YUV@1920x1080 + JPEG@4080x3072",
+        "No-viewfinder still image reprocessing: PRIV@4080x3072 + PRIV@4080x3072 + JPEG@4080x3072",
+        "ZSL(Zero-Shutter-Lag) still imaging: PRIV@4080x3072 + PRIV@4080x3072 + PRIV@1920x1080 + JPEG@4080x3072",
+        "ZSL still and in-app processing imaging: PRIV@4080x3072 + PRIV@4080x3072 + YUV@1920x1080 + JPEG@4080x3072",
+        "ZSL in-app processing with still capture: PRIV@4080x3072 + PRIV@4080x3072 + YUV@1920x1080 + YUV@1920x1080 + JPEG@4080x3072",
+        "No-viewfinder still image reprocessing: YUV@4080x3072 + YUV@4080x3072 + JPEG@4080x3072",
+        "ZSL(Zero-Shutter-Lag) still imaging: YUV@4080x3072 + YUV@4080x3072 + PRIV@1920x1080 + JPEG@4080x3072",
+        "ZSL still and in-app processing imaging: YUV@4080x3072 + YUV@4080x3072 + YUV@1920x1080 + JPEG@4080x3072",
+        "ZSL in-app processing with still capture: YUV@4080x3072 + YUV@4080x3072 + YUV@1920x1080 + YUV@1920x1080 + JPEG@4080x3072",
+        "Maximum-resolution GPU processing with preview: PRIV@1920x1080 + PRIV@4080x3072",
+        "Maximum-resolution in-app processing with preview: PRIV@1920x1080 + YUV@4080x3072",
+        "Maximum-resolution two-input in-app processsing: YUV@1920x1080 + YUV@4080x3072",
+        "Maximum-resolution GPU processing with preview: PRIV@4080x3072 + PRIV@4080x3072",
+        "Maximum-resolution in-app processing with preview: PRIV@4080x3072 + YUV@4080x3072",
+        "Maximum-resolution two-input in-app processing: YUV@4080x3072 + YUV@4080x3072",
+        "Video recording with maximum-size video snapshot: PRIV@1920x1080 + PRIV@1920x1080 + JPEG@4080x3072",
+        "Standard video recording plus maximum-resolution in-app processing: YUV@640x480 + PRIV@1920x1080 + YUV@4080x3072",
+        "Preview plus two-input maximum-resolution in-app processing: YUV@640x480 + YUV@1920x1080 + YUV@4080x3072",
+        "High-resolution ZSL in-app video processing with regular preview: PRIV@4080x3072 + PRIV@4080x3072 + PRIV@1920x1080 + YUV@3840x2160",
+        "Maximum-resolution ZSL in-app processing with regular preview: PRIV@4080x3072 + PRIV@4080x3072 + PRIV@1920x1080 + YUV@4080x3072",
+        "Maximum-resolution two-input ZSL in-app processing: PRIV@4080x3072 + PRIV@4080x3072 + YUV@1920x1080 + YUV@4080x3072",
+        "ZSL still capture and in-app processing: PRIV@4080x3072 + PRIV@4080x3072 + PRIV@1920x1080 + YUV@1920x1080 + JPEG@4080x3072",
+        "Maximum-resolution multi-frame image fusion in-app processing with regular preview: YUV@4080x3072 + YUV@4080x3072 + PRIV@1920x1080",
+        "Maximum-resolution multi-frame image fusion two-input in-app processing: YUV@4080x3072 + YUV@4080x3072 + YUV@1920x1080",
+        "High-resolution ZSL in-app video processing with regular preview: YUV@4080x3072 + YUV@4080x3072 + PRIV@1920x1080 + YUV@3840x2160",
+        "ZSL still capture and in-app processing: YUV@4080x3072 + YUV@4080x3072 + PRIV@1920x1080 + YUV@1920x1080 + JPEG@4080x3072",
+        "No-preview DNG capture: RAW_SENSOR@4080x3072",
+        "Standard DNG capture: PRIV@1920x1080 + RAW_SENSOR@4080x3072",
+        "In-app processing plus DNG capture: YUV@1920x1080 + RAW_SENSOR@4080x3072",
+        "Video recording with DNG capture: PRIV@1920x1080 + PRIV@1920x1080 + RAW_SENSOR@4080x3072",
+        "Preview with in-app processing and DNG capture: PRIV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4080x3072",
+        "Two-input in-app processing plus DNG capture: YUV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4080x3072",
+        "Still capture with simultaneous JPEG and DNG: PRIV@1920x1080 + JPEG@4080x3072 + RAW_SENSOR@4080x3072",
+        "In-app processing with simultaneous JPEG and DNG: YUV@1920x1080 + JPEG@4080x3072 + RAW_SENSOR@4080x3072",
+        "Mutually exclusive ZSL in-app processing and DNG capture: PRIV@4080x3072 + PRIV@4080x3072 + YUV@1920x1080 + RAW_SENSOR@4080x3072",
+        "Mutually exclusive ZSL in-app processing and preview with DNG capture: PRIV@4080x3072 + PRIV@4080x3072 + PRIV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4080x3072",
+        "Mutually exclusive ZSL two-input in-app processing and DNG capture: PRIV@4080x3072 + PRIV@4080x3072 + YUV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4080x3072",
+        "Mutually exclusive ZSL still capture and preview with DNG capture: PRIV@4080x3072 + PRIV@4080x3072 + PRIV@1920x1080 + JPEG@4080x3072 + RAW_SENSOR@4080x3072",
+        "Mutually exclusive ZSL in-app processing with still capture and DNG capture: PRIV@4080x3072 + PRIV@4080x3072 + YUV@1920x1080 + JPEG@4080x3072 + RAW_SENSOR@4080x3072",
+        "Mutually exclusive ZSL in-app processing and DNG capture: YUV@4080x3072 + YUV@4080x3072 + YUV@1920x1080 + RAW_SENSOR@4080x3072",
+        "Mutually exclusive ZSL in-app processing and preview with DNG capture: YUV@4080x3072 + YUV@4080x3072 + PRIV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4080x3072",
+        "Mutually exclusive ZSL two-input in-app processing and DNG capture: YUV@4080x3072 + YUV@4080x3072 + YUV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4080x3072",
+        "Mutually exclusive ZSL still capture and preview with DNG capture: YUV@4080x3072 + YUV@4080x3072 + PRIV@1920x1080 + JPEG@4080x3072 + RAW_SENSOR@4080x3072",
+        "Mutually exclusive ZSL in-app processing with still capture and DNG capture: YUV@4080x3072 + YUV@4080x3072 + YUV@1920x1080 + JPEG@4080x3072 + RAW_SENSOR@4080x3072",
+        "In-app viewfinder analysis with dynamic selection of output format: PRIV@1920x1080 + PRIV@640x480 + YUV@4080x3072 + RAW_SENSOR@4080x3072",
+        "In-app viewfinder analysis with dynamic selection of output format: PRIV@1920x1080 + PRIV@640x480 + JPEG@4080x3072 + RAW_SENSOR@4080x3072",
+        "In-app viewfinder analysis with ZSL, RAW, and JPEG reprocessing output: PRIV@4080x3072 + PRIV@4080x3072 + PRIV@1920x1080 + PRIV@640x480 + RAW_SENSOR@4080x3072 + JPEG@4080x3072",
+        "In-app viewfinder analysis with ZSL and RAW: YUV@4080x3072 + YUV@4080x3072 + PRIV@1920x1080 + PRIV@640x480 + RAW_SENSOR@4080x3072",
+        "In-app viewfinder analysis with ZSL, RAW, and JPEG reprocessing output: YUV@4080x3072 + YUV@4080x3072 + PRIV@1920x1080 + PRIV@640x480 + RAW_SENSOR@4080x3072 + JPEG@4080x3072"
+      ]
+    },
+    {
+      "id": "2",
+      "exposed": false,
+      "discovery": "HIDDEN",
+      "logicalParentIds": [
+        "4"
+      ],
+      "physicalChildIds": [],
+      "facing": "BACK",
+      "hardwareLevel": "LEVEL_3",
+      "capabilities": [
+        "BACKWARD_COMPATIBLE",
+        "RAW",
+        "YUV_REPROCESSING",
+        "PRIVATE_REPROCESSING",
+        "READ_SENSOR_SETTINGS",
+        "MANUAL_SENSOR",
+        "BURST_CAPTURE",
+        "MANUAL_POST_PROCESSING",
+        "STREAM_USE_CASE"
+      ],
+      "sensor": {
+        "pixelArray": "3280x2464",
+        "activeArray": "3280x2464",
+        "physicalSizeMm": [
+          3.6736,
+          2.75968
+        ],
+        "binningFactor": null,
+        "cfaArrangement": "RGGB",
+        "whiteLevel": 1023,
+        "blackLevelPattern": [
+          64,
+          64,
+          64,
+          64
+        ],
+        "timestampSource": "REALTIME",
+        "maxFrameDurationNs": 34882553970
+      },
+      "raw": {
+        "sizes": [
+          "3280x2464",
+          "2400x1800"
+        ],
+        "maxSize": "3280x2464",
+        "megapixels": 8.08,
+        "naivePixelPitchUm": 1.12,
+        "effectivePixelPitchUm": 1.12,
+        "binningRatio": 1.0,
+        "rawSmallerThanPixelArray": false,
+        "sensorBinsInternally": false
+      },
+      "lens": {
+        "focalLengthsMm": [
+          1.64
+        ],
+        "aperturesF": [
+          2.2
+        ],
+        "horizontalFovDeg": [
+          96.48
+        ],
+        "focusDistanceCalibration": "APPROXIMATE",
+        "minimumFocusDistanceDiopters": 0.0,
+        "hyperfocalDistanceDiopters": 1.8322427,
+        "afAvailableModes": [
+          0
+        ],
+        "focusType": "FIXED",
+        "oisModes": [
+          0,
+          1
+        ],
+        "eisModes": [
+          0
+        ]
+      },
+      "exposure": {
+        "isoMin": 50,
+        "isoMax": 800,
+        "exposureMinNs": 12808,
+        "exposureMaxNs": 34882425900,
+        "exposureMaxSeconds": 34.8824
+      },
+      "noiseProfile": null,
+      "mandatoryStreamCombinations": [
+        "Simple preview, GPU video processing, or no-preview video recording: PRIV@3280x2464",
+        "No-viewfinder still image capture: JPEG@3280x2464",
+        "In-application video/image processing: YUV@3280x2464",
+        "Standard still imaging: PRIV@1920x1080 + JPEG@3280x2464",
+        "In-app processing plus still capture: YUV@1920x1080 + JPEG@3280x2464",
+        "Standard recording: PRIV@1920x1080 + PRIV@1920x1080",
+        "Preview plus in-app processing: PRIV@1920x1080 + YUV@1920x1080",
+        "Still capture plus in-app processing: PRIV@1920x1080 + YUV@1920x1080 + JPEG@3280x2464",
+        "High-resolution video recording with preview: PRIV@1920x1080 + PRIV@3280x1846",
+        "High-resolution in-app video processing with preview: PRIV@1920x1080 + YUV@3280x1846",
+        "Two-input in-app video processing: YUV@1920x1080 + YUV@3280x1846",
+        "High-resolution recording with video snapshot: PRIV@1920x1080 + PRIV@3280x1846 + JPEG@3280x1846",
+        "High-resolution in-app processing with video snapshot: PRIV@1920x1080 + YUV@3280x1846 + JPEG@3280x1846",
+        "Two-input in-app processing with still capture: YUV@1920x1080 + YUV@1920x1080 + JPEG@3280x2464",
+        "No-viewfinder still image reprocessing: PRIV@3280x2464 + PRIV@3280x2464 + JPEG@3280x2464",
+        "ZSL(Zero-Shutter-Lag) still imaging: PRIV@3280x2464 + PRIV@3280x2464 + PRIV@1920x1080 + JPEG@3280x2464",
+        "ZSL still and in-app processing imaging: PRIV@3280x2464 + PRIV@3280x2464 + YUV@1920x1080 + JPEG@3280x2464",
+        "ZSL in-app processing with still capture: PRIV@3280x2464 + PRIV@3280x2464 + YUV@1920x1080 + YUV@1920x1080 + JPEG@3280x2464",
+        "No-viewfinder still image reprocessing: YUV@3280x2464 + YUV@3280x2464 + JPEG@3280x2464",
+        "ZSL(Zero-Shutter-Lag) still imaging: YUV@3280x2464 + YUV@3280x2464 + PRIV@1920x1080 + JPEG@3280x2464",
+        "ZSL still and in-app processing imaging: YUV@3280x2464 + YUV@3280x2464 + YUV@1920x1080 + JPEG@3280x2464",
+        "ZSL in-app processing with still capture: YUV@3280x2464 + YUV@3280x2464 + YUV@1920x1080 + YUV@1920x1080 + JPEG@3280x2464",
+        "Maximum-resolution GPU processing with preview: PRIV@1920x1080 + PRIV@3280x2464",
+        "Maximum-resolution in-app processing with preview: PRIV@1920x1080 + YUV@3280x2464",
+        "Maximum-resolution two-input in-app processsing: YUV@1920x1080 + YUV@3280x2464",
+        "Maximum-resolution GPU processing with preview: PRIV@3280x2464 + PRIV@3280x2464",
+        "Maximum-resolution in-app processing with preview: PRIV@3280x2464 + YUV@3280x2464",
+        "Maximum-resolution two-input in-app processing: YUV@3280x2464 + YUV@3280x2464",
+        "Video recording with maximum-size video snapshot: PRIV@1920x1080 + PRIV@1920x1080 + JPEG@3280x2464",
+        "Standard video recording plus maximum-resolution in-app processing: YUV@640x480 + PRIV@1920x1080 + YUV@3280x2464",
+        "Preview plus two-input maximum-resolution in-app processing: YUV@640x480 + YUV@1920x1080 + YUV@3280x2464",
+        "High-resolution ZSL in-app video processing with regular preview: PRIV@3280x2464 + PRIV@3280x2464 + PRIV@1920x1080 + YUV@3280x1846",
+        "Maximum-resolution ZSL in-app processing with regular preview: PRIV@3280x2464 + PRIV@3280x2464 + PRIV@1920x1080 + YUV@3280x2464",
+        "Maximum-resolution two-input ZSL in-app processing: PRIV@3280x2464 + PRIV@3280x2464 + YUV@1920x1080 + YUV@3280x2464",
+        "ZSL still capture and in-app processing: PRIV@3280x2464 + PRIV@3280x2464 + PRIV@1920x1080 + YUV@1920x1080 + JPEG@3280x2464",
+        "Maximum-resolution multi-frame image fusion in-app processing with regular preview: YUV@3280x2464 + YUV@3280x2464 + PRIV@1920x1080",
+        "Maximum-resolution multi-frame image fusion two-input in-app processing: YUV@3280x2464 + YUV@3280x2464 + YUV@1920x1080",
+        "High-resolution ZSL in-app video processing with regular preview: YUV@3280x2464 + YUV@3280x2464 + PRIV@1920x1080 + YUV@3280x1846",
+        "ZSL still capture and in-app processing: YUV@3280x2464 + YUV@3280x2464 + PRIV@1920x1080 + YUV@1920x1080 + JPEG@3280x2464",
+        "No-preview DNG capture: RAW_SENSOR@3280x2464",
+        "Standard DNG capture: PRIV@1920x1080 + RAW_SENSOR@3280x2464",
+        "In-app processing plus DNG capture: YUV@1920x1080 + RAW_SENSOR@3280x2464",
+        "Video recording with DNG capture: PRIV@1920x1080 + PRIV@1920x1080 + RAW_SENSOR@3280x2464",
+        "Preview with in-app processing and DNG capture: PRIV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@3280x2464",
+        "Two-input in-app processing plus DNG capture: YUV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@3280x2464",
+        "Still capture with simultaneous JPEG and DNG: PRIV@1920x1080 + JPEG@3280x2464 + RAW_SENSOR@3280x2464",
+        "In-app processing with simultaneous JPEG and DNG: YUV@1920x1080 + JPEG@3280x2464 + RAW_SENSOR@3280x2464",
+        "Mutually exclusive ZSL in-app processing and DNG capture: PRIV@3280x2464 + PRIV@3280x2464 + YUV@1920x1080 + RAW_SENSOR@3280x2464",
+        "Mutually exclusive ZSL in-app processing and preview with DNG capture: PRIV@3280x2464 + PRIV@3280x2464 + PRIV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@3280x2464",
+        "Mutually exclusive ZSL two-input in-app processing and DNG capture: PRIV@3280x2464 + PRIV@3280x2464 + YUV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@3280x2464",
+        "Mutually exclusive ZSL still capture and preview with DNG capture: PRIV@3280x2464 + PRIV@3280x2464 + PRIV@1920x1080 + JPEG@3280x2464 + RAW_SENSOR@3280x2464",
+        "Mutually exclusive ZSL in-app processing with still capture and DNG capture: PRIV@3280x2464 + PRIV@3280x2464 + YUV@1920x1080 + JPEG@3280x2464 + RAW_SENSOR@3280x2464",
+        "Mutually exclusive ZSL in-app processing and DNG capture: YUV@3280x2464 + YUV@3280x2464 + YUV@1920x1080 + RAW_SENSOR@3280x2464",
+        "Mutually exclusive ZSL in-app processing and preview with DNG capture: YUV@3280x2464 + YUV@3280x2464 + PRIV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@3280x2464",
+        "Mutually exclusive ZSL two-input in-app processing and DNG capture: YUV@3280x2464 + YUV@3280x2464 + YUV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@3280x2464",
+        "Mutually exclusive ZSL still capture and preview with DNG capture: YUV@3280x2464 + YUV@3280x2464 + PRIV@1920x1080 + JPEG@3280x2464 + RAW_SENSOR@3280x2464",
+        "Mutually exclusive ZSL in-app processing with still capture and DNG capture: YUV@3280x2464 + YUV@3280x2464 + YUV@1920x1080 + JPEG@3280x2464 + RAW_SENSOR@3280x2464",
+        "In-app viewfinder analysis with dynamic selection of output format: PRIV@1920x1080 + PRIV@640x480 + YUV@3280x2464 + RAW_SENSOR@3280x2464",
+        "In-app viewfinder analysis with dynamic selection of output format: PRIV@1920x1080 + PRIV@640x480 + JPEG@3280x2464 + RAW_SENSOR@3280x2464",
+        "In-app viewfinder analysis with ZSL, RAW, and JPEG reprocessing output: PRIV@3280x2464 + PRIV@3280x2464 + PRIV@1920x1080 + PRIV@640x480 + RAW_SENSOR@3280x2464 + JPEG@3280x2464",
+        "In-app viewfinder analysis with ZSL and RAW: YUV@3280x2464 + YUV@3280x2464 + PRIV@1920x1080 + PRIV@640x480 + RAW_SENSOR@3280x2464",
+        "In-app viewfinder analysis with ZSL, RAW, and JPEG reprocessing output: YUV@3280x2464 + YUV@3280x2464 + PRIV@1920x1080 + PRIV@640x480 + RAW_SENSOR@3280x2464 + JPEG@3280x2464"
+      ]
+    },
+    {
+      "id": "3",
+      "exposed": false,
+      "discovery": "HIDDEN",
+      "logicalParentIds": [
+        "4"
+      ],
+      "physicalChildIds": [],
+      "facing": "BACK",
+      "hardwareLevel": "LEVEL_3",
+      "capabilities": [
+        "BACKWARD_COMPATIBLE",
+        "CONSTRAINED_HIGH_SPEED_VIDEO",
+        "RAW",
+        "YUV_REPROCESSING",
+        "PRIVATE_REPROCESSING",
+        "READ_SENSOR_SETTINGS",
+        "MANUAL_SENSOR",
+        "BURST_CAPTURE",
+        "MANUAL_POST_PROCESSING",
+        "STREAM_USE_CASE"
+      ],
+      "sensor": {
+        "pixelArray": "4096x3072",
+        "activeArray": "4096x3072",
+        "physicalSizeMm": [
+          6.5536,
+          4.9152
+        ],
+        "binningFactor": "2x2",
+        "cfaArrangement": "GRBG",
+        "whiteLevel": 1023,
+        "blackLevelPattern": [
+          64,
+          64,
+          64,
+          64
+        ],
+        "timestampSource": "REALTIME",
+        "maxFrameDurationNs": 36072341116
+      },
+      "raw": {
+        "sizes": [
+          "4096x3072"
+        ],
+        "maxSize": "4096x3072",
+        "megapixels": 12.58,
+        "naivePixelPitchUm": 1.6,
+        "effectivePixelPitchUm": 1.6,
+        "binningRatio": 1.0,
+        "rawSmallerThanPixelArray": false,
+        "sensorBinsInternally": true
+      },
+      "lens": {
+        "focalLengthsMm": [
+          13.3
+        ],
+        "aperturesF": [
+          2.55
+        ],
+        "horizontalFovDeg": [
+          27.68
+        ],
+        "focusDistanceCalibration": "APPROXIMATE",
+        "minimumFocusDistanceDiopters": 6.6666665,
+        "hyperfocalDistanceDiopters": 0.023065181,
+        "afAvailableModes": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "focusType": "MOTOR",
+        "oisModes": [
+          0,
+          1
+        ],
+        "eisModes": [
+          0
+        ]
+      },
+      "exposure": {
+        "isoMin": 50,
+        "isoMax": 3200,
+        "exposureMinNs": 102400,
+        "exposureMaxNs": 36072046500,
+        "exposureMaxSeconds": 36.072
+      },
+      "noiseProfile": null,
+      "mandatoryStreamCombinations": [
+        "Simple preview, GPU video processing, or no-preview video recording: PRIV@4096x3072",
+        "No-viewfinder still image capture: JPEG@4096x3072",
+        "In-application video/image processing: YUV@4096x3072",
+        "Standard still imaging: PRIV@1920x1080 + JPEG@4096x3072",
+        "In-app processing plus still capture: YUV@1920x1080 + JPEG@4096x3072",
+        "Standard recording: PRIV@1920x1080 + PRIV@1920x1080",
+        "Preview plus in-app processing: PRIV@1920x1080 + YUV@1920x1080",
+        "Still capture plus in-app processing: PRIV@1920x1080 + YUV@1920x1080 + JPEG@4096x3072",
+        "High-resolution video recording with preview: PRIV@1920x1080 + PRIV@3840x2160",
+        "High-resolution in-app video processing with preview: PRIV@1920x1080 + YUV@3840x2160",
+        "Two-input in-app video processing: YUV@1920x1080 + YUV@3840x2160",
+        "High-resolution recording with video snapshot: PRIV@1920x1080 + PRIV@3840x2160 + JPEG@3840x2160",
+        "High-resolution in-app processing with video snapshot: PRIV@1920x1080 + YUV@3840x2160 + JPEG@3840x2160",
+        "Two-input in-app processing with still capture: YUV@1920x1080 + YUV@1920x1080 + JPEG@4096x3072",
+        "No-viewfinder still image reprocessing: PRIV@4096x3072 + PRIV@4096x3072 + JPEG@4096x3072",
+        "ZSL(Zero-Shutter-Lag) still imaging: PRIV@4096x3072 + PRIV@4096x3072 + PRIV@1920x1080 + JPEG@4096x3072",
+        "ZSL still and in-app processing imaging: PRIV@4096x3072 + PRIV@4096x3072 + YUV@1920x1080 + JPEG@4096x3072",
+        "ZSL in-app processing with still capture: PRIV@4096x3072 + PRIV@4096x3072 + YUV@1920x1080 + YUV@1920x1080 + JPEG@4096x3072",
+        "No-viewfinder still image reprocessing: YUV@4096x3072 + YUV@4096x3072 + JPEG@4096x3072",
+        "ZSL(Zero-Shutter-Lag) still imaging: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080 + JPEG@4096x3072",
+        "ZSL still and in-app processing imaging: YUV@4096x3072 + YUV@4096x3072 + YUV@1920x1080 + JPEG@4096x3072",
+        "ZSL in-app processing with still capture: YUV@4096x3072 + YUV@4096x3072 + YUV@1920x1080 + YUV@1920x1080 + JPEG@4096x3072",
+        "Maximum-resolution GPU processing with preview: PRIV@1920x1080 + PRIV@4096x3072",
+        "Maximum-resolution in-app processing with preview: PRIV@1920x1080 + YUV@4096x3072",
+        "Maximum-resolution two-input in-app processsing: YUV@1920x1080 + YUV@4096x3072",
+        "Maximum-resolution GPU processing with preview: PRIV@4096x3072 + PRIV@4096x3072",
+        "Maximum-resolution in-app processing with preview: PRIV@4096x3072 + YUV@4096x3072",
+        "Maximum-resolution two-input in-app processing: YUV@4096x3072 + YUV@4096x3072",
+        "Video recording with maximum-size video snapshot: PRIV@1920x1080 + PRIV@1920x1080 + JPEG@4096x3072",
+        "Standard video recording plus maximum-resolution in-app processing: YUV@640x480 + PRIV@1920x1080 + YUV@4096x3072",
+        "Preview plus two-input maximum-resolution in-app processing: YUV@640x480 + YUV@1920x1080 + YUV@4096x3072",
+        "High-resolution ZSL in-app video processing with regular preview: PRIV@4096x3072 + PRIV@4096x3072 + PRIV@1920x1080 + YUV@3840x2160",
+        "Maximum-resolution ZSL in-app processing with regular preview: PRIV@4096x3072 + PRIV@4096x3072 + PRIV@1920x1080 + YUV@4096x3072",
+        "Maximum-resolution two-input ZSL in-app processing: PRIV@4096x3072 + PRIV@4096x3072 + YUV@1920x1080 + YUV@4096x3072",
+        "ZSL still capture and in-app processing: PRIV@4096x3072 + PRIV@4096x3072 + PRIV@1920x1080 + YUV@1920x1080 + JPEG@4096x3072",
+        "Maximum-resolution multi-frame image fusion in-app processing with regular preview: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080",
+        "Maximum-resolution multi-frame image fusion two-input in-app processing: YUV@4096x3072 + YUV@4096x3072 + YUV@1920x1080",
+        "High-resolution ZSL in-app video processing with regular preview: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080 + YUV@3840x2160",
+        "ZSL still capture and in-app processing: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080 + YUV@1920x1080 + JPEG@4096x3072",
+        "No-preview DNG capture: RAW_SENSOR@4096x3072",
+        "Standard DNG capture: PRIV@1920x1080 + RAW_SENSOR@4096x3072",
+        "In-app processing plus DNG capture: YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Video recording with DNG capture: PRIV@1920x1080 + PRIV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Preview with in-app processing and DNG capture: PRIV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Two-input in-app processing plus DNG capture: YUV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Still capture with simultaneous JPEG and DNG: PRIV@1920x1080 + JPEG@4096x3072 + RAW_SENSOR@4096x3072",
+        "In-app processing with simultaneous JPEG and DNG: YUV@1920x1080 + JPEG@4096x3072 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL in-app processing and DNG capture: PRIV@4096x3072 + PRIV@4096x3072 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL in-app processing and preview with DNG capture: PRIV@4096x3072 + PRIV@4096x3072 + PRIV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL two-input in-app processing and DNG capture: PRIV@4096x3072 + PRIV@4096x3072 + YUV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL still capture and preview with DNG capture: PRIV@4096x3072 + PRIV@4096x3072 + PRIV@1920x1080 + JPEG@4096x3072 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL in-app processing with still capture and DNG capture: PRIV@4096x3072 + PRIV@4096x3072 + YUV@1920x1080 + JPEG@4096x3072 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL in-app processing and DNG capture: YUV@4096x3072 + YUV@4096x3072 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL in-app processing and preview with DNG capture: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL two-input in-app processing and DNG capture: YUV@4096x3072 + YUV@4096x3072 + YUV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL still capture and preview with DNG capture: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080 + JPEG@4096x3072 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL in-app processing with still capture and DNG capture: YUV@4096x3072 + YUV@4096x3072 + YUV@1920x1080 + JPEG@4096x3072 + RAW_SENSOR@4096x3072",
+        "In-app viewfinder analysis with dynamic selection of output format: PRIV@1920x1080 + PRIV@640x480 + YUV@4096x3072 + RAW_SENSOR@4096x3072",
+        "In-app viewfinder analysis with dynamic selection of output format: PRIV@1920x1080 + PRIV@640x480 + JPEG@4096x3072 + RAW_SENSOR@4096x3072",
+        "In-app viewfinder analysis with ZSL, RAW, and JPEG reprocessing output: PRIV@4096x3072 + PRIV@4096x3072 + PRIV@1920x1080 + PRIV@640x480 + RAW_SENSOR@4096x3072 + JPEG@4096x3072",
+        "In-app viewfinder analysis with ZSL and RAW: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080 + PRIV@640x480 + RAW_SENSOR@4096x3072",
+        "In-app viewfinder analysis with ZSL, RAW, and JPEG reprocessing output: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080 + PRIV@640x480 + RAW_SENSOR@4096x3072 + JPEG@4096x3072"
+      ]
+    },
+    {
+      "id": "4",
+      "exposed": false,
+      "discovery": "HIDDEN",
+      "logicalParentIds": [],
+      "physicalChildIds": [
+        "0",
+        "2",
+        "3"
+      ],
+      "facing": "BACK",
+      "hardwareLevel": "LEVEL_3",
+      "capabilities": [
+        "BACKWARD_COMPATIBLE",
+        "CONSTRAINED_HIGH_SPEED_VIDEO",
+        "RAW",
+        "YUV_REPROCESSING",
+        "PRIVATE_REPROCESSING",
+        "READ_SENSOR_SETTINGS",
+        "MANUAL_SENSOR",
+        "BURST_CAPTURE",
+        "MANUAL_POST_PROCESSING",
+        "STREAM_USE_CASE",
+        "LOGICAL_MULTI_CAMERA"
+      ],
+      "sensor": {
+        "pixelArray": "4096x3072",
+        "activeArray": "4096x3072",
+        "physicalSizeMm": [
+          8.192,
+          6.144
+        ],
+        "binningFactor": null,
+        "cfaArrangement": "GRBG",
+        "whiteLevel": 1023,
+        "blackLevelPattern": [
+          64,
+          64,
+          64,
+          64
+        ],
+        "timestampSource": "REALTIME",
+        "maxFrameDurationNs": 49640772500
+      },
+      "raw": {
+        "sizes": [
+          "4096x3072",
+          "2400x1800"
+        ],
+        "maxSize": "4096x3072",
+        "megapixels": 12.58,
+        "naivePixelPitchUm": 2.0,
+        "effectivePixelPitchUm": 2.0,
+        "binningRatio": 1.0,
+        "rawSmallerThanPixelArray": false,
+        "sensorBinsInternally": false
+      },
+      "lens": {
+        "focalLengthsMm": [
+          5.56
+        ],
+        "aperturesF": [
+          1.88
+        ],
+        "horizontalFovDeg": [
+          72.76
+        ],
+        "focusDistanceCalibration": "APPROXIMATE",
+        "minimumFocusDistanceDiopters": 10.0,
+        "hyperfocalDistanceDiopters": 0.12162932,
+        "afAvailableModes": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "focusType": "MOTOR",
+        "oisModes": [
+          0,
+          1
+        ],
+        "eisModes": [
+          0
+        ]
+      },
+      "exposure": {
+        "isoMin": 50,
+        "isoMax": 12800,
+        "exposureMinNs": 102400,
+        "exposureMaxNs": 34882425900,
+        "exposureMaxSeconds": 34.8824
+      },
+      "noiseProfile": null,
+      "mandatoryStreamCombinations": [
+        "Simple preview, GPU video processing, or no-preview video recording: PRIV@4096x3072",
+        "No-viewfinder still image capture: JPEG@4096x3072",
+        "In-application video/image processing: YUV@4096x3072",
+        "Standard still imaging: PRIV@1920x1080 + JPEG@4096x3072",
+        "In-app processing plus still capture: YUV@1920x1080 + JPEG@4096x3072",
+        "Standard recording: PRIV@1920x1080 + PRIV@1920x1080",
+        "Preview plus in-app processing: PRIV@1920x1080 + YUV@1920x1080",
+        "Still capture plus in-app processing: PRIV@1920x1080 + YUV@1920x1080 + JPEG@4096x3072",
+        "High-resolution video recording with preview: PRIV@1920x1080 + PRIV@3840x2160",
+        "High-resolution in-app video processing with preview: PRIV@1920x1080 + YUV@3840x2160",
+        "Two-input in-app video processing: YUV@1920x1080 + YUV@3840x2160",
+        "High-resolution recording with video snapshot: PRIV@1920x1080 + PRIV@3840x2160 + JPEG@3840x2160",
+        "High-resolution in-app processing with video snapshot: PRIV@1920x1080 + YUV@3840x2160 + JPEG@3840x2160",
+        "Two-input in-app processing with still capture: YUV@1920x1080 + YUV@1920x1080 + JPEG@4096x3072",
+        "No-viewfinder still image reprocessing: PRIV@4096x3072 + PRIV@4096x3072 + JPEG@4096x3072",
+        "ZSL(Zero-Shutter-Lag) still imaging: PRIV@4096x3072 + PRIV@4096x3072 + PRIV@1920x1080 + JPEG@4096x3072",
+        "ZSL still and in-app processing imaging: PRIV@4096x3072 + PRIV@4096x3072 + YUV@1920x1080 + JPEG@4096x3072",
+        "ZSL in-app processing with still capture: PRIV@4096x3072 + PRIV@4096x3072 + YUV@1920x1080 + YUV@1920x1080 + JPEG@4096x3072",
+        "No-viewfinder still image reprocessing: YUV@4096x3072 + YUV@4096x3072 + JPEG@4096x3072",
+        "ZSL(Zero-Shutter-Lag) still imaging: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080 + JPEG@4096x3072",
+        "ZSL still and in-app processing imaging: YUV@4096x3072 + YUV@4096x3072 + YUV@1920x1080 + JPEG@4096x3072",
+        "ZSL in-app processing with still capture: YUV@4096x3072 + YUV@4096x3072 + YUV@1920x1080 + YUV@1920x1080 + JPEG@4096x3072",
+        "Maximum-resolution GPU processing with preview: PRIV@1920x1080 + PRIV@4096x3072",
+        "Maximum-resolution in-app processing with preview: PRIV@1920x1080 + YUV@4096x3072",
+        "Maximum-resolution two-input in-app processsing: YUV@1920x1080 + YUV@4096x3072",
+        "Maximum-resolution GPU processing with preview: PRIV@4096x3072 + PRIV@4096x3072",
+        "Maximum-resolution in-app processing with preview: PRIV@4096x3072 + YUV@4096x3072",
+        "Maximum-resolution two-input in-app processing: YUV@4096x3072 + YUV@4096x3072",
+        "Video recording with maximum-size video snapshot: PRIV@1920x1080 + PRIV@1920x1080 + JPEG@4096x3072",
+        "Standard video recording plus maximum-resolution in-app processing: YUV@640x480 + PRIV@1920x1080 + YUV@4096x3072",
+        "Preview plus two-input maximum-resolution in-app processing: YUV@640x480 + YUV@1920x1080 + YUV@4096x3072",
+        "High-resolution ZSL in-app video processing with regular preview: PRIV@4096x3072 + PRIV@4096x3072 + PRIV@1920x1080 + YUV@3840x2160",
+        "Maximum-resolution ZSL in-app processing with regular preview: PRIV@4096x3072 + PRIV@4096x3072 + PRIV@1920x1080 + YUV@4096x3072",
+        "Maximum-resolution two-input ZSL in-app processing: PRIV@4096x3072 + PRIV@4096x3072 + YUV@1920x1080 + YUV@4096x3072",
+        "ZSL still capture and in-app processing: PRIV@4096x3072 + PRIV@4096x3072 + PRIV@1920x1080 + YUV@1920x1080 + JPEG@4096x3072",
+        "Maximum-resolution multi-frame image fusion in-app processing with regular preview: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080",
+        "Maximum-resolution multi-frame image fusion two-input in-app processing: YUV@4096x3072 + YUV@4096x3072 + YUV@1920x1080",
+        "High-resolution ZSL in-app video processing with regular preview: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080 + YUV@3840x2160",
+        "ZSL still capture and in-app processing: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080 + YUV@1920x1080 + JPEG@4096x3072",
+        "No-preview DNG capture: RAW_SENSOR@4096x3072",
+        "Standard DNG capture: PRIV@1920x1080 + RAW_SENSOR@4096x3072",
+        "In-app processing plus DNG capture: YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Video recording with DNG capture: PRIV@1920x1080 + PRIV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Preview with in-app processing and DNG capture: PRIV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Two-input in-app processing plus DNG capture: YUV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Still capture with simultaneous JPEG and DNG: PRIV@1920x1080 + JPEG@4096x3072 + RAW_SENSOR@4096x3072",
+        "In-app processing with simultaneous JPEG and DNG: YUV@1920x1080 + JPEG@4096x3072 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL in-app processing and DNG capture: PRIV@4096x3072 + PRIV@4096x3072 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL in-app processing and preview with DNG capture: PRIV@4096x3072 + PRIV@4096x3072 + PRIV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL two-input in-app processing and DNG capture: PRIV@4096x3072 + PRIV@4096x3072 + YUV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL still capture and preview with DNG capture: PRIV@4096x3072 + PRIV@4096x3072 + PRIV@1920x1080 + JPEG@4096x3072 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL in-app processing with still capture and DNG capture: PRIV@4096x3072 + PRIV@4096x3072 + YUV@1920x1080 + JPEG@4096x3072 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL in-app processing and DNG capture: YUV@4096x3072 + YUV@4096x3072 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL in-app processing and preview with DNG capture: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL two-input in-app processing and DNG capture: YUV@4096x3072 + YUV@4096x3072 + YUV@1920x1080 + YUV@1920x1080 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL still capture and preview with DNG capture: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080 + JPEG@4096x3072 + RAW_SENSOR@4096x3072",
+        "Mutually exclusive ZSL in-app processing with still capture and DNG capture: YUV@4096x3072 + YUV@4096x3072 + YUV@1920x1080 + JPEG@4096x3072 + RAW_SENSOR@4096x3072",
+        "In-app viewfinder analysis with dynamic selection of output format: PRIV@1920x1080 + PRIV@640x480 + YUV@4096x3072 + RAW_SENSOR@4096x3072",
+        "In-app viewfinder analysis with dynamic selection of output format: PRIV@1920x1080 + PRIV@640x480 + JPEG@4096x3072 + RAW_SENSOR@4096x3072",
+        "In-app viewfinder analysis with ZSL, RAW, and JPEG reprocessing output: PRIV@4096x3072 + PRIV@4096x3072 + PRIV@1920x1080 + PRIV@640x480 + RAW_SENSOR@4096x3072 + JPEG@4096x3072",
+        "In-app viewfinder analysis with ZSL and RAW: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080 + PRIV@640x480 + RAW_SENSOR@4096x3072",
+        "In-app viewfinder analysis with ZSL, RAW, and JPEG reprocessing output: YUV@4096x3072 + YUV@4096x3072 + PRIV@1920x1080 + PRIV@640x480 + RAW_SENSOR@4096x3072 + JPEG@4096x3072"
+      ]
+    }
+  ]
+}
