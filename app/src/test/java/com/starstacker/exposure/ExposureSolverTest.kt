@@ -142,7 +142,7 @@ class ExposureSolverTest {
         val chosen = solution.chosen
         assertNotNull(chosen)
         assertEquals(ExposureSolver.Verdict.READ_NOISE_LIMITED, chosen!!.verdict)
-        assertEquals(3200, chosen.iso, "the lowest read noise is the least-bad choice here")
+        assertEquals(3200, chosen.iso, "expected the ISO-invariance point")
         assertEquals(trailing.maxExposureSeconds, chosen.exposureSeconds, 1e-9)
 
         val advisory = solution.advisory
@@ -244,6 +244,53 @@ class ExposureSolverTest {
      * a lower bound with unknown slack — so the recommendation is not merely uncertain, it is
      * unfounded. Same failure shape as the star detector reading a white frame as a focused sky.
      */
+    /**
+     * The reference sensor's own figures, and the trap in them. Read noise bottoms out around
+     * ISO 3200 and is flat above: 2.07, 2.03, 2.07 e⁻ at 3200, 6400 and 12800, while full scale
+     * halves at every step — 707, 387, 203 e⁻. Choosing on read noise alone picks ISO 6400 and
+     * throws away a stop of highlight range to save 0.04 e⁻, which is nothing. The ISO-invariance
+     * point is the lowest ISO that is already as quiet as the sensor gets.
+     */
+    @Test
+    fun `a dark sky picks the ISO-invariance point, not the single quietest ISO`() {
+        val measured = FixedNoiseModel(
+            points = listOf(
+                sensor(400, 2550.0, 3.89),
+                sensor(800, 1858.0, 3.01),
+                sensor(1600, 1204.0, 2.35),
+                sensor(3200, 707.0, 2.07),
+                sensor(6400, 387.0, 2.03),
+                sensor(12800, 203.0, 2.07),
+            ),
+            source = "reference device, measured 2026-08-17",
+        )
+        val isos = listOf(400, 800, 1600, 3200, 6400, 12800)
+        val darkSky = SkyMeasurement.from(
+            backgroundAdu = blackLevel + 1.0,
+            blackLevelAdu = blackLevel,
+            whiteLevelAdu = whiteLevel,
+            iso = 1600,
+            exposureSeconds = 10.0,
+            noise = measured.at(1600)!!,
+        )
+
+        val solution = ExposureSolver.solve(
+            sky = darkSky,
+            noiseModel = measured,
+            trailing = trailing,
+            isoCandidates = isos,
+            maxExposureSeconds = 49.6,
+        )
+
+        val chosen = solution.chosen!!
+        assertEquals(ExposureSolver.Verdict.READ_NOISE_LIMITED, chosen.verdict)
+        assertEquals(3200, chosen.iso, "picked ISO ${chosen.iso}, throwing away highlight range")
+        assertTrue(
+            chosen.readNoiseElectrons <= 2.03 * 1.10,
+            "the chosen ISO is not actually at the noise floor",
+        )
+    }
+
     @Test
     fun `a clipped test frame yields no recommendation at all, not a confident one`() {
         val sky = skyOf(whiteLevel.toDouble(), 4.0)

@@ -176,10 +176,17 @@ object ExposureSolver {
                         .thenBy { it.exposureSeconds },
                 )
 
-            // A dark sky reaches nothing. Still answer: the longest sub the trailing limit
-            // allows, at the ISO whose read noise costs least. Refusing here would be correct
-            // and useless — FR-5.3 promises a one-line recommendation, not a diagnosis.
-            else -> considered.minByOrNull { it.readNoiseElectrons }
+            // A dark sky reaches nothing. Still answer — FR-5.3 promises a recommendation, not
+            // a diagnosis — but answer at the **ISO-invariance point** rather than at whichever
+            // ISO has the single lowest read noise.
+            //
+            // Those are not the same, and the difference is expensive. On the reference sensor
+            // read noise bottoms out around ISO 3200 and is flat above it: 2.07, 2.03, 2.07 e⁻
+            // at 3200, 6400 and 12800. Picking the minimum outright selects ISO 6400, whose full
+            // scale is 387 e⁻ — so every star of any brightness clips — to save 0.04 e⁻ of read
+            // noise over ISO 3200, which holds 707 e⁻. Once read noise has stopped improving,
+            // more gain buys nothing and costs all the highlight range there is.
+            else -> considered.isoInvariancePoint()
         }
 
         return Solution(
@@ -305,6 +312,28 @@ object ExposureSolver {
         verdict = verdict,
         reason = reason,
     )
+
+    /**
+     * The lowest ISO whose read noise is within [ISO_INVARIANCE_TOLERANCE] of the best on offer.
+     *
+     * "Within a few percent of the floor" is what ISO invariance means in practice: past that
+     * point the sensor is no longer getting quieter, so the only thing another stop of gain does
+     * is halve the full well.
+     */
+    private fun List<Candidate>.isoInvariancePoint(): Candidate? {
+        val quietest = filter { it.readNoiseElectrons.isFinite() }
+            .minOfOrNull { it.readNoiseElectrons } ?: return firstOrNull()
+        return filter { it.readNoiseElectrons <= quietest * (1.0 + ISO_INVARIANCE_TOLERANCE) }
+            .minByOrNull { it.iso }
+            ?: minByOrNull { it.readNoiseElectrons }
+    }
+
+    /**
+     * How much worse than the quietest ISO still counts as "read noise has bottomed out". Ten
+     * percent of a read noise around 2 e⁻ is 0.2 e⁻, which is nothing next to a stop of well
+     * depth.
+     */
+    const val ISO_INVARIANCE_TOLERANCE = 0.10
 
     /** Below this the sky is dark enough that the required exposure is effectively unbounded. */
     private const val MIN_SKY_RATE = 1e-6
