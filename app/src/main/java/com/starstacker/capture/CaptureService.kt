@@ -79,35 +79,29 @@ class CaptureService : Service() {
             },
         )
         acquireWakeLock()
-        begin(request, intent.getStringExtra(EXTRA_LABEL) ?: "session")
+        begin(
+            request,
+            intent.getStringExtra(EXTRA_LABEL) ?: "session",
+            intent.getStringExtra(EXTRA_RESUME),
+        )
         return START_REDELIVER_INTENT
     }
 
-    private fun begin(request: CaptureEngine.Request, label: String) {
+    private fun begin(request: CaptureEngine.Request, label: String, resumeFolder: String?) {
         if (job?.isActive == true) return
 
         val root = File(getExternalFilesDir(null) ?: filesDir, "sessions").apply { mkdirs() }
         val store = FileSessionStore(root)
-        val startedAt = System.currentTimeMillis()
-        val folderName = SessionLayout.folderName(startedAt, label)
-        val folder = store.createSession(folderName)
 
-        val writer = SessionWriter(
-            folder,
-            SessionLog(
-                SessionInfo(
-                    sessionId = folderName,
-                    startedAtEpochMs = startedAt,
-                    deviceModel = Build.MODEL,
-                    cameraId = request.cameraId,
-                    plannedIso = request.iso,
-                    plannedExposureNs = request.exposureNs,
-                    plannedLightCount = request.lightCount,
-                    plannedDarkCount = request.darkCount,
-                    focusDiopters = request.focusDiopters,
-                ),
-            ),
-        ).also { it.begin() }
+        // T-3.13: resuming fills the *same* folder from the frame after the last one logged, and
+        // does not re-derive the exposure or re-run focus — the value of resuming is that those
+        // decisions were made under the sky that is still up.
+        val writer = resumeFolder
+            ?.let { store.openSession(it) }
+            ?.let { SessionWriter.resume(it) }
+            ?.also { Log.i(TAG, "resuming ${it.log.info.sessionId} at ${it.log.lights.size} frames") }
+            ?: newSession(store, request, label)
+        writer.begin()
 
         val env = DeviceEnvironment(this).also { environment = it }
         val camera = CameraAccess(this).also { access = it }
@@ -127,6 +121,31 @@ class CaptureService : Service() {
             // notification stops implying that something is still happening.
             stopSequence()
         }
+    }
+
+    private fun newSession(
+        store: FileSessionStore,
+        request: CaptureEngine.Request,
+        label: String,
+    ): SessionWriter {
+        val startedAt = System.currentTimeMillis()
+        val folderName = SessionLayout.folderName(startedAt, label)
+        return SessionWriter(
+            store.createSession(folderName),
+            SessionLog(
+                SessionInfo(
+                    sessionId = folderName,
+                    startedAtEpochMs = startedAt,
+                    deviceModel = Build.MODEL,
+                    cameraId = request.cameraId,
+                    plannedIso = request.iso,
+                    plannedExposureNs = request.exposureNs,
+                    plannedLightCount = request.lightCount,
+                    plannedDarkCount = request.darkCount,
+                    focusDiopters = request.focusDiopters,
+                ),
+            ),
+        )
     }
 
     private fun stopSequence() {
@@ -260,6 +279,9 @@ class CaptureService : Service() {
         private const val EXTRA_DARKS = "darks"
         private const val EXTRA_LABEL = "label"
 
+        /** Folder name of a session to continue filling, per T-3.13. */
+        private const val EXTRA_RESUME = "resume"
+
         /**
          * The running engine, held statically because the UI is a *pure function of the session
          * state* (D-6) and may not exist while the session does. A ViewModel cannot own this:
@@ -273,12 +295,15 @@ class CaptureService : Service() {
 
         val running: Boolean get() = engine != null
 
+        /** @param resumeFolder T-3.13 — continue an interrupted session instead of starting one. */
         fun start(
             context: Context,
             request: CaptureEngine.Request,
             label: String,
+            resumeFolder: String? = null,
         ) {
             val intent = Intent(context, CaptureService::class.java).apply {
+                resumeFolder?.let { putExtra(EXTRA_RESUME, it) }
                 putExtra(EXTRA_CAMERA_ID, request.cameraId)
                 putExtra(EXTRA_ISO, request.iso)
                 putExtra(EXTRA_EXPOSURE_NS, request.exposureNs)

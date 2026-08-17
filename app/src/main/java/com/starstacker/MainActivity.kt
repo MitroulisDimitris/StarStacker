@@ -32,6 +32,8 @@ import com.starstacker.diag.FieldDiagnostics
 import com.starstacker.dng.DngReader
 import com.starstacker.focus.FocusSweep
 import com.starstacker.pointing.PointingFix
+import com.starstacker.session.FileSessionStore
+import com.starstacker.session.SessionRecovery
 import com.starstacker.pointing.PointingSource
 import com.starstacker.stars.CfaBinner
 import com.starstacker.stars.StarDetector
@@ -115,19 +117,43 @@ class MainActivity : ComponentActivity() {
         //   adb shell am start -n com.starstacker/.MainActivity --es diag capture \
         //       --ei frames 8 --ei exposureMs 1000 --ei iso 800 --ei darks 2
         if (intent?.getStringExtra("diag") == "capture" && hasCameraPermission()) {
+            // `--ez resume true` continues the most recent interrupted session instead of
+            // starting a new one, which is T-3.13's acceptance driven from adb.
+            val resuming = intent.getBooleanExtra("resume", false)
+            val store = FileSessionStore(
+                File(getExternalFilesDir(null) ?: filesDir, "sessions").apply { mkdirs() },
+            )
+            val interrupted = if (resuming) SessionRecovery.mostRecent(store) else null
+            if (resuming && interrupted == null) {
+                Log.i(TAG, "resume asked for, but no interrupted session was found")
+                return
+            }
+
+            val request = interrupted?.let {
+                CaptureEngine.Request(
+                    cameraId = it.log.info.cameraId,
+                    iso = it.log.info.plannedIso,
+                    exposureNs = it.log.info.plannedExposureNs,
+                    focusDiopters = it.log.info.focusDiopters,
+                    lightCount = it.log.info.plannedLightCount,
+                    darkCount = it.log.info.plannedDarkCount,
+                )
+            } ?: CaptureEngine.Request(
+                cameraId = MAIN_CAMERA_ID,
+                iso = intent.getIntExtra("iso", 800),
+                exposureNs = intent.getIntExtra("exposureMs", 1000) * 1_000_000L,
+                focusDiopters = null,
+                lightCount = intent.getIntExtra("frames", 8),
+                darkCount = intent.getIntExtra("darks", 0),
+            )
+
             CaptureService.start(
                 context = this,
-                request = CaptureEngine.Request(
-                    cameraId = MAIN_CAMERA_ID,
-                    iso = intent.getIntExtra("iso", 800),
-                    exposureNs = intent.getIntExtra("exposureMs", 1000) * 1_000_000L,
-                    focusDiopters = null,
-                    lightCount = intent.getIntExtra("frames", 8),
-                    darkCount = intent.getIntExtra("darks", 0),
-                ),
+                request = request,
                 label = intent.getStringExtra("label") ?: "diag",
+                resumeFolder = interrupted?.folderName,
             )
-            Log.i(TAG, "capture service started")
+            Log.i(TAG, "capture service started${interrupted?.let { " — resuming ${it.describe()}" } ?: ""}")
             return
         }
 
