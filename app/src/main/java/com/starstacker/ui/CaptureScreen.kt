@@ -1,0 +1,343 @@
+package com.starstacker.ui
+
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.starstacker.capture.CaptureEngine
+import com.starstacker.exposure.ExposureSolver
+import com.starstacker.session.FrameKind
+import com.starstacker.session.FrameRecord
+import com.starstacker.session.SessionLog
+import com.starstacker.session.SessionState
+import com.starstacker.ui.theme.Night
+import com.starstacker.ui.theme.NumFamily
+
+/**
+ * Prototype screen 03 — capturing (T-3.11), and the completion summary (T-3.15) when it is done.
+ *
+ * The constraint that shapes everything: **readable from two metres away, in the dark, by someone
+ * who has walked back to the tripod to see whether it is still working.** That question has to be
+ * answerable at a glance, so the frame count is the largest thing on the screen and the ring is a
+ * shape rather than a number — you can read a shape at a distance you cannot read a percentage.
+ *
+ * The recent-frame log shows rejections with the reason attached, because a rejection the user
+ * cannot see is a rejection they cannot disagree with. Frames are on disk either way (D-10), and
+ * the note says so — a session losing frames to cloud is still a session worth leaving running.
+ */
+@Composable
+fun CaptureScreen(
+    progress: CaptureEngine.Progress,
+    log: SessionLog?,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
+    onEndAndTakeDarks: () -> Unit,
+    onDone: () -> Unit,
+) {
+    if (progress.state == SessionState.DONE || progress.state == SessionState.FAILED) {
+        CompletionScreen(progress, log, onDone)
+        return
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Night.Void)
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        item { Spacer(Modifier.height(16.dp)) }
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Mono(headline(progress), color = Night.Txt2, size = 11.sp)
+                Spacer(Modifier.weight(1f))
+                Badge(progress.state.name, stateColor(progress.state))
+            }
+        }
+
+        item { ProgressRing(progress) }
+
+        item { Eyebrow("This frame") }
+        item {
+            Card {
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Metric("HFR", progress.lastHfr?.let { "%.2f".format(it) } ?: "—", unit = "px")
+                    Metric("Stars", progress.lastStarCount?.toString() ?: "—")
+                    Metric(
+                        "Sky",
+                        progress.lastBackground?.let { "%.0f".format(it) } ?: "—",
+                        unit = "ADU",
+                    )
+                    Metric(
+                        "Kept",
+                        "${progress.framesAccepted}",
+                        warn = progress.framesCaptured > 0 &&
+                            progress.framesAccepted < progress.framesCaptured / 2,
+                    )
+                }
+                progress.thermalNote?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Mono(it, color = if (progress.cooling) Night.Warn else Night.Txt3, size = 10.sp)
+                }
+            }
+        }
+
+        if (log != null && log.frames.isNotEmpty()) {
+            item { Eyebrow("Recent frames") }
+            item {
+                Card {
+                    log.frames.takeLast(RECENT_FRAMES).reversed().forEach { FrameRow(it) }
+                }
+            }
+        }
+
+        // A non-blocking note: it reports, it does not gate. The session is still running.
+        rejectionNote(log)?.let { item { Banner(it, color = Night.Warn) } }
+
+        item {
+            ButtonRow {
+                Box(Modifier.weight(1f)) {
+                    QuietButton(
+                        text = if (progress.state == SessionState.PAUSED) "Resume" else "Pause",
+                        onClick = if (progress.state == SessionState.PAUSED) onResume else onPause,
+                    )
+                }
+                Box(Modifier.weight(1f)) {
+                    QuietButton(
+                        text = "End & take darks",
+                        enabled = progress.state != SessionState.DARKS,
+                        onClick = onEndAndTakeDarks,
+                    )
+                }
+            }
+        }
+        item { Spacer(Modifier.height(28.dp)) }
+    }
+}
+
+/**
+ * The one full-intensity element on this screen, and the thing you can read from two metres.
+ * Drawn rather than laid out, because a ring communicates "most of the way through" without
+ * being read.
+ */
+@Composable
+private fun ProgressRing(progress: CaptureEngine.Progress) {
+    val target = progress.target.coerceAtLeast(1)
+    val done = when (progress.state) {
+        SessionState.DARKS -> progress.darksCaptured
+        else -> progress.framesCaptured
+    }
+    val fraction = (done.toFloat() / target).coerceIn(0f, 1f)
+
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .aspectRatio(1.6f),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val stroke = 10.dp.toPx()
+            val diameter = minOf(size.width, size.height) - stroke
+            val topLeft = androidx.compose.ui.geometry.Offset(
+                (size.width - diameter) / 2f,
+                (size.height - diameter) / 2f,
+            )
+            drawArc(
+                color = Night.Ghost,
+                startAngle = -90f,
+                sweepAngle = 360f,
+                useCenter = false,
+                topLeft = topLeft,
+                size = Size(diameter, diameter),
+                style = Stroke(width = stroke),
+            )
+            drawArc(
+                color = Night.Hot,
+                startAngle = -90f,
+                sweepAngle = 360f * fraction,
+                useCenter = false,
+                topLeft = topLeft,
+                size = Size(diameter, diameter),
+                style = Stroke(width = stroke),
+            )
+        }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                "$done",
+                fontFamily = NumFamily,
+                fontSize = 44.sp,
+                fontWeight = FontWeight.Medium,
+                color = Night.Txt,
+            )
+            Mono("of $target", color = Night.Txt3, size = 11.sp)
+            if (progress.cooling) {
+                Spacer(Modifier.height(4.dp))
+                Mono("cooling", color = Night.Warn, size = 10.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun FrameRow(frame: FrameRecord) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Mono("%03d".format(frame.index), color = Night.Dim, size = 10.sp)
+        Spacer(Modifier.size(10.dp))
+        Mono(
+            buildString {
+                frame.hfr?.let { append("HFR %.1f".format(it)) }
+                frame.eccentricity?.let {
+                    if (isNotEmpty()) append(" · ")
+                    append("ecc %.2f".format(it))
+                }
+                frame.starCount?.let {
+                    if (isNotEmpty()) append(" · ")
+                    append("$it★")
+                }
+                if (isEmpty()) append(frame.kind.name.lowercase())
+            },
+            color = if (frame.accepted) Night.Txt2 else Night.Txt3,
+            size = 10.5.sp,
+        )
+        Spacer(Modifier.weight(1f))
+        frame.rejectReason?.let {
+            Badge(it.name.lowercase().replaceFirstChar { c -> c.uppercase() }, Night.Warn)
+        }
+    }
+}
+
+@Composable
+private fun CompletionScreen(
+    progress: CaptureEngine.Progress,
+    log: SessionLog?,
+    onDone: () -> Unit,
+) {
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Night.Void)
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        item { Spacer(Modifier.height(28.dp)) }
+        item {
+            Text(
+                if (progress.state == SessionState.FAILED) "Session failed" else "Session complete",
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+                color = Night.Txt,
+            )
+        }
+        progress.message?.let { item { Mono(it, color = Night.Txt2, size = 11.5.sp) } }
+
+        item { Eyebrow("Result") }
+        item {
+            Card {
+                KeyValue("Frames kept", "${progress.framesAccepted} of ${progress.framesCaptured}")
+                KeyValue("Darks", "${progress.darksCaptured}")
+                log?.let {
+                    KeyValue(
+                        "Integration",
+                        ExposureSolver.formatSeconds(it.acceptedIntegrationSeconds),
+                    )
+                    KeyValue("ISO / sub", "${it.info.plannedIso} · ${
+                        ExposureSolver.formatSeconds(it.info.plannedExposureNs / 1e9)
+                    }")
+                }
+                rejectionBreakdown(log)?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Mono(it, color = Night.Txt3, size = 10.5.sp)
+                }
+            }
+        }
+
+        // FR-9.4: the user must never have to hunt for where the output went.
+        item { Eyebrow("Where it is") }
+        item {
+            Card {
+                Mono(
+                    progress.sessionPath ?: "—",
+                    color = Night.Txt2,
+                    size = 10.5.sp,
+                )
+                Spacer(Modifier.height(6.dp))
+                Mono(
+                    "lights/ · darks/ · session.json — ready for Siril or DSS as they are",
+                    color = Night.Txt3,
+                    size = 10.sp,
+                )
+            }
+        }
+
+        item { HotButton("Done", onClick = onDone) }
+        item { Spacer(Modifier.height(28.dp)) }
+    }
+}
+
+private const val RECENT_FRAMES = 6
+
+private fun headline(progress: CaptureEngine.Progress): String = buildString {
+    append(
+        when (progress.state) {
+            SessionState.DARKS -> "TAKING DARKS"
+            SessionState.PAUSED -> "PAUSED"
+            else -> "CAPTURING"
+        },
+    )
+}
+
+private fun stateColor(state: SessionState) = when (state) {
+    SessionState.PAUSED -> Night.Warn
+    SessionState.FAILED -> Night.Red
+    else -> Night.Mid
+}
+
+/**
+ * The prototype's event note. It names what happened and, crucially, says the frames are still on
+ * disk — otherwise "6 rejected" reads as "6 lost", and the user shortens a session that is fine.
+ */
+private fun rejectionNote(log: SessionLog?): String? {
+    val rejected = log?.lights?.filter { !it.accepted }.orEmpty()
+    if (rejected.isEmpty()) return null
+    val commonest = rejected.groupingBy { it.rejectReason }.eachCount()
+        .maxByOrNull { it.value } ?: return null
+    val reason = commonest.key?.name?.lowercase() ?: "quality"
+    return "${rejected.size} frame${if (rejected.size == 1) "" else "s"} rejected, mostly " +
+        "$reason. Still capturing — they are kept on disk and you can include them later."
+}
+
+private fun rejectionBreakdown(log: SessionLog?): String? {
+    val rejected = log?.lights?.filter { !it.accepted }.orEmpty()
+    if (rejected.isEmpty()) return null
+    return rejected.groupingBy { it.rejectReason?.name?.lowercase() ?: "other" }
+        .eachCount()
+        .entries
+        .joinToString(" · ") { "${it.value} ${it.key}" }
+        .let { "rejected: $it — all kept on disk" }
+}

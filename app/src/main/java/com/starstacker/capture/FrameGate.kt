@@ -26,7 +26,7 @@ class FrameGate(
     private val starCollapseFraction: Double = DEFAULT_STAR_COLLAPSE_FRACTION,
     private val baselineWindow: Int = DEFAULT_BASELINE_WINDOW,
     private val minBaselineFrames: Int = DEFAULT_MIN_BASELINE_FRAMES,
-    private val bumpThresholdMps2: Double = DEFAULT_BUMP_THRESHOLD,
+    private val bumpThresholdDeg: Double = DEFAULT_BUMP_THRESHOLD_DEG,
 ) {
 
     /** What the gate needs to know about a frame. Everything else about it is irrelevant here. */
@@ -34,8 +34,15 @@ class FrameGate(
         val starCount: Int,
         val medianEccentricity: Double?,
         val saturated: Boolean,
-        /** Peak deviation from steady gravity during the exposure, m/s². Null if unmeasured. */
-        val peakAccelerationMps2: Double? = null,
+        /**
+         * Peak angular movement of the phone during the exposure, degrees. Null if unmeasured.
+         *
+         * An angle rather than an acceleration because it is tilt that moves the star field —
+         * see [DeviceEnvironment]. It only catches *gross* bumps; the fine motion that matters at
+         * the pixel level is far below the accelerometer's noise floor and is caught by
+         * registration residuals in Phase 2 instead.
+         */
+        val peakTiltDeg: Double? = null,
     )
 
     data class Verdict(
@@ -65,12 +72,12 @@ class FrameGate(
             )
         }
 
-        metrics.peakAccelerationMps2?.let { peak ->
-            if (peak > bumpThresholdMps2) {
+        metrics.peakTiltDeg?.let { peak ->
+            if (peak > bumpThresholdDeg) {
                 return Verdict(
                     false, RejectReason.BUMPED,
-                    "%.1f m/s² of movement during the exposure (limit %.1f)"
-                        .format(peak, bumpThresholdMps2),
+                    "the phone moved %.2f° during the exposure (limit %.2f°)"
+                        .format(peak, bumpThresholdDeg),
                 )
             }
         }
@@ -130,9 +137,17 @@ class FrameGate(
         const val DEFAULT_MIN_BASELINE_FRAMES = 3
 
         /**
-         * Deviation from steady gravity, m/s². A tripod on grass in wind sits well under this;
-         * a hand on the phone does not.
+         * Gross movement only, in degrees.
+         *
+         * Set from measurement rather than intuition, and the measurement says something worth
+         * writing down: a phone lying **still** on a desk registers a few hundredths of a degree
+         * of apparent tilt from accelerometer noise, while the field motion that would actually
+         * trail a star is smaller still — 1.5 px at the reference camera's plate scale is 0.031°.
+         * The accelerometer therefore *cannot* see the motion that matters; it can only see a
+         * tripod being knocked. This threshold is set to catch that and nothing else, and the
+         * sub-pixel case belongs to registration residuals in Phase 2 (FR-7.2), which measure
+         * the frame rather than the phone.
          */
-        const val DEFAULT_BUMP_THRESHOLD = 0.35
+        const val DEFAULT_BUMP_THRESHOLD_DEG = 1.0
     }
 }

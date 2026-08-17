@@ -14,6 +14,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
@@ -34,12 +35,16 @@ import com.starstacker.focus.FocusSweep
 import com.starstacker.pointing.PointingFix
 import com.starstacker.session.FileSessionStore
 import com.starstacker.session.SessionRecovery
+import com.starstacker.session.SessionState
 import com.starstacker.pointing.PointingSource
 import com.starstacker.stars.CfaBinner
 import com.starstacker.stars.StarDetector
 import com.starstacker.ui.DiagnosticsState
 import com.starstacker.ui.FramingController
+import com.starstacker.ui.CaptureScreen
 import com.starstacker.ui.FramingScreen
+import com.starstacker.ui.SetupController
+import com.starstacker.ui.SetupScreen
 import com.starstacker.ui.ProbeScreen
 import com.starstacker.ui.theme.StarStackerTheme
 import kotlinx.coroutines.Dispatchers
@@ -53,14 +58,17 @@ import java.util.Locale
 /**
  * Phase 1A/1B entry point.
  *
- * Two screens so far: the capability probe (T-1.1/T-1.2), which answers whether there is a
- * device to run on at all, and framing & focus (Phase 1B), which is the first screen that does
- * something on a tripod. The real navigation graph is T-0.3; this is deliberately a switch
- * rather than a half-built version of it.
+ * Four screens: the capability probe (T-1.1/T-1.2), framing & focus (Phase 1B), session setup
+ * with the exposure solve (T-3.4/T-3.5), and the live capture screen with its completion summary
+ * (T-3.11/T-3.15). Still a `when` over an enum rather than a navigation library — T-0.3's real
+ * graph arrives when there is a back stack worth modelling, and a linear flow of four is not it.
+ *
+ * The capture screen is a **pure function of [CaptureService.progress]**, per D-6: the session
+ * belongs to the service, not to this Activity, and survives it being destroyed.
  */
 class MainActivity : ComponentActivity() {
 
-    private enum class Screen { PROBE, FRAMING }
+    private enum class Screen { PROBE, FRAMING, SETUP, CAPTURE }
 
     private var profile by mutableStateOf<DeviceProfile?>(null)
     private var diagnostics by mutableStateOf(DiagnosticsState())
@@ -68,6 +76,7 @@ class MainActivity : ComponentActivity() {
 
     private val pointingSource by lazy { PointingSource(this) }
     private val framing by lazy { FramingController(this, lifecycleScope) }
+    private val setup by lazy { SetupController(this, lifecycleScope) }
 
     private val requestCamera = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -154,7 +163,9 @@ class MainActivity : ComponentActivity() {
                 resumeFolder = interrupted?.folderName,
             )
             Log.i(TAG, "capture service started${interrupted?.let { " — resuming ${it.describe()}" } ?: ""}")
-            return
+            // Deliberately falls through to setContent: the live capture screen is a pure
+            // function of the service's state, so starting a session from adb should land on
+            // exactly the screen starting one from the button lands on.
         }
 
         val fieldDiag = intent?.getStringExtra("diag")
@@ -191,12 +202,27 @@ class MainActivity : ComponentActivity() {
 
                 var pointing by remember { mutableStateOf<PointingFix?>(null) }
                 LaunchedEffect(screen, locationGranted) {
-                    if (screen != Screen.FRAMING || !pointingSource.hasRequiredSensors()) {
+                    // Sensors run only on the screens that show their numbers. A magnetometer
+                    // polled through a 45-minute capture is battery spent on a reading nobody is
+                    // looking at — and the pointing that matters was fixed when Start was pressed.
+                    if (screen !in setOf(Screen.FRAMING, Screen.SETUP) ||
+                        !pointingSource.hasRequiredSensors()
+                    ) {
                         return@LaunchedEffect
                     }
-                    // Sensors run only while the framing screen is up: a magnetometer polled
-                    // through a 45-minute session is battery spent on a number nobody is reading.
                     pointingSource.fixes().collect { pointing = it }
+                }
+                LaunchedEffect(pointing) { setup.setPointing(pointing) }
+
+                // The session belongs to the service (D-6), so the screen reads its flow rather
+                // than owning any of it, and shows the same thing after the Activity is recreated.
+                val capture by CaptureService.progress.collectAsStateWithLifecycle()
+                LaunchedEffect(capture.state) {
+                    if (capture.state == SessionState.CAPTURING ||
+                        capture.state == SessionState.DARKS
+                    ) {
+                        screen = Screen.CAPTURE
+                    }
                 }
 
                 when (screen) {
@@ -228,6 +254,53 @@ class MainActivity : ComponentActivity() {
                             framing.stop()
                             screen = Screen.PROBE
                         },
+                        onContinue = {
+                            framing.stop()
+                            current.cameras.firstOrNull { it.id == selectedCameraId }
+                                ?.let { setup.select(it) }
+                            screen = Screen.SETUP
+                        },
+                    )
+
+                    Screen.SETUP -> SetupScreen(
+                        controller = setup,
+                        pointing = pointing,
+                        onBack = { screen = Screen.FRAMING },
+                        onStart = {
+                            val plan = setup.plan ?: return@SetupScreen
+                            val camera = setup.camera ?: return@SetupScreen
+                            CaptureService.start(
+                                context = this@MainActivity,
+                                request = CaptureEngine.Request(
+                                    cameraId = camera.id,
+                                    iso = plan.iso,
+                                    exposureNs = (plan.subSeconds * 1e9).toLong(),
+                                    focusDiopters = framing.storedFocus
+                                        ?.takeIf { !it.fixedFocus }?.diopters,
+                                    lightCount = plan.lightCount,
+                                    darkCount = plan.darkCount,
+                                ),
+                                label = "session",
+                            )
+                            screen = Screen.CAPTURE
+                        },
+                    )
+
+                    Screen.CAPTURE -> CaptureScreen(
+                        progress = capture,
+                        log = capture.log,
+                        onPause = {
+                            CaptureService.send(this@MainActivity, CaptureService.ACTION_PAUSE)
+                        },
+                        onResume = {
+                            CaptureService.send(this@MainActivity, CaptureService.ACTION_RESUME)
+                        },
+                        onEndAndTakeDarks = {
+                            CaptureService.send(
+                                this@MainActivity, CaptureService.ACTION_END_AND_DARKS,
+                            )
+                        },
+                        onDone = { screen = Screen.PROBE },
                     )
                 }
             }

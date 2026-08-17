@@ -79,7 +79,7 @@ Two consequences to accept deliberately:
 | 0 | 9 | 1 | in progress — skeleton builds and installs; shared components extracted (T-0.2 part) |
 | 1A | 6 | 6 | **complete** — probe, qualification, camera lifecycle, first light, DNG reader |
 | 1B | 7 | 2 | **hardware-verified except what needs darkness** — see §5 and §1.7 |
-| 1C | 14 | 1 | **a full unattended session runs end to end** (§1.9) — exposure engine, capture service, frame writer, gating and darks all working; UI (T-3.4, T-3.11, T-3.15) and resume (T-3.13) outstanding |
+| 1C | 14 | 1 | **the whole flow works on hardware** — framing → setup → solve → start → live → complete, with resume. Outstanding: T-3.14 preview stack, and T-0.5's SAF root |
 | 2+ | outlined | 0 | not started |
 
 > **Phase 1B has now met every acceptance that does not require a night sky** (2026-08-17). The
@@ -340,6 +340,37 @@ Three structural points that fell out of building it:
   written and logged first, then analysed, then the log entry is updated with HFR, star count and
   the gate's verdict. The alternative — analyse first, then write — holds a sensor buffer across
   130 ms of detection for no benefit, and risks logging a frame that then fails to write.
+
+---
+
+## 1.10 The bump detector was measuring the wrong thing — 2026-08-17
+
+The first live capture screen showed six of seven frames rejected as **BUMPED** while the phone
+lay untouched on a desk. The numbers in the log said `0.4 m/s² of movement (limit 0.4)` — the
+threshold was sitting exactly on the sensor's noise floor.
+
+Raising it would have hidden a deeper error. The detector was tracking the **magnitude** of the
+accelerometer vector, and `|a|` is very nearly invariant to rotation: gravity is 9.81 m/s²
+whichever way the phone faces. So the measure was almost blind to *tilt*, which is the motion that
+moves the star field, while being sensitive to linear shake, which mostly does not. It now
+measures the **angle between the current gravity vector and a smoothed one**, in degrees, which is
+the quantity that corresponds to the field moving.
+
+**And the honest conclusion that fell out of doing the arithmetic:** at the reference camera's
+plate scale, the trailing tolerance of 1.5 px is **0.031°** — far below the accelerometer's own
+noise. The accelerometer therefore *cannot* see the motion that matters. It can only see a tripod
+being knocked, so the threshold is set for that (1.0°) and nothing finer, and the sub-pixel case
+belongs to registration residuals in Phase 2 (FR-7.2), which measure the frame instead of the
+phone. Pretending otherwise would have produced a gate that rejected good frames and missed the
+drift it was supposed to catch.
+
+Re-run with the phone untouched: nine frames correctly diagnosed `TRAILED` (face-down in a dark
+room, so the detections are hot pixels, which are genuinely elongated) and one `BUMPED` on the
+frame during which the phone was actually disturbed at launch.
+
+> **A note for Phase 6.** A 1.5 s dark frame on this sensor yields ~1300 detections. At a 5σ
+> threshold over 786k pixels, chance alone predicts under one, so these are **hot pixels** — which
+> is FR-4.1.2's map arriving unbidden, and a useful sanity check that the detector finds them.
 
 ---
 
@@ -746,7 +777,7 @@ Goal: FR-13/M3 — *press start, walk away, come back to a folder of good subs.*
 - [~] **T-3.3** Sky-limited solver (FR-5.2): for each ISO ≥ dual-gain point, exposure to reach
   3–5× read noise in variance; clamp to trailing limit; pick the pair with the most clipping
   headroom. Emits a **derivation object** — every candidate and why it lost — not just the answer.
-- [ ] **T-3.4** Solve UI (prototype screen 02): the one-line answer, `Show work` expanding to the
+- [~] **T-3.4** Solve UI (prototype screen 02): the one-line answer, `Show work` expanding to the
   full derivation, and **pinning** any value with a re-solve around it (FR-5.3).
   *Accept:* pinning ISO re-solves exposure and vice versa; nothing downstream is disabled by a pin.
 - [~] **T-3.5** Session planner (FR-5.4): input total time *or* target integration; output sub
@@ -781,7 +812,7 @@ Goal: FR-13/M3 — *press start, walk away, come back to a folder of good subs.*
 - [~] **T-3.10** Cheap live quality gating (the subset that needs no registration): eccentricity →
   trailing, star-count collapse → cloud, accelerometer spike → bump. Rejected frames kept on disk
   and flagged (D-10). Registration-residual gating and the common-area indicator arrive in Phase 2.
-- [ ] **T-3.11** Live capture screen (prototype screen 03): the per-frame ring, metrics grid
+- [~] **T-3.11** Live capture screen (prototype screen 03): the per-frame ring, metrics grid
   (HFR / stars / common area / sensor temp), recent-frame log with reject reasons, the
   non-blocking event note, `Pause` and `End & take darks`.
   *Accept:* readable from two metres away in the dark; matches the prototype's information density.
@@ -792,7 +823,7 @@ Goal: FR-13/M3 — *press start, walk away, come back to a folder of good subs.*
   resumable rather than lost (FR-6.4); on app restart, an incomplete session offers to resume.
 - [ ] **T-3.14** Live downsampled preview stack (FR-7.4) — translation-only running average until
   Phase 2 supplies real transforms. Depth per **OI-13**.
-- [ ] **T-3.15** Completion screen (FR-9.4): result summary, full session path, open/share.
+- [~] **T-3.15** Completion screen (FR-9.4): result summary, full session path, open/share.
 
 **Checkpoint 1C — the one that matters:**
 > A 45-minute unattended session on a tripod completes with the screen off, without thermal
@@ -1009,6 +1040,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-08-17 | **Phase 1C UI — the flow is walkable end to end on the device** (T-3.4, T-3.11, T-3.15). Session setup renders the solve as FR-5.3's single line, `Show work` expands the derivation object itself — every ISO considered with the reason it won or lost, rendered off the solver's own output rather than retold — and pinning re-solves around the pin with the plan, budgets and derivation all following it. Verified live: `ISO 50 · 3.4 s · 490 frames · 28 min`, pinned to 800 becomes `ISO 800 · 1.7 s · 1027 frames · 29 min`. The live capture screen is a pure function of the service's `StateFlow` (D-6), so it survives the Activity being destroyed and shows the same thing on return. `SkyProbe` extracts the on-device measurement so the setup screen and the `--es diag solve` diagnostic run *the same* solve — a diagnostic measuring something the app does not do is worse than none. **§1.10: the bump detector was measuring the wrong quantity** — the magnitude of the accelerometer vector, which is nearly invariant to rotation, so it was blind to tilt and tripping on noise; six of seven frames were rejected as BUMPED with the phone untouched. Now measured as the angle of the gravity vector, with the honest corollary written down: at 1.5 px the trailing tolerance is 0.031°, far below the sensor's noise, so the accelerometer can only catch a knocked tripod and the fine case belongs to Phase 2's registration residuals. 183 JVM tests. |
 | 2026-08-17 | **T-3.13 — interruption and resume.** A 30-frame session killed with `am force-stop` mid-capture left a log reading `CAPTURING` with 12 frames recorded and exactly 12 DNGs on disk; resuming continued the same folder from frame 13 to 30, contiguous, one directory, state `DONE`. `SessionRecovery` scans the root for sessions whose own log says they were still going (D-5, FR-10.6.4 — no index, since an index is a second source of truth that is wrong the moment a folder is copied in from a PC), and declines to offer one with nothing left to shoot, which is a bookkeeping gap rather than lost sky. Abandoning marks the log and deletes nothing (D-10). 182 JVM tests. |
 | 2026-08-17 | **The primary deliverable runs: a full unattended session, screen off, start to finish.** 53 frames (50 lights + 3 darks) at ISO 400 / 1 s written as valid DNGs into the FR-9.1 folder layout with a complete `session.json` — T-3.6, T-3.7, T-3.8, T-3.9, T-3.10 and T-3.12 all exercised on hardware (§1.9). **Per-frame overhead measured at 2 ms**: 53 frames in 52.0 s, so the 25 MB DNG write hides entirely behind the next exposure and capture runs at essentially 100% duty cycle. Battery temperature climbed 31 → 32 °C in the first minute, which is D-16's warming curve showing up per frame as designed. Capture needed **its own session class** rather than a flag on `FramingSession`: framing calls `acquireLatestImage()` and drops frames when busy, which is correct for a preview and would silently shorten the integration the planner promised, so `SequenceSession` uses `acquireNextImage()`, applies back pressure, and keeps the whole `TotalCaptureResult` that `DngCreator` requires. All 50 lights were correctly rejected as `SATURATED` — the phone was face-up under room light — which is §1.7's saturation guard proving itself in the capture path rather than only the framing one. 175 JVM tests. Still outstanding in 1C: the solve and live-capture UI (T-3.4, T-3.11, T-3.15), resume (T-3.13), the live preview stack (T-3.14), and SAF (T-0.5) — capture currently writes to `Android/data/.../files/sessions`, which is reachable from a PC over USB but is not yet FR-9.1's user-chosen root. |
 | 2026-08-17 | **Phase 1C exposure engine written and validated against the sensor** (T-3.1, T-3.2, T-3.3, T-3.5). 152 JVM tests (112 before). §1.8 records what the device's own `SENSOR_NOISE_PROFILE` actually says: a real per-ISO curve, read noise 5.64 e⁻ at ISO 50 falling to 2.07 e⁻ by ISO 3200, **no dual conversion gain step** — which half-answers **OI-9**. Three findings came out of running it rather than testing it: **a clipped test frame produced a confident recommendation** while the advisory beside it said nothing could be measured (same family as the star detector's saturation trap — every number descends from a sky rate that a clipped frame cannot supply, so there is now no recommendation at all); **the headroom tiebreak was degenerate** under a bright sky, where all candidates sit at the same background fraction, so the answer was falling out of list order and the longest sub now wins explicitly; and **`RESULT_CACHE` was sized in entries**, holding only 160 ms of history at a 20 ms request, so short test frames never paired with their metadata and never settled. Two design points worth keeping: FR-5.2's sky-limited criterion is a **floor, not a target** — treating it as the answer recommends 20 ms subs — and FR-5.1's pole relaxation must be computed from the fastest-moving star *in the field*, since a phone's 85° diagonal makes the naive `cos(δ_centre)` form unbounded at Polaris while the corners still trail at two-thirds of the equatorial rate. New **OI-21**: battery drain per hour is a placeholder, not a measurement. |

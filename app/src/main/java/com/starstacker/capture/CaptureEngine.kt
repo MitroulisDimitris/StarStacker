@@ -9,6 +9,7 @@ import com.starstacker.camera.FramingSession
 import com.starstacker.camera.SequenceSession
 import com.starstacker.session.FrameKind
 import com.starstacker.session.FrameRecord
+import com.starstacker.session.SessionLog
 import com.starstacker.session.SessionState
 import com.starstacker.session.SessionWriter
 import com.starstacker.stars.CfaBinner
@@ -48,8 +49,12 @@ class CaptureEngine(
     interface Environment {
         fun reading(): ThermalPolicy.Reading
 
-        /** Peak deviation from steady gravity since the last call, m/s². Null if unavailable. */
-        fun consumePeakAcceleration(): Double?
+        /**
+         * Peak angular movement of the gravity vector since the last call, **degrees**. Null when
+         * there is no accelerometer. See [DeviceEnvironment] for why it is an angle and not an
+         * acceleration.
+         */
+        fun consumePeakTiltDeg(): Double?
 
         fun nowEpochMs(): Long
     }
@@ -77,6 +82,12 @@ class CaptureEngine(
         val cooling: Boolean = false,
         val message: String? = null,
         val sessionPath: String? = null,
+        /**
+         * The log as it stands. Carried here rather than fetched separately so the screen sees a
+         * frame count and the frames it names from the same instant — [SessionLog] is immutable,
+         * so this is a reference copy and costs nothing.
+         */
+        val log: SessionLog? = null,
     )
 
     private val _progress = MutableStateFlow(Progress())
@@ -109,6 +120,7 @@ class CaptureEngine(
             state = SessionState.CAPTURING,
             target = request.lightCount,
             sessionPath = writer.displayPath,
+            log = writer.log,
         )
         writer.setState(SessionState.CAPTURING)
 
@@ -127,6 +139,7 @@ class CaptureEngine(
             _progress.value = _progress.value.copy(
                 state = SessionState.DONE,
                 message = "session complete — ${writer.log.accepted.size} accepted frames",
+                log = writer.log,
             )
         } catch (c: CancellationException) {
             // A cancelled session is interrupted, not failed: T-3.13 offers to resume it.
@@ -138,6 +151,7 @@ class CaptureEngine(
             _progress.value = _progress.value.copy(
                 state = SessionState.FAILED,
                 message = "${t::class.java.simpleName}: ${t.message}",
+                log = writer.log,
             )
         }
     }
@@ -230,7 +244,7 @@ class CaptureEngine(
             starCount = stars?.count ?: 0,
             medianEccentricity = stars?.medianEccentricity,
             saturated = stars?.saturatedFrame ?: false,
-            peakAccelerationMps2 = environment.consumePeakAcceleration(),
+            peakTiltDeg = environment.consumePeakTiltDeg(),
         )
         // A dark is not judged on its stars — it is supposed to have none. Running the gate over
         // darks would reject every one of them as cloud.
@@ -259,6 +273,7 @@ class CaptureEngine(
             lastBackground = stars?.background,
             lastRejection = verdict.detail,
             thermalNote = thermal.evaluate(reading).note,
+            log = log,
         )
     }
 

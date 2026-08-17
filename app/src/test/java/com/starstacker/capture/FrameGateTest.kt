@@ -52,11 +52,25 @@ class FrameGateTest {
         val gate = FrameGate()
         settle(gate)
 
-        val verdict = gate.accept(
-            good().copy(peakAccelerationMps2 = 1.4),
-        )
+        val verdict = gate.accept(good().copy(peakTiltDeg = 4.0))
 
         assertEquals(RejectReason.BUMPED, verdict.reason)
+        assertTrue(verdict.detail!!.contains("moved"), verdict.detail!!)
+    }
+
+    /**
+     * The regression that motivated measuring in degrees. A phone lying still on a desk showed
+     * 0.4 m/s² of magnitude deviation — enough to trip a magnitude threshold frame after frame
+     * while it had not moved at all. Tilt of a few hundredths of a degree is that same stillness,
+     * and must pass.
+     */
+    @Test
+    fun `sensor noise on a still phone is not a bump`() {
+        val gate = FrameGate()
+        settle(gate)
+
+        assertTrue(gate.accept(good().copy(peakTiltDeg = 0.05)).accepted)
+        assertTrue(gate.accept(good().copy(peakTiltDeg = 0.3)).accepted)
     }
 
     @Test

@@ -52,6 +52,7 @@ fun FramingScreen(
     onSelectCamera: (String) -> Unit,
     onRequestLocation: () -> Unit,
     onBack: () -> Unit,
+    onContinue: () -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier
@@ -150,6 +151,16 @@ fun FramingScreen(
 
         item { Eyebrow("Focus · FR-6.3") }
         item { FocusCard(controller, pointing?.altitudeDeg) }
+
+        // Quiet, not hot: the full-intensity control on this screen is the preview toggle, and a
+        // screen with two of them has neither (T-0.2).
+        item {
+            QuietButton(
+                text = "Continue to session setup →",
+                enabled = selectedCameraId != null,
+                onClick = onContinue,
+            )
+        }
 
         controller.streamDetail?.let { detail ->
             item { Eyebrow("Streams · T-2.1") }
