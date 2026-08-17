@@ -103,6 +103,13 @@ class CaptureEngine(
     @Volatile
     private var finishEarly = false
 
+    /** Set when the user confirms the lens is covered, or chooses to skip darks (FR-4.2.1). */
+    @Volatile
+    private var darksConfirmed = false
+
+    @Volatile
+    private var darksSkipped = false
+
     fun pause() { paused = true }
 
     fun resume() { paused = false }
@@ -110,6 +117,12 @@ class CaptureEngine(
     fun stop() { stopRequested = true }
 
     fun endAndTakeDarks() { finishEarly = true }
+
+    /** The lens is covered — go ahead with darks. */
+    fun confirmDarks() { darksConfirmed = true }
+
+    /** FR-4.2.1's skip. The cost is stated in the UI, not here. */
+    fun skipDarks() { darksSkipped = true }
 
     /**
      * Runs the whole sequence. Returns when it is done, cancelled or failed; the session log on
@@ -174,18 +187,84 @@ class CaptureEngine(
         if (stopRequested || request.darkCount <= 0) return
 
         // FR-4.2.1: darks at the end, at matched ISO and exposure, along the same warming curve
-        // the lights were taken on (D-16). The engine does not prompt — the service does, because
-        // covering the lens is a thing a person does.
+        // the lights were taken on (D-16). **Covering the lens is a thing a person does**, so the
+        // sequence stops here and asks rather than rolling on — darks taken through an uncovered
+        // lens are not darks, they are light frames filed under `darks/`, and nothing downstream
+        // can tell the difference.
+        if (!awaitLensCovered(session, request)) return
+
         writer.setState(SessionState.DARKS)
         _progress.value = _progress.value.copy(
             state = SessionState.DARKS,
             target = request.darkCount,
         )
+
+        // Everything the sensor produced before the lens went on belongs to the previous
+        // generation and must not be filed as a dark.
+        session.apply(request.iso, request.exposureNs, request.focusDiopters)
+        val firstDarkGeneration = session.currentGeneration
+
         val darksAlready = writer.log.darks.size
         for (index in (darksAlready + 1)..request.darkCount) {
             if (stopRequested) break
-            captureOne(session, request, FrameKind.DARK, index)
+            captureOne(session, request, FrameKind.DARK, index, firstDarkGeneration)
         }
+    }
+
+    /**
+     * Waits for the lens to be covered, and gives up after [DARK_PROMPT_TIMEOUT_MS].
+     *
+     * The timeout is the point. Waiting forever holds the camera open and the wake lock high all
+     * night for someone who has gone to bed; skipping immediately throws away the darks of anyone
+     * who is standing right there. Waiting a while and then finishing cleanly, with the reason in
+     * the log, is the only option that is honest in both cases.
+     *
+     * @return true if darks should be captured.
+     */
+    private suspend fun awaitLensCovered(
+        session: SequenceSession,
+        request: Request,
+    ): Boolean {
+        darksConfirmed = false
+        darksSkipped = false
+
+        // The sensor is stopped while waiting: this could be ten minutes, and there is no reason
+        // to keep reading out a frame a second into a folder nobody will look at.
+        session.stopRepeating()
+        writer.setState(SessionState.AWAITING_DARKS)
+        _progress.value = _progress.value.copy(
+            state = SessionState.AWAITING_DARKS,
+            target = request.darkCount,
+            message = "Cover the lens for ${request.darkCount} dark frames",
+        )
+
+        val deadline = environment.nowEpochMs() + DARK_PROMPT_TIMEOUT_MS
+        while (!darksConfirmed && !darksSkipped && !stopRequested) {
+            if (environment.nowEpochMs() > deadline) {
+                Log.i(TAG, "no answer on the darks prompt — finishing without them")
+                writer.update {
+                    it.copy(
+                        info = it.info.copy(
+                            exposureDerivation = it.info.exposureDerivation +
+                                "darks skipped: nobody confirmed the lens was covered within " +
+                                "${DARK_PROMPT_TIMEOUT_MS / 60_000} minutes",
+                        ),
+                    )
+                }
+                return false
+            }
+            delay(PAUSE_POLL_MS)
+        }
+        if (darksSkipped) {
+            writer.update {
+                it.copy(
+                    info = it.info.copy(
+                        exposureDerivation = it.info.exposureDerivation + "darks skipped by the user",
+                    ),
+                )
+            }
+        }
+        return darksConfirmed && !stopRequested
     }
 
     private suspend fun captureOne(
@@ -193,9 +272,10 @@ class CaptureEngine(
         request: Request,
         kind: FrameKind,
         index: Int,
+        minGeneration: Int = 0,
     ) {
         val frame = session.nextVerifiedFrame(
-            timeoutFor(request.exposureNs), request.exposureNs,
+            timeoutFor(request.exposureNs), request.exposureNs, minGeneration,
         )
         val reading = environment.reading()
         val capturedAt = environment.nowEpochMs()
@@ -322,5 +402,8 @@ class CaptureEngine(
     private companion object {
         const val TAG = "CaptureEngine"
         const val PAUSE_POLL_MS = 250L
+
+        /** How long the darks prompt waits for an answer before finishing without them. */
+        const val DARK_PROMPT_TIMEOUT_MS = 15L * 60 * 1000
     }
 }

@@ -61,6 +61,8 @@ class CaptureService : Service() {
             ACTION_PAUSE -> { engine?.pause(); return START_STICKY }
             ACTION_RESUME -> { engine?.resume(); return START_STICKY }
             ACTION_END_AND_DARKS -> { engine?.endAndTakeDarks(); return START_STICKY }
+            ACTION_CONFIRM_DARKS -> { engine?.confirmDarks(); return START_STICKY }
+            ACTION_SKIP_DARKS -> { engine?.skipDarks(); return START_STICKY }
             ACTION_STOP -> { stopSequence(); return START_NOT_STICKY }
         }
 
@@ -175,11 +177,23 @@ class CaptureService : Service() {
 
     private fun notifyProgress(progress: CaptureEngine.Progress) {
         val title = when (progress.state) {
+            // The one notification that has to reach someone who has walked away.
+            SessionState.AWAITING_DARKS -> "Cover the lens for darks"
             SessionState.DARKS -> "Darks ${progress.darksCaptured}"
             SessionState.PAUSED -> "Paused"
             SessionState.DONE -> "Session complete"
             SessionState.FAILED -> "Session failed"
             else -> "Frame ${progress.framesCaptured} of ${progress.target}"
+        }
+        if (progress.state == SessionState.AWAITING_DARKS) {
+            notificationManager().notify(
+                NOTIFICATION_ID,
+                notification(
+                    "Cover the lens for darks",
+                    "Lights are done. Cover the lens, then tap to continue — or skip the darks.",
+                ),
+            )
+            return
         }
         val detail = buildString {
             append("${progress.framesAccepted} accepted")
@@ -269,6 +283,8 @@ class CaptureService : Service() {
         const val ACTION_PAUSE = "com.starstacker.PAUSE"
         const val ACTION_RESUME = "com.starstacker.RESUME"
         const val ACTION_END_AND_DARKS = "com.starstacker.END_AND_DARKS"
+        const val ACTION_CONFIRM_DARKS = "com.starstacker.CONFIRM_DARKS"
+        const val ACTION_SKIP_DARKS = "com.starstacker.SKIP_DARKS"
         const val ACTION_STOP = "com.starstacker.STOP"
 
         private const val EXTRA_CAMERA_ID = "cameraId"

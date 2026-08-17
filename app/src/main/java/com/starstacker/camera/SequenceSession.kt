@@ -93,7 +93,9 @@ class SequenceSession private constructor(
      */
     private val incoming = Channel<CapturedFrame>(capacity = 1)
 
-    private val results = HashMap<Long, TotalCaptureResult>()
+    private class Metadata(val result: TotalCaptureResult, val generation: Int)
+
+    private val results = HashMap<Long, Metadata>()
 
     @Volatile
     private var generation = 0
@@ -109,7 +111,7 @@ class SequenceSession private constructor(
         ) {
             val timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
             synchronized(results) {
-                results[timestamp] = result
+                results[timestamp] = Metadata(result, request.tag as? Int ?: -1)
                 if (results.size > RESULT_CACHE) {
                     results.keys.minOrNull()?.let { results.remove(it) }
                 }
@@ -122,14 +124,14 @@ class SequenceSession private constructor(
             try {
                 // Next, not latest: every frame is the product (see the class note).
                 val image = reader.acquireNextImage() ?: return@setOnImageAvailableListener
-                val result = synchronized(results) { results[image.timestamp] }
-                if (result == null) {
+                val metadata = synchronized(results) { results[image.timestamp] }
+                if (metadata == null) {
                     // The metadata has not landed yet. Re-queue the work rather than dropping the
                     // frame: the result arrives within milliseconds and the image is still valid.
                     access.handler.postDelayed({ pair(image) }, RESULT_RETRY_MS)
                     return@setOnImageAvailableListener
                 }
-                deliver(image, result)
+                deliver(image, metadata)
             } catch (t: Throwable) {
                 Log.w(TAG, "capture frame lost: ${t.message}")
             }
@@ -142,17 +144,21 @@ class SequenceSession private constructor(
     }
 
     private fun pair(image: Image) {
-        val result = synchronized(results) { results[image.timestamp] }
-        if (result == null) {
+        val metadata = synchronized(results) { results[image.timestamp] }
+        if (metadata == null) {
             Log.w(TAG, "no metadata for frame at ${image.timestamp} — dropping")
             runCatching { image.close() }
             return
         }
-        deliver(image, result)
+        deliver(image, metadata)
     }
 
-    private fun deliver(image: Image, result: TotalCaptureResult) {
-        val frame = CapturedFrame(image, result, chars, image.timestamp, generation)
+    private fun deliver(image: Image, metadata: Metadata) {
+        // The generation comes off the request's own tag, not from whatever is current now:
+        // the pipeline is ten frames deep on this HAL (plan section 1.7), so those differ.
+        val frame = CapturedFrame(
+            image, metadata.result, chars, image.timestamp, metadata.generation,
+        )
         if (!incoming.trySend(frame).isSuccess) {
             // The writer is still busy with the previous frame. Holding a second sensor buffer
             // while it finishes is what the reader's depth is for; if even that is full, the
@@ -189,22 +195,31 @@ class SequenceSession private constructor(
      * Frames that do not match are closed and skipped — the sensor takes a few frames to apply a
      * change, and a frame taken under the old settings is not a sub, it is a warm-up.
      */
-    suspend fun nextVerifiedFrame(timeoutMs: Long, exposureNs: Long): CapturedFrame =
-        withTimeout(timeoutMs) {
-            while (true) {
-                val frame = incoming.receive()
-                if (ManualRequest.exposureMatches(frame.appliedExposureNs, exposureNs)) {
-                    return@withTimeout frame
-                }
-                Log.i(
-                    TAG,
-                    "skipping unsettled frame: ${frame.appliedExposureNs} ns for $exposureNs ns",
-                )
-                frame.close()
-            }
-            @Suppress("UNREACHABLE_CODE")
-            error("unreachable")
+    suspend fun nextVerifiedFrame(
+        timeoutMs: Long,
+        exposureNs: Long,
+        minGeneration: Int = 0,
+    ): CapturedFrame = withTimeout(timeoutMs) {
+        while (true) {
+            val frame = incoming.receive()
+            val settled = ManualRequest.exposureMatches(frame.appliedExposureNs, exposureNs)
+            // The generation guard matters most after the sensor has been stopped and
+            // restarted — for darks, where a frame taken before the lens was covered would
+            // otherwise be filed as a dark and quietly poison the master.
+            if (settled && frame.generation >= minGeneration) return@withTimeout frame
+            Log.i(
+                TAG,
+                "skipping frame: exposure ${frame.appliedExposureNs} ns for $exposureNs ns, " +
+                    "generation ${frame.generation} < $minGeneration",
+            )
+            frame.close()
         }
+        @Suppress("UNREACHABLE_CODE")
+        error("unreachable")
+    }
+
+    /** The generation the next [apply] will produce — for callers that must not accept older. */
+    val currentGeneration: Int get() = generation
 
     /** Stops the sensor between frames — used for the gap while the user covers the lens. */
     fun stopRepeating() {

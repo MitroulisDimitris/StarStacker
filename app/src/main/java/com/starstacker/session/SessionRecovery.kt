@@ -22,6 +22,7 @@ object SessionRecovery {
         SessionState.CAPTURING,
         SessionState.PAUSED,
         SessionState.FOCUSING,
+        SessionState.AWAITING_DARKS,
         SessionState.DARKS,
         SessionState.FINALISING,
     )

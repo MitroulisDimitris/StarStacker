@@ -142,7 +142,23 @@ data class SessionInfo(
  * resume. It is written into the log rather than held in memory only, because the process that
  * knew the state is precisely the one that may not exist any more.
  */
-enum class SessionState { IDLE, FOCUSING, CAPTURING, PAUSED, DARKS, FINALISING, DONE, FAILED }
+enum class SessionState {
+    IDLE,
+    FOCUSING,
+    CAPTURING,
+    PAUSED,
+
+    /**
+     * Lights are done and the app is waiting for the lens to be covered (FR-4.2.1). A real state
+     * rather than a UI flag: the session can be killed while waiting, and on restart it has to
+     * come back knowing it owes darks and not lights.
+     */
+    AWAITING_DARKS,
+    DARKS,
+    FINALISING,
+    DONE,
+    FAILED,
+}
 
 /**
  * The whole document. Immutable — [withFrame] returns a new log — so the writer can serialise a

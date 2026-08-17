@@ -52,6 +52,8 @@ fun CaptureScreen(
     onPause: () -> Unit,
     onResume: () -> Unit,
     onEndAndTakeDarks: () -> Unit,
+    onConfirmDarks: () -> Unit,
+    onSkipDarks: () -> Unit,
     onDone: () -> Unit,
 ) {
     if (progress.state == SessionState.DONE || progress.state == SessionState.FAILED) {
@@ -73,6 +75,46 @@ fun CaptureScreen(
                 Spacer(Modifier.weight(1f))
                 Badge(progress.state.name, stateColor(progress.state))
             }
+        }
+
+        // FR-4.2.1. Nothing else on the screen matters while this is up: a dark taken through an
+        // uncovered lens is a light frame in the darks folder, and no later step can tell.
+        if (progress.state == SessionState.AWAITING_DARKS) {
+            item { Spacer(Modifier.height(8.dp)) }
+            item {
+                Text(
+                    "Cover the lens",
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Night.Txt,
+                )
+            }
+            item {
+                Card {
+                    Mono(
+                        "Lights are done. Put the cap on, or press the lens flat against " +
+                            "something opaque, then continue. Darks are matched to this " +
+                            "session's ISO, exposure and temperature — they only work if the " +
+                            "sensor sees nothing.",
+                        color = Night.Txt2,
+                        size = 11.5.sp,
+                    )
+                }
+            }
+            item { HotButton("Lens is covered — take darks", onClick = onConfirmDarks) }
+            item {
+                QuietButton("Skip darks", onClick = onSkipDarks)
+            }
+            item {
+                Banner(
+                    "Skipping costs dark-current and amp-glow correction: hot pixels and a " +
+                        "warm glow in the corners stay in the stack. You can shoot darks later " +
+                        "at the same ISO, exposure and temperature and add them by hand.",
+                    color = Night.Warn,
+                )
+            }
+            item { Spacer(Modifier.height(28.dp)) }
+            return@LazyColumn
         }
 
         item { ProgressRing(progress) }
@@ -305,6 +347,7 @@ private const val RECENT_FRAMES = 6
 private fun headline(progress: CaptureEngine.Progress): String = buildString {
     append(
         when (progress.state) {
+            SessionState.AWAITING_DARKS -> "COVER THE LENS"
             SessionState.DARKS -> "TAKING DARKS"
             SessionState.PAUSED -> "PAUSED"
             else -> "CAPTURING"
@@ -313,6 +356,7 @@ private fun headline(progress: CaptureEngine.Progress): String = buildString {
 }
 
 private fun stateColor(state: SessionState) = when (state) {
+    SessionState.AWAITING_DARKS -> Night.Warn
     SessionState.PAUSED -> Night.Warn
     SessionState.FAILED -> Night.Red
     else -> Night.Mid

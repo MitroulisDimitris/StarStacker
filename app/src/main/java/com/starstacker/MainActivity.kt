@@ -219,7 +219,8 @@ class MainActivity : ComponentActivity() {
                 val capture by CaptureService.progress.collectAsStateWithLifecycle()
                 LaunchedEffect(capture.state) {
                     if (capture.state == SessionState.CAPTURING ||
-                        capture.state == SessionState.DARKS
+                        capture.state == SessionState.DARKS ||
+                        capture.state == SessionState.AWAITING_DARKS
                     ) {
                         screen = Screen.CAPTURE
                     }
@@ -299,6 +300,14 @@ class MainActivity : ComponentActivity() {
                             CaptureService.send(
                                 this@MainActivity, CaptureService.ACTION_END_AND_DARKS,
                             )
+                        },
+                        onConfirmDarks = {
+                            CaptureService.send(
+                                this@MainActivity, CaptureService.ACTION_CONFIRM_DARKS,
+                            )
+                        },
+                        onSkipDarks = {
+                            CaptureService.send(this@MainActivity, CaptureService.ACTION_SKIP_DARKS)
                         },
                         onDone = { screen = Screen.PROBE },
                     )
