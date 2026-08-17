@@ -1,0 +1,9 @@
+# Normalise to LF in the repository regardless of who commits. Without this, a Windows
+# checkout can commit CRLF into gradlew, which then fails on a Linux clone with a bad
+# interpreter line.
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.jar binary
+*.dng binary
+*.png binary

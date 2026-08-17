@@ -1,0 +1,24 @@
+*.iml
+.gradle/
+.kotlin/
+/local.properties
+/.idea/
+.DS_Store
+build/
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# Device profiles exported during probing are machine/device specific...
+# (glob the contents, not the directory — git will not descend into an ignored directory,
+# so an un-ignore rule inside one never fires.)
+/probe-output/*
+# ...except the reference profile, which is the evidence behind §1.5 of the plan.
+!/probe-output/device-profile.json
+
+# Ad-hoc probe dumps pulled from the device
+device-profile_*.json
+
+# First-light DNGs are 25 MB each
+probe-output/first-light/*.dng

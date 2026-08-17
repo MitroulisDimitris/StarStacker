@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Device profile JSON export (FR-3.2.1) lives here so it can be shared to a
+         friend without granting any storage permission. -->
+    <external-files-path name="profiles" path="." />
+</paths>

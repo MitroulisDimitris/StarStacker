@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Night-adapted shell. The real palette lives in Compose (ui/theme/Theme.kt);
+         this only keeps the pre-Compose window from flashing white, which on a dark
+         site costs the user 25 minutes of dark adaptation. -->
+    <style name="Theme.StarStacker" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#070402</item>
+        <item name="android:statusBarColor">#070402</item>
+        <item name="android:navigationBarColor">#070402</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
