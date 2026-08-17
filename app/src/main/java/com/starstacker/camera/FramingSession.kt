@@ -520,6 +520,9 @@ class FramingSession private constructor(
          * plane contains, and on sensors where Gr and Gb differ, averaging in red and blue would
          * shift the whole background.
          */
+        /** Shared with [SequenceSession], which needs the same green-only figure. */
+        fun blackLevelOfPublic(chars: CameraCharacteristics): Double = blackLevelOf(chars)
+
         private fun blackLevelOf(chars: CameraCharacteristics): Double {
             val pattern = chars.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN)
                 ?: return 0.0

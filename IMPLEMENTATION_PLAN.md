@@ -79,7 +79,7 @@ Two consequences to accept deliberately:
 | 0 | 9 | 1 | in progress — skeleton builds and installs; shared components extracted (T-0.2 part) |
 | 1A | 6 | 6 | **complete** — probe, qualification, camera lifecycle, first light, DNG reader |
 | 1B | 7 | 2 | **hardware-verified except what needs darkness** — see §5 and §1.7 |
-| 1C | 14 | 0 | **exposure engine written and validated on the sensor** (T-3.1/3.2/3.3/3.5); capture engine next |
+| 1C | 14 | 1 | **a full unattended session runs end to end** (§1.9) — exposure engine, capture service, frame writer, gating and darks all working; UI (T-3.4, T-3.11, T-3.15) and resume (T-3.13) outstanding |
 | 2+ | outlined | 0 | not started |
 
 > **Phase 1B has now met every acceptance that does not require a night sky** (2026-08-17). The
@@ -300,6 +300,38 @@ the recommendation was not uncertain but unfounded. A clipped measurement now yi
 recommendation at all. The diagnostic had the matching flaw — it measured the sky from whichever
 frame came last, which is the *highest* ISO of the sweep and so the likeliest to be saturated; it
 now takes the brightest unclipped frame.
+
+---
+
+## 1.9 First unattended session — measured 2026-08-17
+
+The capture engine ran end to end on the reference device: **53 frames (50 lights + 3 darks) at
+ISO 400 / 1 s, screen off for most of it, session complete and logged.**
+
+| What | Measured | Consequence |
+|---|---|---|
+| **Per-frame overhead** | **2 ms** beyond the exposure — 53 frames in 52.0 s at a 1 s sub | The 25 MB DNG write is entirely hidden behind the next exposure. Capture runs at essentially 100% duty cycle, so `SessionPlanner`'s `overheadSeconds` is ~0 rather than the seconds it was allowing for |
+| Sustained write | 25 MB/frame at 1 frame/s, no back pressure | Storage is not the bottleneck at these rates |
+| DNG structure | Byte-identical in size and structure to §1.6's ground truth | The `SessionFolder` stream path writes valid DNGs |
+| Battery temperature | 31 → 32 °C over the first minute | D-16's monotonic warming curve is real and visible per frame |
+| Thermal headroom | 0.67 → 0.72 across a minute | Nowhere near the 0.85 pacing floor; OI-11 still needs a full session |
+| Live gating | All 50 lights correctly rejected `SATURATED` | The phone was face-up under room light, so they genuinely were clipped — the §1.7 saturation guard working in the capture path, not just the framing one |
+
+Three structural points that fell out of building it:
+
+- **Capture needs its own session class.** `SequenceSession` is not `FramingSession` with a flag.
+  Framing calls `acquireLatestImage()` and drops frames when analysis is busy, which is right for
+  a preview and silently shortens the integration the planner promised. Capture uses
+  `acquireNextImage()`, applies back pressure instead of dropping, and keeps the whole
+  `TotalCaptureResult` because `DngCreator` needs the result object itself.
+- **The image is handed to the writer still open**, so a 25 MB frame goes from the sensor buffer
+  to the file without an intermediate copy. It is held only for the duration of the write, since
+  the camera is one buffer short until it is released. Three RAW buffers: one being written, one
+  just captured, one for the sensor to fill.
+- **Metrics are measured after the bytes are down, and the record is amended.** The frame is
+  written and logged first, then analysed, then the log entry is updated with HFR, star count and
+  the gate's verdict. The alternative — analyse first, then write — holds a sensor buffer across
+  130 ms of detection for no benefit, and risks logging a frame that then fails to write.
 
 ---
 
@@ -717,7 +749,7 @@ Goal: FR-13/M3 — *press start, walk away, come back to a folder of good subs.*
 
 ### Capture engine (§6)
 
-- [ ] **T-3.6** Capture foreground service per **D-12**: `foregroundServiceType="camera"`,
+- [~] **T-3.6** Capture foreground service per **D-12**: `foregroundServiceType="camera"`,
   `FOREGROUND_SERVICE_CAMERA` + runtime `CAMERA`, started from the Start button while the app is
   visible (the `camera` type is while-in-use restricted, so it cannot be started from the
   background — starting it from the tap satisfies this and there is *no* 6 h limit on this type).
@@ -727,25 +759,25 @@ Goal: FR-13/M3 — *press start, walk away, come back to a folder of good subs.*
   *Accept:* 45-minute sequence completes with the screen off and the app backgrounded — **and
   repeats with battery optimisation left on**, since OEM battery managers are the residual risk
   the platform rules don't cover. If it fails, offer `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`.
-- [ ] **T-3.7** Frame writer: DNG per frame with per-frame metadata capture, plus incremental
+- [~] **T-3.7** Frame writer: DNG per frame with per-frame metadata capture, plus incremental
   `session.json` (FR-9.2 — timestamp, ISO, exposure, temperature, HFR, star count, background
   level, accept/reject + reason; transform added in Phase 2). Written incrementally, not at the
   end, so a killed process still leaves a usable log.
   *Accept:* kill the process mid-session → `session.json` describes every frame written.
-- [ ] **T-3.8** Session folder layout exactly per FR-9.1 (`lights/`, `darks/`, `flats/`, `master/`,
+- [x] **T-3.8** Session folder layout exactly per FR-9.1 (`lights/`, `darks/`, `flats/`, `master/`,
   `session.json`).
-- [ ] **T-3.9** Thermal pacing (FR-6.2): monitor `PowerManager.getThermalHeadroom()` + battery temp
+- [~] **T-3.9** Thermal pacing (FR-6.2): monitor `PowerManager.getThermalHeadroom()` + battery temp
   (+ sensor temp if the device exposes it — see **OI-7**), insert cooling gaps past a threshold,
   simple indicator with numbers on tap.
   *Accept:* thermal log across a full session, used to answer **OI-11**.
-- [ ] **T-3.10** Cheap live quality gating (the subset that needs no registration): eccentricity →
+- [~] **T-3.10** Cheap live quality gating (the subset that needs no registration): eccentricity →
   trailing, star-count collapse → cloud, accelerometer spike → bump. Rejected frames kept on disk
   and flagged (D-10). Registration-residual gating and the common-area indicator arrive in Phase 2.
 - [ ] **T-3.11** Live capture screen (prototype screen 03): the per-frame ring, metrics grid
   (HFR / stars / common area / sensor temp), recent-frame log with reject reasons, the
   non-blocking event note, `Pause` and `End & take darks`.
   *Accept:* readable from two metres away in the dark; matches the prototype's information density.
-- [ ] **T-3.12** Dark frames at end of session (FR-4.2.1): prompt to cover the lens, capture at
+- [~] **T-3.12** Dark frames at end of session (FR-4.2.1): prompt to cover the lens, capture at
   matched ISO/exposure, log temperature per frame, write to `darks/`. Skippable, with the cost
   stated.
 - [ ] **T-3.13** Interruption, pause/resume, and crash recovery: an interrupted session is
@@ -969,6 +1001,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-08-17 | **The primary deliverable runs: a full unattended session, screen off, start to finish.** 53 frames (50 lights + 3 darks) at ISO 400 / 1 s written as valid DNGs into the FR-9.1 folder layout with a complete `session.json` — T-3.6, T-3.7, T-3.8, T-3.9, T-3.10 and T-3.12 all exercised on hardware (§1.9). **Per-frame overhead measured at 2 ms**: 53 frames in 52.0 s, so the 25 MB DNG write hides entirely behind the next exposure and capture runs at essentially 100% duty cycle. Battery temperature climbed 31 → 32 °C in the first minute, which is D-16's warming curve showing up per frame as designed. Capture needed **its own session class** rather than a flag on `FramingSession`: framing calls `acquireLatestImage()` and drops frames when busy, which is correct for a preview and would silently shorten the integration the planner promised, so `SequenceSession` uses `acquireNextImage()`, applies back pressure, and keeps the whole `TotalCaptureResult` that `DngCreator` requires. All 50 lights were correctly rejected as `SATURATED` — the phone was face-up under room light — which is §1.7's saturation guard proving itself in the capture path rather than only the framing one. 175 JVM tests. Still outstanding in 1C: the solve and live-capture UI (T-3.4, T-3.11, T-3.15), resume (T-3.13), the live preview stack (T-3.14), and SAF (T-0.5) — capture currently writes to `Android/data/.../files/sessions`, which is reachable from a PC over USB but is not yet FR-9.1's user-chosen root. |
 | 2026-08-17 | **Phase 1C exposure engine written and validated against the sensor** (T-3.1, T-3.2, T-3.3, T-3.5). 152 JVM tests (112 before). §1.8 records what the device's own `SENSOR_NOISE_PROFILE` actually says: a real per-ISO curve, read noise 5.64 e⁻ at ISO 50 falling to 2.07 e⁻ by ISO 3200, **no dual conversion gain step** — which half-answers **OI-9**. Three findings came out of running it rather than testing it: **a clipped test frame produced a confident recommendation** while the advisory beside it said nothing could be measured (same family as the star detector's saturation trap — every number descends from a sky rate that a clipped frame cannot supply, so there is now no recommendation at all); **the headroom tiebreak was degenerate** under a bright sky, where all candidates sit at the same background fraction, so the answer was falling out of list order and the longest sub now wins explicitly; and **`RESULT_CACHE` was sized in entries**, holding only 160 ms of history at a 20 ms request, so short test frames never paired with their metadata and never settled. Two design points worth keeping: FR-5.2's sky-limited criterion is a **floor, not a target** — treating it as the answer recommends 20 ms subs — and FR-5.1's pole relaxation must be computed from the fastest-moving star *in the field*, since a phone's 85° diagonal makes the naive `cos(δ_centre)` form unbounded at Polaris while the corners still trail at two-thirds of the equatorial rate. New **OI-21**: battery drain per hour is a placeholder, not a measurement. |
 | 2026-08-17 | **Phase 1B met on hardware, except what needs darkness.** A device was attached for the first time since the phase was written, and it found four HAL behaviours that were silently breaking it (**§1.7**): a **9–10 frame** request pipeline, focus quantised to ~0.0374 dioptre steps, a request of exactly 0.0 dioptres answered with *hyperfocal* rather than the far stop, and `LENS_STATE` reporting STATIONARY mid-move. Together these made `settled` false on **every frame ever taken**, which would have timed out every focus sweep and reported the sky as starless. Fixed by stamping requests with `CaptureRequest.setTag()` and reading the generation back off the result, so a frame is judged against the request that made it regardless of the HAL's queue; by `FocusSweep.NEAR_INFINITY`; and by `awaitStableFrame`, which waits for the lens to *arrive* rather than merely to be settled. Separately, the star detector was reading a **fully clipped frame as 24–41 stars at HFR 0.95 px** — saturation zeroes the noise estimate and the threshold was a multiple of it; `FrameStars.saturatedFrame` is now a third answer distinct from "no stars", since the two call for opposite remedies (FR-7.5). **T-2.1 confirmed** — the device names its own guarantee, *"In-app processing plus DNG capture"* — but its **screen-off half is re-filed to T-3.6 as OI-20**: the loop freezes seconds after the screen goes off with the process still alive, so D-22's surface argument, while correct, does not cover process lifecycle. 112 JVM tests pass. New `diag/FieldDiagnostics.kt` drives the camera acceptances from `adb`, which is what made any of this visible. |
 | 2026-08-16 | **Phase 1B written — code-complete, field-unverified.** All seven tasks implemented: stream planning with the device's own guarantee check (T-2.1), the night framing preview (T-2.2), focus sweep and store (T-2.4), verification and drift monitoring (T-2.5), pointing (T-2.6) and the derived camera picker (T-2.7). **109 JVM tests pass** (43 before), `:app:assembleDebug` → 25.7 MB. **No device was attached, so nothing here has met its acceptance criterion** — every box is `[~]`. Three decisions came out of writing it: **D-22** (the preview is rendered from the RAW stream, which dissolves T-2.1's screen-off case instead of handling it), **D-23** (D-20's second surface must be a *drained* YUV reader — an unconsumed `SurfaceTexture` cannot be drained without a GL context and would stall a repeating request, which T-1.4 never noticed because it stopped after one frame) and **D-24** (own the JSON reader, since D-5 requires reading `session.json` back). Shared UI components extracted (T-0.2 part), and the FR-6.1 request profile de-duplicated into `ManualRequest` so there is one definition of "OEM processing off" rather than two that can drift. |

@@ -3,6 +3,15 @@
 
     <uses-permission android:name="android.permission.CAMERA" />
 
+    <!-- T-3.6 / D-12. The `camera` foreground service type is the only one without a time
+         limit, which an all-night session needs; it is while-in-use restricted, so the service
+         is started from the Start tap while the app is visible. WAKE_LOCK because the screen
+         going off must not suspend the process — measured, see plan §1.7. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <!-- Latitude drives the field-rotation rate and the dec-corrected trailing limit (FR-5.1).
          Denial is survivable: pointing still reports alt/az, and the exposure engine falls
          back to the pole-agnostic form and says so. -->
@@ -34,6 +43,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".capture.CaptureService"
+            android:exported="false"
+            android:foregroundServiceType="camera" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

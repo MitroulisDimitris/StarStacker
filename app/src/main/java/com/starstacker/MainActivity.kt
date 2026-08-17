@@ -21,6 +21,8 @@ import android.util.Log
 import com.starstacker.camera.CameraAccess
 import com.starstacker.camera.OpenabilityProbe
 import com.starstacker.camera.RawCapture
+import com.starstacker.capture.CaptureEngine
+import com.starstacker.capture.CaptureService
 import com.starstacker.device.CameraPicker
 import com.starstacker.device.CameraProbe
 import com.starstacker.device.DeviceProfile
@@ -105,6 +107,28 @@ class MainActivity : ComponentActivity() {
                 runCapture(10_000_000_000L)
                 Log.i(TAG, "autodiag complete")
             }
+        }
+
+        // T-3.6's acceptance driven from adb. The `camera` foreground service type is
+        // while-in-use restricted, so it has to be started from a visible Activity — which this
+        // is, exactly as the real Start button will be:
+        //   adb shell am start -n com.starstacker/.MainActivity --es diag capture \
+        //       --ei frames 8 --ei exposureMs 1000 --ei iso 800 --ei darks 2
+        if (intent?.getStringExtra("diag") == "capture" && hasCameraPermission()) {
+            CaptureService.start(
+                context = this,
+                request = CaptureEngine.Request(
+                    cameraId = MAIN_CAMERA_ID,
+                    iso = intent.getIntExtra("iso", 800),
+                    exposureNs = intent.getIntExtra("exposureMs", 1000) * 1_000_000L,
+                    focusDiopters = null,
+                    lightCount = intent.getIntExtra("frames", 8),
+                    darkCount = intent.getIntExtra("darks", 0),
+                ),
+                label = intent.getStringExtra("label") ?: "diag",
+            )
+            Log.i(TAG, "capture service started")
+            return
         }
 
         val fieldDiag = intent?.getStringExtra("diag")
