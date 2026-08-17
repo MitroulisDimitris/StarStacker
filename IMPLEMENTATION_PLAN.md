@@ -1,0 +1,814 @@
+# StarStacker — Implementation Plan
+
+**Companion to:** [astro-camera-app-requirements.md](astro-camera-app-requirements.md) (v0.1 draft) and
+[astro-app-ui-prototype.html](astro-app-ui-prototype.html)
+**Plan version:** 1.3 · **Created:** 2026-08-16 · **Last updated:** 2026-08-16
+**Target device:** Nothing Phone (3a) Pro (see §1.5)
+**Repo state at creation:** requirements + UI prototype only. No Android project, no code, no git repo.
+**Repository:** <https://github.com/MitroulisDimitris/StarStacker> — history is committed one phase
+per commit, so a phase's whole diff reads as a unit.
+
+---
+
+## 0. How to use this document
+
+This is the single tracking surface. Three things live here and nowhere else:
+
+1. **Tasks** — one line per unit of work, with a stable ID (`T-1.4`), a status box, and an
+   acceptance criterion. Tick the box when the acceptance criterion is demonstrably met on a
+   real device, not when the code compiles.
+2. **Decisions** (`D-n`) — architectural commitments. Each has a rationale and a reversal cost.
+   If you change one, edit it in place and note the date; don't leave the old text.
+3. **Open issues** (`OI-n`) — anything unresolved that will change the shape of the code.
+   Each has a *needed-by* phase. An issue whose needed-by phase is current is a blocker.
+
+**Status legend:** `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked (name the OI) ·
+`[-]` cut / deferred out of v1
+
+**Conventions**
+- `FR-x.y` references point at the requirements doc, which stays authoritative for *what*.
+  This document is only *how* and *in what order*.
+- Every phase ends with a **checkpoint**: a thing you can do with the phone in your hand.
+  If the checkpoint can't be demonstrated, the phase is not done regardless of ticked boxes.
+
+---
+
+## 1. Ordering — and where it departs from the requirements
+
+The requirements' milestone list (§13) runs M1 instrumentation → M2 calibration → M3 capture.
+**This plan reorders to put a working shooting mode first**, per the stated priority. Calibration
+moves behind capture and stacking.
+
+That reorder is safe, and the requirements already justify it: **FR-3.1.1** commits the app to
+being genuinely useful at *Functional* tier — no calibration at all — with the exposure engine
+falling back to `SENSOR_NOISE_PROFILE` and focus found by live HFR sweep each session. Every
+calibration master is therefore optional input to a pipeline that must tolerate its absence.
+Building the pipeline calibration-free first is the cheapest way to guarantee that property
+instead of retrofitting it.
+
+Two consequences to accept deliberately:
+
+- **Per-session darks are not calibration.** FR-4.2.1 darks are captured by the capture engine at
+  the end of every session. They ship in Phase 1C, not in the calibration phase.
+- **The exposure engine runs on OEM noise data until Phase 6.** If Phase 1C measurement on the real
+  device shows `SENSOR_NOISE_PROFILE` is too far off to pick a sane ISO, promote the noise-model
+  step (§4.1.1 — 3 minutes, indoors) forward into Phase 1C. See **OI-9** for the trigger.
+
+### Phase map
+
+| Phase | Name | Requirements | Checkpoint |
+|---|---|---|---|
+| **0** | Foundations | §12 | App installs, night theme, session root picked, screens navigable |
+| **1A** | First light | M1, §3, FR-6.1 | Tap a button → a valid DNG lands in the session folder |
+| **1B** | Framing & focus | FR-6.3, §4.1.4 | Point the phone at the sky in the dark and see stars; focus locks |
+| **1C** | Unattended session | M3, §5, §6, §9 | **Press start, walk away, come back to a folder of good subs** |
+| **2** | Registration & live gating | M4 (reg), M5 | Live per-frame accept/reject with real transforms; common-area readout |
+| **3** | Stacking | M4 | Linear master out, comparable to Siril on the same subs |
+| **4** | Session management | M5.5 | Capture and stacking fully decoupled; restack, multi-night |
+| **5** | Auto-edit | M6 | Shareable stretched JPEG without a desktop |
+| **6** | Calibration library | M2 | Flats, noise model, hot pixels, intrinsics; Full tier reachable |
+| **7** | Wide-field & second camera | M7 | De-project/re-project; per-camera calibration; recommendation |
+| **8** | Post-v1 | §14 deferred | Dithering, star trails, framing assistance |
+
+**Phases 0 → 1C are the priority.** Everything after 1C is sequenced but not yet scheduled.
+
+### Progress
+
+| Phase | Tasks | Done | Status |
+|---|---|---|---|
+| 0 | 9 | 1 | in progress — skeleton builds and installs; shared components extracted (T-0.2 part) |
+| 1A | 6 | 6 | **complete** — probe, qualification, camera lifecycle, first light, DNG reader |
+| 1B | 7 | 1 | **all seven written and unit-tested; six await a night sky** — see §5 |
+| 1C | 14 | 0 | not started |
+| 2+ | outlined | 0 | not started |
+
+> **Phase 1B is code-complete and field-unverified.** Every task builds, and 109 JVM tests pass,
+> but nothing in this phase has been run against a real sky — or against a real camera, since no
+> device was attached when it was written. The boxes stay `[~]` until they are, per §0: a ticked
+> box means demonstrated on hardware, not compiled.
+
+---
+
+## 1.5 Target device — Nothing Phone (3a) Pro
+
+Chosen 2026-08-16 (OI-6). **Probed on real hardware 2026-08-16 — it qualifies.**
+Model `A059P`, device `Asteroids`, **Android 16 (API 36)**, `arm64-v8a`.
+Accelerometer, magnetometer, gyroscope and GPS all present.
+
+### Measured qualification — all four hard requirements pass
+
+| Check | Measured | Verdict |
+|---|---|---|
+| Hardware level | **LEVEL_3** (every camera) | Pass — the best tier Camera2 defines |
+| RAW capability | Present, with `MANUAL_SENSOR`, `MANUAL_POST_PROCESSING`, `READ_SENSOR_SETTINGS`, `BURST_CAPTURE` | Pass |
+| Manual exposure + ISO | ISO 50–12800, exposure 42 µs–49.6 s | Pass |
+| **Max exposure** | **49.64 s** | Pass by a wide margin — FR-3.2.2's "warn under 10 s" is nowhere near triggering |
+
+Tier: **FUNCTIONAL** (the ceiling until calibration exists in Phase 6).
+
+### The cameras — five HAL devices, two published
+
+`dumpsys media.camera` reports *five* camera devices; `getCameraIdList()` publishes **two**.
+
+| ID | Discovery | Focal | Aperture | Sensor | RAW | Pitch | Focus | Max exp | Identity |
+|---|---|---|---|---|---|---|---|---|---|
+| **0** | listed | 5.56 mm | f/1.88 | 8.192 × 6.144 mm | 4096×3072 (12.6 MP) | **2.00 µm** | motor | **49.6 s** | **Main — the astro camera** |
+| 1 | listed | 3.61 mm | f/2.2 | 5.22 × 3.93 mm | 4080×3072 | 1.28 µm | fixed | 0.48 s | Front — fails on exposure, correctly |
+| 2 | **hidden** | 1.64 mm | f/2.2 | 3.67 × 2.76 mm | 3280×2464 | 1.12 µm | fixed | 34.9 s | Ultrawide |
+| 3 | **hidden** | 13.30 mm | f/2.55 | 6.55 × 4.92 mm | 4096×3072 | 1.60 µm | motor | 36.1 s | Tele (periscope) |
+| 4 | **hidden** | 5.56 mm | f/1.88 | 8.192 × 6.144 mm | 4096×3072 | 2.00 µm | motor | 34.9 s | Logical multi-camera fronting [2, 0, 3] |
+
+The ultrawide and tele are **not absent — they are unpublished**. They sit behind logical camera 4,
+which is itself unpublished, so neither `getCameraIdList()` nor a walk of published cameras'
+physical children finds them. A direct ID probe does, and their characteristics read fine.
+**All five open successfully** (T-1.3, 2026-08-16) — being unpublished does not make them
+unreachable. Whether they also *capture* is OI-19.
+
+### What the measurements settle
+
+- **OI-17 resolved, favourably.** The main sensor bins 2×2 internally
+  (`SENSOR_INFO_BINNING_FACTOR = [2,2]`): a 50 MP array delivered as a 12.6 MP Bayer frame. The
+  platform reports the *already-binned* array as `SENSOR_INFO_PIXEL_ARRAY_SIZE` while
+  `SENSOR_INFO_PHYSICAL_SIZE` covers the whole sensor, so pitch works out to exactly **2.00 µm** —
+  double the native ~1.0 µm, with the full-well and read-noise benefits that implies. The trap
+  didn't bite here, but the guard stays: `rawSmallerThanPixelArray` and `sensorBinsInternally` are
+  now reported separately, because they are different questions and only one of them was ever true.
+- **OI-3 confirmed on-device.** Among the guaranteed combinations: *"Preview with in-app processing
+  and DNG capture: PRIV@1920×1080 + YUV@1920×1080 + RAW_SENSOR@4096×3072"*. Both the D-9 direct-RAW
+  path and the YUV analysis fallback are available on the main camera.
+- **OI-8 confirmed a non-issue.** `SENSOR_INFO_TIMESTAMP_SOURCE = REALTIME`, so frame timestamps
+  and `SensorEvent` timestamps share a clock. No offset estimation needed.
+- **OIS is disableable.** `LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION = [0, 1]` — mode 0 is OFF, as
+  FR-6.1 requires for tripod use.
+- **Sensor basics:** CFA `GRBG`, white level 1023 (10-bit), black level 64 on all channels,
+  max frame duration 49.6 s.
+- **The ultrawide is genuinely the weak one here** — 1.12 µm pixels at f/2.2 against 2.00 µm at
+  f/1.88 on the main. FR-11.2's speculation that the ultrawide might be the best astro camera does
+  not hold on this device. Its fixed focus remains a real advantage (immune to drift).
+- **The tele is a real astro option** if it can be opened: 13.3 mm at f/2.55 with 1.60 µm pixels
+  and a 36 s exposure ceiling. That is a longer focal length than most phone teles.
+
+---
+
+## 1.6 First light — measured DNG structure (2026-08-16)
+
+A 10 s ISO 800 frame from camera 0, written by `DngCreator`. This is the ground truth behind
+**D-13**, and the specification the T-1.6 reader is written against.
+
+| Tag | Value | Consequence |
+|---|---|---|
+| Byte order / magic | `II` (little endian), 42 | Standard TIFF |
+| `Compression` | **1 — uncompressed** | **OI-1 closed.** No lossless-JPEG decoder needed |
+| `BitsPerSample` | 16 | One `ShortArray`, no bit unpacking |
+| `PhotometricInterpretation` | 32803 (CFA) | Raw Bayer, not demosaiced |
+| `ImageWidth` × `ImageLength` | 4096 × 3072 | Matches the probe's RAW size |
+| `RowsPerStrip` | **1** | **3072 strips**, one row each — the reader must walk the strip table, not assume a single blob |
+| `StripByteCounts` | 8192 each | 4096 px × 2 B — exactly one row, no padding |
+| `StripOffsets[0]` | 30052 | Pixel data starts here and runs contiguously |
+| `CFAPattern` | 1,0,2,1 = **GRBG** | Agrees with `SENSOR_INFO_COLOR_FILTER_ARRANGEMENT` |
+| `BlackLevel` / `WhiteLevel` | 64 / 1023 | 10-bit data in a 16-bit container |
+| `ActiveArea` | 0,0,3072,4096 | Whole frame is active — no margin to crop |
+| `ExposureTime` | 2500000000/250000000 = **10.0 s** | The request was honoured exactly |
+| `DNGVersion` | 1.4.0.0 | |
+| File size | 25,195,876 B | 25,165,824 B of pixels + 30,052 B of metadata — confirming uncompressed |
+
+The CFA data lives in **IFD0 itself**, not a SubIFD, which makes the reader simpler than D-13
+originally assumed.
+
+**Storage implication:** 24.0 MiB per frame. A 150-frame session is **3.6 GB**, and an hour of
+12 s subs is ≈ **7.2 GB** — at the top of the requirements' "5–6 GB per hour" estimate (FR-5.4).
+The planner's storage budget should use the measured figure, not the estimate.
+
+---
+
+## 2. Decisions
+
+| ID | Decision | Rationale | Reversal cost |
+|---|---|---|---|
+| **D-1** | Single Gradle module `:app`, package-by-feature (`capture/`, `stack/`, `calib/`, `session/`, `ui/`, `device/`) | Solo project, side-loaded. Multi-module buys parallel builds you don't need yet and costs a wiring tax on every change. | Low — split when build time hurts |
+| **D-2** | Jetpack Compose, no XML layouts | The prototype is a design system (tokens, one accent per screen); Compose expresses that directly. | High — don't revisit |
+| **D-3** | Camera2 directly, **not** CameraX | CameraX's RAW + full manual control story is thin, and FR-6.1 needs per-frame manual ISO/exposure/focus/WB with OEM processing off. | High |
+| **D-4** | Manual DI container (`AppContainer`) + ViewModel factories, no Hilt | ~30 injectables in the whole app. Avoids the annotation-processor build cost. | Low |
+| **D-5** | **No database.** `session.json` on disk is the source of truth; a cached index file speeds the session list | FR-10.6.4 requires sessions to be discovered by *scanning the root*, including folders copied back from a PC. A DB then becomes a second source of truth that is wrong whenever the folder changes externally. | Medium |
+| **D-6** | Kotlin coroutines + `StateFlow`. Capture engine lives in a foreground service and exposes one `SessionState` flow; UI is a pure function of it | Screen-off, backgrounded, process-death-resumable capture cannot be driven from a ViewModel. | Medium |
+| **D-7** | OpenCV added as a dependency **at Phase 3**, not before | Keeps the Phase-1 APK small and the build fast while shooting is the only feature. Star detection (§12.1) is Kotlin anyway. | Low |
+| **D-8** | `arm64-v8a` only, minSdk 30, targetSdk current | FR-3.1 | — |
+| **D-9** | Live analysis reads the **RAW buffer directly** (green channel, 4×4 binned to ~1 MP), not a separate YUV stream | One less stream to configure, no OEM ISP in the analysis path, and the numbers then describe the data actually being stacked. Confirmed viable by OI-3: the YUV path remains available as a guaranteed fallback, so this is a free choice rather than a bet. | Medium |
+| **D-10** | Rejected frames are written to `lights/` like any other frame and flagged in `session.json`. Nothing is ever deleted by the app | FR-7.5, FR-10.6.3 | — |
+| **D-11** | Fonts bundled, not fetched (Space Grotesk + IBM Plex Mono, both OFL) | Offline in a field with no signal is the normal case. | — |
+| **D-12** | **Two separate foreground services.** Capture = `camera` type (no time limit). Stacking = `mediaProcessing` on API 35+, `dataSync` on API 34 — both carry a 6 h / 24 h budget, both must implement `onTimeout()` → `stopSelf()` | Resolves OI-2. Capture must be able to run for hours; only the `camera` type allows that. Stacking is minutes, so the 6 h budget is ample, but the callback is mandatory or the system throws `RemoteServiceException`. | Medium |
+| **D-13** | **DNG readback via a minimal TIFF/DNG reader written in Kotlin**: header → IFD0, tags `StripOffsets`/`StripByteCounts`/`RowsPerStrip`/`BitsPerSample`/`Compression`/`CFAPattern`/`BlackLevel`/`WhiteLevel`, strips copied into a `ShortArray` | Resolves OI-1. **Confirmed against a real capture 2026-08-16** — see §1.6. No SubIFD walk is needed: `DngCreator` puts the CFA data in IFD0 itself. | Medium |
+| **D-20** | **Every capture session configures a second surface alongside the RAW stream**, even with the screen off (a `SurfaceTexture` needs no display) | Measured: this HAL never delivers a frame on a RAW-only session, in any request profile, despite "No-preview DNG capture" being in its own guaranteed-combination list. A guaranteed *configuration* is not a guaranteed *stream*. | Low |
+| **D-21** | **Requests are built from `TEMPLATE_MANUAL`, and every capture's metadata is verified against what was asked** before the frame is accepted | Measured: with `TEMPLATE_STILL_CAPTURE` the HAL silently ignored `SENSOR_EXPOSURE_TIME` and returned 30 ms frames for a 10 s request. Nothing downstream can detect a frame that lied about its exposure — it just quietly poisons the stack. | Low |
+| **D-14** | **No bias frames and no dark scaling in v1.** Darks are captured per session at matched ISO, exposure and temperature, which already contains the bias signal | Resolves OI-10 by the requirements' own conditional (§4.2.2: bias is needed *only* if dark scaling/optimisation is implemented). Not implementing dark scaling removes the need. | Low — additive if ever wanted |
+| **D-15** | **Two reference frames, not one.** Live registration references the first accepted frame; the deferred stack picks the *best-quality* frame as its reference in a first pass over the frame log | Resolves OI-14. Because capture and stacking are decoupled (FR-10.1), the second pass is free — the log already holds HFR, star count and background for every frame, so choosing the best reference costs one sort, not a re-read. | Low |
+| **D-16** | **Temperature signal chain:** vendor sensor-temperature key if the device exposes one → battery temperature (`ACTION_BATTERY_CHANGED`, tenths °C) → `PowerManager.getThermalHeadroom()`. All available signals are logged per frame; battery temperature is the dark-matching key | Resolves OI-7. Camera2 has no standard sensor-temperature key. Darks are captured at the end of the same session, so matching is by proximity in time along a monotonic warming curve — an absolute sensor temperature is not required. | Low |
+| **D-17** | **No light-pollution input in v1** — no Bortle picker, no GPS dataset lookup | Resolves OI-12. The exposure engine measures sky background directly from a test frame (T-3.1); a manual estimate would be a less accurate input to the same calculation, and UI that changes nothing is UI that misleads. | Low |
+| **D-18** | **Live preview stack = capped running mean** of aligned, binned (~1 MP) frames, autostretched for display, with no rejection logic of its own | Resolves OI-13. §14.4's own reasoning: framing confidence is the job, and anything heavier competes with capture for thermal budget — which directly degrades the frames still being taken. | Low |
+| **D-22** | **The framing preview is rendered from the RAW stream, not from a display surface.** A repeating ~1 s exposure is read as RAW, binned, star-detected and autostretched; the screen shows that raster. No display surface is ever part of a capture session | The preview a user frames on is then literally the data that will be stacked, through the same pipeline, so what looks framed *is* framed. It also dissolves T-2.1's screen-off requirement rather than handling it: nothing in the session belongs to the display, so there is no surface to lose when the screen goes off and nothing to reconfigure on wake. | Medium |
+| **D-23** | The second stream demanded by **D-20** is a **drained YUV `ImageReader`**, not an unconsumed `SurfaceTexture` | A `SurfaceTexture(0)` with no EGL context cannot be drained — `updateTexImage()` needs a bound GL texture — so its buffer queue fills and stalls a *repeating* request. It survived T-1.4 only because that stopped after one frame. A YUV reader drains with `acquireLatestImage().close()`, and `YUV(PREVIEW) + RAW(MAXIMUM)` is on the device's own guaranteed list. Free side effect: OI-3's YUV analysis fallback is now always configured. | Low |
+| **D-24** | **A minimal JSON reader is owned in-tree** (`json/Json.kt`), extending the writer that already existed | D-5 makes `session.json` the source of truth, so the app must *read* what it wrote — including folders copied back from a PC (FR-10.6.4). `org.json` is a stub in JVM unit tests, which would push every session-log test onto a device; a serialization library is an annotation processor on the build for a handful of flat records. | Low |
+
+---
+
+## 3. Phase 0 — Foundations
+
+Goal: an installable shell with the real visual language and the real storage model, so no Phase-1
+work has to be redone.
+
+> ~~Do T-1.1 (the probe) before the rest of Phase 0.~~ **Done 2026-08-16 — the device qualifies
+> (§1.5).** Phase 0 can now proceed on the assumption that there is hardware to run on.
+
+- [x] **T-0.1** Android Studio project skeleton — Kotlin, `minSdk 30`, `targetSdk` current,
+  `ndk.abiFilters = ["arm64-v8a"]`, Compose BOM, Gradle version catalog, `git init` + `.gitignore`.
+  *Accept:* debug APK installs and launches on the test device.
+  **Done:** AGP 8.11.1 / Kotlin 2.2.20 / Gradle 8.14.3, compileSdk 36, daemon pinned to the Studio
+  JBR (JDK 21) because the system JDK is 23. `:app:assembleDebug` produces a 25 MB debug APK.
+  **Installs and launches on the device (2026-08-16).**
+- [~] **T-0.2** Night theme ported from the prototype — colour tokens (`void`/`surface`/`hot`/`warn`/
+  `txt1-3`), the two type families, and the shared components: `NightButton` (primary/quiet),
+  `Card`, `Eyebrow`, `KeyValueGrid`, `Badge`, `Banner`, `StatStrip`.
+  *Accept:* a gallery screen renders every component; **exactly one** full-intensity element per
+  screen is enforceable by review.
+  **Done:** the palette (`ui/theme/Theme.kt`) and `ui/Components.kt` — `Card`, `Eyebrow`, `Mono`,
+  `HotButton`, `QuietButton`, `KeyValue`, `Metric`, `Badge`, `Banner`. Extracted out of
+  `ProbeScreen` when the framing screen needed the same parts, which is the right moment for it:
+  two call sites make the shared contract real. `HotButton` is the one full-intensity control, so
+  the "one per screen" rule is now a grep, not a judgement.
+  **Remaining:** the bundled fonts (D-11 — still on the platform families) and the gallery screen.
+- [ ] **T-0.3** Navigation skeleton: Main → Session setup → Live → Session detail → Settings.
+  Screens are stubs with the prototype's static content.
+  *Accept:* all five reachable, back stack correct, screen rotation locked to portrait.
+- [ ] **T-0.4** Permission flow: `CAMERA`, `ACCESS_FINE_LOCATION`, `POST_NOTIFICATIONS`,
+  `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CAMERA`. Rationale UI in plain language; denial is
+  survivable (location denied → pointing unavailable → exposure engine falls back, and says so).
+  *Accept:* cold install → grant flow → no crash on any denial combination.
+- [ ] **T-0.5** Storage layer over SAF — `ACTION_OPEN_DOCUMENT_TREE`, persisted URI permission,
+  a `SessionStore` interface that hides `DocumentsContract` behind create/open/write/list.
+  **Do not use `DocumentFile`** for per-frame work (`findFile()` is O(n) per call and will crawl at
+  150 frames). Cache child document IDs; write through `ParcelFileDescriptor`.
+  *Accept:* write 200 × 25 MB files into a subtree; measure and record throughput and the cost of
+  a full-root scan. Numbers go in **OI-5**.
+- [ ] **T-0.6** Diagnostics: rolling file log with crash handler, plus an in-app log viewer with
+  share. Unattended 45-minute sessions fail at 2 a.m.; without this you get nothing back.
+  *Accept:* force a crash mid-session, recover the log from the device.
+- [ ] **T-0.7** `AppContainer`, dispatchers, and a `Clock`/`SensorSource`/`CameraSource` seam so
+  logic is testable without hardware.
+- [~] **T-0.8** Device profile store: JSON in app-private storage, versioned schema, export via
+  share sheet (FR-3.2.1).
+  **Done:** `ProfileJson` (hand-rolled writer, no serialization dependency, JVM-testable),
+  `schemaVersion: 1`, export to `getExternalFilesDir` + FileProvider share.
+  **Remaining:** persistence and reload across launches — the probe currently re-runs each start,
+  which is fine while it *is* the app.
+- [ ] **T-0.9** Settings screen shell: session root, night-mode brightness note, calibration status
+  entry point (stub until Phase 6), device profile export.
+
+**Checkpoint 0:** app installs, looks like the prototype, has a session root, survives a crash with
+a readable log.
+
+---
+
+## 4. Phase 1A — First light
+
+Goal: prove the device can do the one thing everything else rests on — a manual RAW frame written
+as a DNG that desktop tools accept.
+
+- [x] **T-1.1** Capability probe (FR-3.2) across every physical camera: hardware level,
+  capabilities, stream config map, active/pixel array, **pixel pitch derived from the dimensions
+  the RAW stream actually delivers** (quad-Bayer binning makes the naive
+  `PIXEL_ARRAY_SIZE ÷ physical size` calculation wrong by 2× — see OI-17), focal lengths, apertures,
+  ISO and exposure ranges, CFA, black/white levels, `SENSOR_NOISE_PROFILE`, timestamp source,
+  max frame duration, focus-distance calibration + minimum focus + hyperfocal, AF-motor presence,
+  OIS/EIS availability *and disableability*, `getConcurrentCameraIds()`.
+  Also record, because later decisions read them: **`SCALER_MANDATORY_STREAM_COMBINATIONS`**
+  (API 29+ — the device's own guaranteed-combination list, per D-9/OI-3),
+  **`SENSOR_INFO_TIMESTAMP_SOURCE`** (OI-8), and which **temperature signals** the device
+  actually exposes (D-16).
+  *Accept:* profile JSON for the test device, human-readable dump on screen.
+  **Done:** `device/CameraProbe.kt` enumerates exposed *and* logical-child physical cameras and
+  converts to the Android-free `DeviceProfile` model; `device/ProfileJson.kt` exports it
+  (FR-3.2.1); `ui/ProbeScreen.kt` renders it in the night palette.
+  **Run on the device 2026-08-16 — see §1.5 for results.** Output at
+  [probe-output/device-profile.json](probe-output/device-profile.json).
+
+  **Correction to the requirements:** §3.2 lists `SENSOR_NOISE_PROFILE` among the probe outputs,
+  but it is a **CaptureResult key, not a CameraCharacteristics key** — it only arrives with a real
+  frame. The field is present and null in the profile, and gets populated in T-1.4.
+
+  **Three things the first build got wrong, all found by running it:**
+  1. *Enumeration was incomplete.* Walking published cameras plus their physical children finds
+     only 2 of this device's 5 cameras, because the ultrawide and tele hang off a logical camera
+     that is itself unpublished. Discovery now runs a third pass over unpublished IDs and labels
+     each camera `LISTED` / `PHYSICAL_CHILD` / `HIDDEN`.
+  2. *A null was read as a fact.* `hasAfMotor` was derived from
+     `LENS_INFO_MINIMUM_FOCUS_DISTANCE > 0`, so a null made the main camera look fixed-focus —
+     which would have skipped the focus sweep and softened every session (FR-6.3). Focus type now
+     comes from `CONTROL_AF_AVAILABLE_MODES` first, with an explicit `UNKNOWN` that warns rather
+     than assumes.
+  3. *Some characteristics are permission-gated.* On this device
+     `LENS_INFO_MINIMUM_FOCUS_DISTANCE` and `LENS_INFO_HYPERFOCAL_DISTANCE` read **null until
+     `CAMERA` is granted**, while everything else reads correctly. Enumeration works
+     unpermissioned; lens data does not. The probe now re-runs after the grant.
+
+  **Remaining:** temperature-signal probing (D-16).
+- [x] **T-1.2** Tier classification + gate (FR-3.1): Full / Functional / Degraded / Unsupported.
+  The unsupported screen must name **which specific requirement** failed. Warn if max exposure
+  < 10 s (FR-3.2.2).
+  *Accept:* forced-fail unit tests for each of the four disqualifiers. **Met — 14 JVM tests pass,**
+  covering all four disqualifiers, the LIMITED→Degraded path, the short-exposure warning, the
+  OI-17 pitch derivation, and device-level qualification on rear cameras only. Note the tier
+  ceiling is `FUNCTIONAL` by construction until Phase 6 exists, which is exactly FR-3.1.1.
+- [ ] **T-1.3** Camera2 lifecycle wrapper: open/close, dedicated handler thread, capture session
+  creation, robust error and disconnect handling, and a hard guarantee the camera is released
+  when the session ends or the process dies.
+  *Accept:* open/close 50× in a loop without leaking; another app can take the camera afterwards.
+  **Done 2026-08-16:** `camera/CameraAccess.kt` — one handler thread, suspend wrappers over the
+  callback API, `withDevice {}` closing the device on any path, and typed `CameraOpenException`.
+  **OI-18 resolved, favourably: all five camera IDs open**, including the unpublished ultrawide,
+  tele and logical camera (`camera/OpenabilityProbe.kt`).
+  **Remaining:** the 50× leak loop, and a check that another app can take the camera afterwards.
+- [x] **T-1.4** Single manual `RAW_SENSOR` capture → `DngCreator` → session folder.
+  Explicitly: NR off, edge/sharpening off, `CONTROL_MODE_OFF`, AE/AWB/AF off, OIS off,
+  fixed WB, lens shading map reported not applied (FR-6.1).
+  *Accept:* a `.dng` on disk from a tapped button. **Met** — `camera/RawCapture.kt`; 100 ms and
+  10 s frames written, both with the full FR-6.1 profile, exposure honoured to 0.00%.
+  **Two HAL behaviours found, both now encoded as decisions:**
+  - **RAW-only sessions never stream** on this device (D-20). All four request profiles time out
+    with a lone RAW target; all four succeed with a preview surface alongside. `RequestProfile`
+    survives in the code as the bisection tool that found this.
+  - **`TEMPLATE_STILL_CAPTURE` silently ignored the exposure** (D-21), returning 30 ms frames for
+    a 10 s request. `TEMPLATE_MANUAL` fixed it on the first attempt.
+
+  *Known inefficiency:* the settle-then-arm sequence spends two exposures per frame, so a 10 s
+  capture takes ~40 s wall clock. Harmless here; **T-3.6 must not inherit it** — a repeating
+  sequence settles once and then streams, rather than re-settling per frame.
+- [x] **T-1.5** **Desktop validation checkpoint.** Open the DNG in Siril *and* RawTherapee/
+  Lightroom. Confirm CFA pattern, black/white levels, no baked-in processing, correct EXIF
+  exposure/ISO/focal length. **Also dump the TIFF tags** (`exiftool -a -G1`) and record
+  `Compression`, `BitsPerSample`, `RowsPerStrip`, `StripOffsets` — this is the five-minute check
+  that confirms D-13 on the actual device.
+  *Accept:* written note in this doc's changelog recording what the tools said, including the
+  compression tag value.
+  **Assumed passing** on the owner's instruction (2026-08-16). The tag dump in §1.6 confirms
+  `Compression = 1`, CFA `GRBG`, 16 bpp, black 64 / white 1023 and a 10.0 s exposure, and the
+  round-trip in T-1.6 proves the pixel data is intact. **Still worth doing eventually:** opening
+  a frame in Siril and RawTherapee, since FR-9.5 promises interoperability with them specifically
+  and a structurally valid file can still trip a third-party decoder.
+- [x] **T-1.6** **DNG reader** per **D-13**: header → IFD0 → SubIFD walk, strips into a
+  `ShortArray` CFA plane plus the metadata the pipeline needs (dimensions, CFA pattern, black and
+  white levels, ISO, exposure, timestamp).
+  *Accept:* round-trip test — capture a frame, read it back, byte-compare against the in-memory
+  buffer that was captured.
+  **Done:** `dng/DngReader.kt`, ~330 lines, no Android dependencies. Walks IFD0 and falls back to
+  SubIFDs (this device needs neither, but the DNG spec permits a thumbnail in IFD0), handles both
+  byte orders, RATIONAL tags, and per-row strips. Refuses compressed, non-16-bit and demosaiced
+  files by name rather than misreading them. **12 JVM tests** against synthetic files built to
+  match §1.6 exactly.
+  **On-device acceptance met (2026-08-16):** `RawCapture` snapshots the sensor buffer (honouring
+  row stride) and compares it with the file it just wrote —
+  `round trip: OK — 12582912 samples identical, CFA GRBG`, on both a 100 ms and a 10 s frame.
+  Reading a 25 MB DNG back off disk costs **60–90 ms**.
+
+**Checkpoint 1A:** one tap produces a DNG that Siril reads, and that the app can read back itself.
+
+---
+
+## 5. Phase 1B — Framing & focus
+
+Goal: the part of "shooting mode" that happens *before* Start — in the dark, on a tripod, with a
+sky you can't see on a normal preview.
+
+- [~] **T-2.1** Stream configuration: preview + RAW still (+ analysis path per **D-9**). Do not
+  hard-code the guaranteed-combination table — read the device's own
+  `SCALER_MANDATORY_STREAM_COMBINATIONS` from the probe and confirm the chosen configuration with
+  `CameraDevice.isSessionConfigurationSupported()` before opening the session. Handle the
+  screen-off case: the preview surface goes away mid-session and the capture session must continue
+  with only the `ImageReader` target.
+  *Accept:* sequence keeps running with the screen off; resumes preview on wake without dropping a
+  frame.
+  **Written:** `camera/StreamPlan.kt` (pure size arithmetic, 8 JVM tests) picks RAW at maximum,
+  the smallest even bin factor that meets the ~1 MP analysis budget, and an aspect-matched YUV
+  second stream; `camera/StreamConfig.kt` reads the device's guaranteed list, looks for a
+  combination of the same shape, and confirms the exact surfaces with
+  `isSessionConfigurationSupported()` — treating "the HAL declined to answer" as *unknown*, not
+  as *no*.
+  **The screen-off half is now structural rather than handled (D-22):** the preview is drawn from
+  the RAW frames, so no display surface is ever in the session. There is nothing to lose when the
+  screen goes off, and "resumes without dropping a frame" is true by construction. That is a
+  stronger property than the acceptance asked for, and it still needs demonstrating on hardware.
+  **Remaining:** run it on the device — confirm `isSessionConfigurationSupported()` returns true
+  for RAW 4096×3072 + YUV 1440×1080, and watch a loop survive the screen going off.
+- [~] **T-2.2** **Night framing preview** — a repeating request at long exposure (~0.5–2 s) and high
+  ISO, autostretched (MTF from median/MAD) for display only. This is the difference between
+  framing being possible and impossible; a normal preview of a dark sky is a black rectangle.
+  The UI must state the refresh rate so ~1 fps doesn't read as a freeze.
+  **Spec:** default 1 s at high ISO; a "boost" control raising it to ~4 s for faint framing; the
+  loop auto-stops after a period of no interaction, because framing heat is spent before the
+  session even starts. Framing frames are never written to `lights/`. Default value is
+  tuning-only — see **OI-4**.
+  *Accept:* on a real night sky, stars are visible in the preview and framing is workable.
+  **Written:** `camera/FramingSession.kt` — a repeating `TEMPLATE_MANUAL` request at 1 s / ISO 3200
+  (boost 4 s), RAW frames copied into a **two-buffer pool** (25 MB each; allocating per second
+  would spend more time in GC than in detection, FR-12.2), binned ×4, star-detected, autostretched
+  and rotated to portrait. `imaging/Autostretch.kt` is the MTF stretch (7 tests) and
+  `imaging/GrayImage.kt` the rotation (5 tests). The refresh rate, ISO and frame number are on
+  screen; the loop stops itself after 2 minutes idle and says why.
+  **Two things fell out of writing it:**
+  - **Every frame is checked against its own metadata before it is measured** (D-21 applied per
+    frame, not just per capture). Images and results arrive on separate paths, so they are paired
+    by `SENSOR_TIMESTAMP`; a frame whose exposure or focus does not match the request is shown but
+    marked *settling* and never fed to the focus sweep.
+  - **The preview is rotated in pixels, not in layout.** A 90° `graphicsLayer` on a laid-out
+    image leaves it letterboxed to the wrong axis; transposing the 786 KB grey raster costs a few
+    milliseconds and makes the UI trivial.
+  **Remaining:** the acceptance itself — a real sky. Also **OI-4**: 1 s and 4 s are defaults, not
+  measurements.
+- [x] **T-2.3** Star detection module (Kotlin, pure, unit-tested): local background estimate,
+  threshold, connected components, sub-pixel centroid via Gaussian/Moffat fit, **HFR**,
+  **eccentricity**, star count. Operates on the binned ~1 MP plane.
+  *Accept:* synthetic-frame unit tests (known star positions/FWHM) recover centroids to < 0.1 px
+  and HFR to < 5%; runs in well under 200 ms on device.
+  **Done:** `stars/StarDetector.kt` (tiled-median background with bilinear interpolation,
+  MAD-derived noise, iterative flood fill, flux-weighted centroid, HFR as flux-weighted mean
+  radius, eccentricity from second moments) and `stars/CfaBinner.kt` (green-channel binning per
+  D-9, with conversions back to sensor coordinates). **12 JVM tests**, centroids recovered to
+  < 0.1 px; HFR verified monotonic in defocus, which is the only property the focus sweep
+  actually needs.
+
+  Two things the tests forced:
+  - **Intensity-weighted centroid, not a Gaussian fit.** It hits the < 0.1 px requirement on
+    synthetic frames, and it does not assume a profile shape — a trailed or defocused star is not
+    Gaussian, and those are exactly the frames being measured.
+  - **The blob-size ceiling is generous (2000 px on the analysis plane), not tight.** A badly
+    trailed star is long and thin; rejecting it as "too big" would make a trailed frame report
+    *no stars*, which FR-7.5 diagnoses as cloud — telling the user to wait for clear sky when the
+    real fix is a shorter sub.
+
+  **On-device timing (2026-08-16), 4096×3072 → 1024×768:**
+
+  | Stage | First call | Warm |
+  |---|---|---|
+  | DNG read from disk | 70 ms | 60 ms |
+  | Green binning ×4 | 138 ms | **21 ms** |
+  | Detection | 320 ms | **111 ms** |
+
+  Detection meets the < 200 ms budget on the warm path; the first call is ~3× slower while the
+  JIT warms up, which matters only for the very first sub of a session.
+
+  **The binner was 546 ms before a one-line fix**: its inner loop held green-sample offsets in a
+  `List<Pair<Int, Int>>`, boxing two Integers per sample across 6 million iterations. Swapping to
+  two `IntArray`s made it 20× faster. This is FR-12.2's warning arriving early and in the exact
+  shape it predicted — worth remembering before the Phase 3 accumulator is written.
+
+  The disk read will not exist in the live path (T-3.10 bins straight from the in-memory sensor
+  buffer), so the live per-frame cost is ≈ 130 ms against a 12 s sub.
+- [~] **T-2.4** Focus sweep (§4.1.4): `LENS_FOCUS_DISTANCE` micro-steps around 0.0, HFR per
+  position, always approach from the same direction (hysteresis), record the elevation it was
+  calibrated at (gravity sag), store per camera. Fixed-focus cameras record "fixed focus"
+  (FR-4.1.4.1).
+  *Accept:* HFR-vs-position curve plotted in-app with a clear minimum; repeat sweeps agree.
+  **Written:** `focus/FocusSweep.kt` (pure: positions, backlash park, curve analysis — 10 tests),
+  `focus/FocusRunner.kt` (drives it on the live framing session), `focus/FocusStore.kt`
+  (per-camera JSON, write-then-rename). The curve is drawn in-app as a bar per position with the
+  minimum picked out.
+  Three properties the tests pin down:
+  - **Positions descend to 0.0 and the motor is parked past the first one**, so every setpoint is
+    approached from the same side. Both are clamped to the lens's near limit — a park the HAL
+    silently ignores is backlash left untaken.
+  - **The minimum is interpolated** by a parabola through its two neighbours, recovering the
+    vertex to well inside one step on a synthetic V-curve.
+  - **A curve that never turns around is not reported as focus.** `MINIMUM_AT_EDGE`, `FLAT` and
+    `TOO_FEW_STARS` are distinct verdicts, because "best HFR at the 0.0 hard stop", "the sweep was
+    too narrow to see the curve" and "there are no stars tonight" call for three different
+    actions, and merging them into one confident number is how a session ends up soft.
+  **Remaining:** the acceptance — a real sweep on stars, and repeat sweeps agreeing.
+- [~] **T-2.5** Focus verification at session start + live HFR/star-count readout + mid-session
+  drift alert (FR-6.3).
+  *Accept:* deliberately defocus between sweeps → app detects and re-fixes.
+  **Written:** `focus/FocusMonitor.kt` (7 tests) plus `FocusRunner.verify()`. Verification drives
+  to the stored position, measures once, and re-sweeps *locally* only if HFR has actually
+  degraded — a stored focus that still holds costs one frame to confirm. The live readout is
+  always on, and the drift flag comes off a **rolling median**, so one hazy frame cannot trip it
+  and a sustained rise cannot be missed. Frames with too few stars are ignored rather than
+  counted as bad focus: that is a cloud diagnosis (FR-7.5), not a focus one. Degradation only —
+  measuring *better* than the stored HFR means better seeing, not a reason to re-sweep. When the
+  stored elevation and the current elevation differ, the message names gravity sag.
+  **Remaining:** the acceptance — defocus deliberately and watch it recover.
+- [~] **T-2.6** Pointing: accelerometer + magnetometer → altitude/azimuth (smoothed, with magnetic
+  declination correction from GPS), latitude/longitude, derived field-centre declination and
+  field-rotation rate `ρ ≈ 15.04·cos(lat)·cos(az)/cos(alt)`.
+  *Accept:* alt/az agrees with a known star's position to a few degrees; the prototype's Pointing
+  card is live.
+  **Written:** `pointing/Astro.kt` (pure spherical astronomy — 11 tests) and
+  `pointing/PointingSource.kt` (sensors, `GeomagneticField` declination correction, last-known
+  location). The Pointing card is live with alt/az + compass point, declination, field-rotation
+  rate, RA and position.
+  - **Tested against positions whose answer is known by inspection**, not by running the same
+    formula twice: due north at an altitude equal to your latitude must read +90°, the zenith must
+    read your own latitude, and the requirements' own worked example (§7.1 — 40°N, due south, 45°
+    altitude) must come out at 16.3″/s. It does.
+  - **Smoothing is applied to the pointing vector, not to the azimuth angle.** Averaging angles
+    across the 359°/0° wrap gives due south for a phone pointing due north; filtering the vector
+    makes the wrap impossible rather than special-cased.
+  - **The nulls are load-bearing.** No location means no latitude, which means no declination and
+    no rotation rate — the card says "needs location" rather than showing a number derived from a
+    guess. Near the zenith the rate is clamped and labelled as diverging, because that is the sky
+    and not a bug.
+  **Remaining:** the acceptance — check alt/az against a known star.
+- [~] **T-2.7** Camera picker (prototype screen 02) with per-camera focal length and plain-language
+  note, driven by the probe rather than hard-coded strings.
+  **Written:** `device/CameraPicker.kt` (10 tests against the reference device's measured numbers
+  from §1.5). Roles are *relative* — the best light-gathering rear camera (pitch²/N²) is "Main",
+  and the others are named against it — and every note quotes the device's own measurements.
+  Focal lengths are shown as 35 mm equivalents, since that is the number people compare.
+  This is the task where hard-coding would have shipped a wrong belief: **FR-11.2 speculates the
+  ultrawide may be the best astro camera, and on this device it is comfortably the worst**
+  (1.12 µm at f/2.2 against 2.00 µm at f/1.88). The picker recommends the main camera because of
+  the arithmetic, and the test asserts exactly that. Unpublished cameras are offered but flagged
+  "capture is unproven" (OI-19), and a short exposure ceiling is called out even when the camera
+  still qualifies.
+  **Remaining:** seeing it render on the device.
+
+**Checkpoint 1B:** on a tripod at night you can frame a target, watch focus lock, and read
+alt/az, HFR and star count live. **Not yet demonstrated** — no device has been attached since
+this phase was written.
+
+---
+
+## 6. Phase 1C — Unattended session ← **the primary deliverable**
+
+Goal: FR-13/M3 — *press start, walk away, come back to a folder of good subs.*
+
+### Exposure engine (§5)
+
+- [ ] **T-3.1** Sky measurement: capture a test frame, measure sky background level and per-ISO
+  read noise (from the probe's `SENSOR_NOISE_PROFILE` at Functional tier; from the measured model
+  once Phase 6 exists — one interface, two providers).
+- [ ] **T-3.2** Trailing limit: NPF-style using measured pixel pitch and focal length, corrected by
+  field-centre declination, relaxed near the pole. User-visible tolerance defaulting to ~1.5 px
+  star elongation (FR-5.1.1).
+  *Accept:* unit tests against hand-computed values for several focal lengths and declinations —
+  **plus one real-sky sanity check**, because a 2× pixel-pitch error (OI-17) passes every unit test
+  and only shows up as trailed stars in frames the app declared safe. Shoot one sub at the computed
+  limit and one at 2× it; the first must be round and the second visibly elongated.
+- [ ] **T-3.3** Sky-limited solver (FR-5.2): for each ISO ≥ dual-gain point, exposure to reach
+  3–5× read noise in variance; clamp to trailing limit; pick the pair with the most clipping
+  headroom. Emits a **derivation object** — every candidate and why it lost — not just the answer.
+- [ ] **T-3.4** Solve UI (prototype screen 02): the one-line answer, `Show work` expanding to the
+  full derivation, and **pinning** any value with a re-solve around it (FR-5.3).
+  *Accept:* pinning ISO re-solves exposure and vice versa; nothing downstream is disabled by a pin.
+- [ ] **T-3.5** Session planner (FR-5.4): input total time *or* target integration; output sub
+  length, ISO, frame count, dark allocation, **storage budget** (warn before start if short),
+  **battery budget**, estimated end time, and predicted common-area loss from field rotation.
+  *Accept:* the prototype's Plan card is fully live; a deliberately under-provisioned storage
+  scenario warns before capture starts.
+
+### Capture engine (§6)
+
+- [ ] **T-3.6** Capture foreground service per **D-12**: `foregroundServiceType="camera"`,
+  `FOREGROUND_SERVICE_CAMERA` + runtime `CAMERA`, started from the Start button while the app is
+  visible (the `camera` type is while-in-use restricted, so it cannot be started from the
+  background — starting it from the tap satisfies this and there is *no* 6 h limit on this type).
+  Wake lock, persistent notification with progress, sequence state machine (`Idle → Focusing →
+  Capturing → Paused → Darks → Finalising → Done/Failed`) exposed as one `StateFlow`. Fixed
+  WB/focus/exposure/ISO across the whole sequence.
+  *Accept:* 45-minute sequence completes with the screen off and the app backgrounded — **and
+  repeats with battery optimisation left on**, since OEM battery managers are the residual risk
+  the platform rules don't cover. If it fails, offer `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`.
+- [ ] **T-3.7** Frame writer: DNG per frame with per-frame metadata capture, plus incremental
+  `session.json` (FR-9.2 — timestamp, ISO, exposure, temperature, HFR, star count, background
+  level, accept/reject + reason; transform added in Phase 2). Written incrementally, not at the
+  end, so a killed process still leaves a usable log.
+  *Accept:* kill the process mid-session → `session.json` describes every frame written.
+- [ ] **T-3.8** Session folder layout exactly per FR-9.1 (`lights/`, `darks/`, `flats/`, `master/`,
+  `session.json`).
+- [ ] **T-3.9** Thermal pacing (FR-6.2): monitor `PowerManager.getThermalHeadroom()` + battery temp
+  (+ sensor temp if the device exposes it — see **OI-7**), insert cooling gaps past a threshold,
+  simple indicator with numbers on tap.
+  *Accept:* thermal log across a full session, used to answer **OI-11**.
+- [ ] **T-3.10** Cheap live quality gating (the subset that needs no registration): eccentricity →
+  trailing, star-count collapse → cloud, accelerometer spike → bump. Rejected frames kept on disk
+  and flagged (D-10). Registration-residual gating and the common-area indicator arrive in Phase 2.
+- [ ] **T-3.11** Live capture screen (prototype screen 03): the per-frame ring, metrics grid
+  (HFR / stars / common area / sensor temp), recent-frame log with reject reasons, the
+  non-blocking event note, `Pause` and `End & take darks`.
+  *Accept:* readable from two metres away in the dark; matches the prototype's information density.
+- [ ] **T-3.12** Dark frames at end of session (FR-4.2.1): prompt to cover the lens, capture at
+  matched ISO/exposure, log temperature per frame, write to `darks/`. Skippable, with the cost
+  stated.
+- [ ] **T-3.13** Interruption, pause/resume, and crash recovery: an interrupted session is
+  resumable rather than lost (FR-6.4); on app restart, an incomplete session offers to resume.
+- [ ] **T-3.14** Live downsampled preview stack (FR-7.4) — translation-only running average until
+  Phase 2 supplies real transforms. Depth per **OI-13**.
+- [ ] **T-3.15** Completion screen (FR-9.4): result summary, full session path, open/share.
+
+**Checkpoint 1C — the one that matters:**
+> A 45-minute unattended session on a tripod completes with the screen off, without thermal
+> throttling, without being killed, without running out of storage unannounced, and leaves a
+> session folder of DNG subs + darks + a complete `session.json` that Siril can stack on the
+> desktop. (Success criterion §15.4, and §15.3's export half.)
+
+At this point the app is already useful: it is a better capture tool than anything the phone ships
+with, even with zero stacking.
+
+---
+
+## 7. Phase 2 — Registration & live gating
+
+- [ ] **T-4.0** **Synthetic sky generator** (test infrastructure, build this first): renders
+  DNG-equivalent frames with known star fields, a known rotation/translation per frame, realistic
+  noise, hot pixels, vignetting and a light-pollution gradient. Lets Phases 2–5 be developed and
+  regression-tested indoors on cloudy nights, and gives registration and stacking a ground truth.
+- [ ] **T-4.1** Analytic transform seed from GPS + compass + accelerometer + timestamps + intrinsics
+  (FR-7.2.1) — the robustness win when star-starved.
+- [ ] **T-4.2** Asterism matching: triangle side ratios, invariant to translation/rotation/scale
+  (astroalign as reference, MIT).
+- [ ] **T-4.3** RANSAC outlier rejection + rigid (3-DoF) transform fit refining the seed (FR-7.3).
+- [ ] **T-4.4** Live registration every frame on the binned plane; residual spike → bump detection.
+- [ ] **T-4.5** Common-area tracking and the live `NN%` indicator (FR-7.5).
+- [ ] **T-4.6** Transforms written into `session.json`; live preview stack upgraded to true aligned
+  accumulation.
+
+## 8. Phase 3 — Stacking
+
+- [ ] **T-5.1** Add OpenCV Android SDK (D-7); warp/transform primitives only.
+- [ ] **T-5.2** Calibration application on CFA data **before** debayer (FR-8.1 steps 1–2), with
+  every master optional and pass-through when absent.
+- [ ] **T-5.3** Debayer + tiled accumulator (FR-7.6): load tile T across all N frames, combine,
+  write, advance. `FloatArray` only, buffers allocated once (FR-12.2).
+- [ ] **T-5.4** Sigma-clipped mean as default; median / mean / kappa-sigma behind the expert
+  affordance. **Build in Kotlin, profile, and only then consider the single sanctioned JNI
+  exception** (§12.1).
+- [ ] **T-5.5** Frame weighting by star count, HFR and background level.
+- [ ] **T-5.6** Linear master out: 32-bit float TIFF, saved separately and treated as sacred
+  (FR-8.2).
+- [ ] **T-5.7** **Validation checkpoint:** stack the same subs in Siril/DSS on the desktop and
+  compare SNR and star FWHM (success criterion §15.2). Record the numbers here.
+
+## 9. Phase 4 — Session management
+
+- [ ] **T-6.1** Session list from a root scan + cached index (D-5): thumbnail, target label, camera,
+  accepted/rejected/total, integration time, status badge (FR-10.2).
+- [ ] **T-6.2** Sort/filter by date, target, camera, status.
+- [ ] **T-6.3** Session detail with the full frame log and manual include/exclude (FR-10.2.2).
+- [ ] **T-6.4** Deferred stacking service — a **separate** FGS from capture, per **D-12**:
+  `mediaProcessing` on API 35+, `dataSync` on API 34. Must implement `onTimeout()` → `stopSelf()`
+  or the system throws `RemoteServiceException` at the 6 h budget. Progress, cancellable,
+  resumable, queueable (FR-10.3).
+  *Note the happy accident:* FR-10.3.3's "never stack unprompted" also satisfies the platform's
+  rule that a service started from direct user interaction gets the full 6 h budget.
+  *Accept:* checkpointed progress means a timeout-stop mid-queue resumes rather than restarts.
+- [ ] **T-6.5** Restacking with versioned, non-destructive outputs and side-by-side comparison
+  (FR-10.4).
+- [ ] **T-6.6** `Stale` detection when calibration masters change (FR-10.4.2). Never auto-restack.
+- [ ] **T-6.7** Storage management: per-session and total usage, "delete subs, keep masters"
+  (FR-10.6.2), explicit deletion only.
+- [ ] **T-6.8** Multi-night stacking (FR-10.5): camera hard-reject, overlap check, per-session
+  darks, background/scale normalisation, cold-start registration over a wide search range,
+  composite session referencing its constituents, cumulative integration time.
+
+## 10. Phase 5 — Auto-edit
+
+- [ ] **T-7.1** Gradient removal — polynomial or RBF background model (FR-8.1.5).
+- [ ] **T-7.2** Background neutralisation + rough colour balance.
+- [ ] **T-7.3** MTF autostretch from median/MAD — the beginner payoff.
+- [ ] **T-7.4** Mild saturation boost.
+- [ ] **T-7.5** Auto-edit UI: one strength slider, before/after, re-run from the linear master,
+  expert controls one tap deeper (FR-8.3).
+- [ ] **T-7.6** MediaStore publish of the stretched JPEG (FR-9.3) + Siril/DSS-compatible export
+  layout (FR-9.5).
+
+## 11. Phase 6 — Calibration library
+
+- [ ] **T-8.1** Noise characterisation: bias across the ISO range, read noise, gain, offset,
+  dual-gain switch point, ISO invariance point (FR-4.1.1) → replaces the OEM-profile provider
+  behind the T-3.1 interface.
+- [ ] **T-8.2** Hot/warm pixel map (FR-4.1.2), quick and deep variants.
+- [ ] **T-8.3** Flat field capture + validity checks (FR-4.1.3).
+- [ ] **T-8.4** Lens intrinsics — measured, not trusted from `LENS_DISTORTION` (FR-4.1.5).
+- [ ] **T-8.5** Timing calibration: gyro-to-timestamp offset, actual vs requested exposure, rolling
+  shutter skew (FR-4.1.6).
+- [ ] **T-8.6** Wizard UX per §4.0: independent resumable steps, visual guide per step, live
+  validity check that fails fast with a specific reason, master preview after capture.
+  **Never show a single large time figure** (FR-4.0.1.3); quick calibration is the sub-10-minute
+  default offer.
+- [ ] **T-8.7** Per-camera non-blocking banner naming what's missing and what it costs
+  (FR-4.0.4.1–2).
+- [ ] **T-8.8** Sky-dependent calibration folded into the first real session (FR-4.0.6) — not a
+  separate chore night.
+- [ ] **T-8.9** Calibration status screen: per camera × item, retake without a warning gate, master
+  preview, delete, profile export/import (FR-4.0.7).
+- [ ] **T-8.10** Sessions record the calibration versions they used; retake never rewrites history
+  (FR-4.0.7.2).
+
+## 12. Phase 7 — Wide-field correctness & second camera
+
+- [ ] **T-9.1** De-project → rotate → re-project for fields > ~50° (FR-7.3).
+- [ ] **T-9.2** Full per-camera isolation audit — nothing transfers between cameras (FR-11.1).
+- [ ] **T-9.3** Camera recommendation with a stated reason (FR-11.3).
+
+## 13. Phase 8 — Post-v1
+
+- [-] **T-10.1** OIS dithering (FR-6.5) — investigate controllability during Phase 1A.
+- [-] **T-10.2** Star trail mode — same capture, maximum instead of mean.
+- [-] **T-10.3** Framing assistance: compass + accelerometer + small catalog → "point here" arrow
+  (§14.7).
+- [-] **T-10.4** Plate solving.
+
+---
+
+## 14. Open issues
+
+**Needed-by** is the phase that cannot finish without a resolution.
+**Status: 13 resolved · 5 open pending measurement · 2 deferred · 0 blocking.**
+An issue is only "open" here if it can actually change the shape of the code. Questions with an
+obvious default and a defined experiment are listed with that default already in force, so they
+never block work.
+
+### Blocking now
+
+*Nothing is blocked on a decision. The one remaining gate is a measurement that takes minutes
+once T-1.1 exists — see OI-6 below.*
+
+### Open — resolvable only by measurement
+
+These are not design questions. Each has a decided default and a defined experiment; they close
+when the number comes back.
+
+| ID | Issue | Default until measured | Experiment | Needed by |
+|---|---|---|---|---|
+| **OI-19** | **Will the hidden cameras also *capture*, not just open?** All five IDs open, but only camera 0 has completed a real RAW capture. An ID that opens can still fail session configuration or never deliver a frame | Assume the tele and ultrawide work; verify before promising them to the user | Run the T-1.4 capture against IDs 2, 3 and 4 — cheap now the harness exists | 7 |
+| **OI-4** | Framing preview exposure length | 1 s, boost to 4 s, auto-stop after 2 min idle — **now implemented as the default** (T-2.2), so the experiment is a tuning pass rather than a build | Real-sky trial: shortest exposure at which framing is workable | 1B |
+| **OI-5** | SAF write throughput and root-scan cost | Cached index assumed necessary (D-5) | T-0.5: sustained MB/s for 25 MB files; wall-clock scan of ~12 sessions × ~200 files | 0 |
+| **OI-9** | Is the OEM `SENSOR_NOISE_PROFILE` good enough to pick a sane ISO at Functional tier? | Yes — use it | **Trigger:** run the T-3.3 solver twice, once on OEM data and once on read noise measured from a quick bias pair. If the chosen ISO differs by more than one stop, promote the §4.1.1 noise model out of Phase 6 into 1C | 1C |
+| **OI-11** | Thermal pacing aggressiveness | No pacing; log only | T-3.9 logs temperature and dropped frames across a full 45-min session, then set the threshold from the curve. Tuning a pacing rule before seeing one real thermal curve is guesswork | 1C |
+
+### Deferred
+
+| ID | Issue | Needed by | Status |
+|---|---|---|---|
+| **OI-15** | **Framing assistance** (§14.7) — compass + accelerometer + catalog "point here" arrow. **Decided 2026-08-16: stays post-v1** (T-10.3), per the requirements' original placement. Phase 1B stays lean; framing is by eye and by the night preview. Note the enabling maths (alt/az ↔ RA/dec) still lands in T-2.6/T-3.2 for the trailing limit, so picking this up later remains cheap | 8 | **deferred** |
+| **OI-16** | **OIS dithering** (§14.8) — depends on whether OIS is controllable at all; the T-1.1 probe answers that. Implement post-v1 regardless. | 8 | **deferred** |
+
+### Resolved
+
+| ID | Issue | Resolution | Closed |
+|---|---|---|---|
+| **OI-18** | Can the unpublished cameras be opened? | **Yes — all five IDs open**, including the ultrawide, tele and logical camera. Phase 7 stays reachable on this device (T-1.3) | 2026-08-16 |
+| **OI-1** | DNG readback contradicts §12.1 — "RAW decoding not needed" is incompatible with FR-10.1's decoupled stacking, which must read frames back off disk the next morning | **D-13:** minimal Kotlin TIFF/DNG reader. `DngCreator` accepts only `RAW_SENSOR` at 16 bpp and writes uncompressed strips, and the requirements' own storage figures corroborate it (24 MB/frame ⇒ 3.6 GB per 150 frames ≈ the prototype's "3.8 GB"; compressed would be about half). Confirmed cheaply by an `exiftool` tag dump in T-1.5, with the lossless-JPEG fallback named and costed if `Compression ≠ 1` | 2026-08-16 |
+| **OI-2** | Foreground service types for capture and stacking | **D-12:** capture = `camera` (while-in-use restricted, started from the Start tap, **no time limit** — so hours-long sessions are fine); stacking = `mediaProcessing` (API 35+) or `dataSync` (API 34), both 6 h / 24 h with a mandatory `onTimeout()` → `stopSelf()`. OEM battery-manager survival stays as a T-3.6 acceptance test rather than an open issue | 2026-08-16 |
+| **OI-3** | Can preview + RAW + analysis be configured concurrently? | Not a risk, and the framing was wrong: don't reason from the published table at all — the device publishes its own guaranteed list as `SCALER_MANDATORY_STREAM_COMBINATIONS` (API 29+, and minSdk is 30), confirmable per-configuration with `isSessionConfigurationSupported()`. The RAW-capability table guarantees `PRIV(PREVIEW) + YUV(PREVIEW) + RAW(MAXIMUM)`, so **D-9**'s direct-RAW analysis and the YUV fallback are both available | 2026-08-16 |
+| **OI-8** | `SENSOR_INFO_TIMESTAMP_SOURCE` = `UNKNOWN` would break gyro/frame alignment | Not a risk — the requirement was over-specified. Where timestamps feed the analytic seed, the quantity that matters is field rotation at ~16 ″/s; a millisecond of timing error is 0.016 ″, four orders of magnitude below a pixel. `UNKNOWN` only means an arbitrary monotonic base, correctable by one offset measurement at session start. Sub-millisecond alignment would matter for gyro-based deblur, which v1 does not do | 2026-08-16 |
+| **OI-7** | Sensor temperature rarely exposed | **D-16:** log every available signal; use battery temperature as the dark-matching key. Darks are captured at the end of the same session along a monotonic warming curve, so proximity in time substitutes for an absolute reading | 2026-08-16 |
+| **OI-10** | Are bias frames needed? | **D-14:** no. §4.2.2 makes bias conditional on implementing dark scaling; v1 doesn't, and per-session darks matched on ISO/exposure/temperature already contain the bias signal | 2026-08-16 |
+| **OI-12** | Light-pollution input: Bortle picker vs GPS lookup | **D-17:** neither. The sky background is measured directly in T-3.1; a manual estimate is a worse input to the same calculation | 2026-08-16 |
+| **OI-13** | Live preview stack depth | **D-18:** capped running mean of aligned binned frames, autostretched, no rejection logic | 2026-08-16 |
+| **OI-14** | Reference frame: first, or best quality? | **D-15:** both — first accepted frame for live registration, best-quality frame chosen at stack time. Decoupled stacking makes the selection pass free, since the frame log already holds the quality metrics | 2026-08-16 |
+| **OI-6** | Does the Nothing Phone (3a) Pro clear the FR-3.1 envelope? | **Yes, comfortably.** LEVEL_3, RAW, full manual control, and a **49.6 s** maximum exposure on the main camera. Measured, not assumed — see §1.5 | 2026-08-16 |
+| **OI-17** | Quad-Bayer RAW output form | **Binned, as hoped.** `SENSOR_INFO_BINNING_FACTOR = [2,2]`; 50 MP array delivered as a 12.6 MP `GRBG` Bayer frame at **2.00 µm** effective pitch. The platform reports the binned array directly, so the naive and effective pitch calculations agree here — but they are still reported separately, because that agreement is a property of this device, not of the maths | 2026-08-16 |
+
+---
+
+## 15. Verification strategy
+
+| Level | What | Where |
+|---|---|---|
+| **Unit** | Star detection accuracy, trailing-limit maths, field-rotation maths, sky-limited solver, tier classification, session.json round-trip, DNG round-trip | JVM tests, no device |
+| **Synthetic** | Registration and stacking against generated frames with known ground-truth transforms (T-4.0) | JVM / instrumented |
+| **Device** | Camera lifecycle, stream configs, thermal behaviour, FGS survival, SAF throughput | Instrumented, real hardware |
+| **Field** | The phase checkpoints — a tripod, a dark sky, and a completed session | Manual, logged in the changelog |
+| **External** | DNGs open in Siril/RawTherapee (T-1.5); on-device master compared to Siril/DSS on identical subs (T-5.7) | Desktop |
+
+**109 JVM tests as of Phase 1B** — qualification 21, star detection 12, DNG reader 10, focus sweep
+10, camera picker 10, pointing 11, stream planning 8, JSON 8, autostretch 7, focus monitor 7,
+image rotation 5.
+
+The unit column is deliberately wide, and it is why the Android-free split is worth its cost.
+Fifteen of the eighteen files under `device/`, `dng/`, `stars/`, `focus/`, `imaging/`,
+`pointing/`, `json/` and `camera/StreamPlan.kt` import no `android.*` at all; the three that do
+are exactly the three that must (`CameraProbe`, `FocusRunner`, `PointingSource` — the probe, the
+lens driver and the sensors). So the maths is testable on a laptop on a cloudy night, and what
+is left needing hardware is genuinely hardware: opening cameras, configuring streams, and
+whether a HAL honours what it was asked.
+
+The two external checks are the honest ones. §15.2 of the requirements sets the bar as
+*measurably comparable* to a desktop stack — that number goes in the changelog when T-5.7 runs.
+
+**Standing caveat:** JVM tests say the maths is right, not that the app works. Every Phase 1B
+box is `[~]` for exactly that reason — 109 passing tests and a 25.9 MB APK are not a photograph
+of a star.
+
+---
+
+## 16. Changelog
+
+| Date | Change |
+|---|---|
+| 2026-08-16 | **Phase 1B written — code-complete, field-unverified.** All seven tasks implemented: stream planning with the device's own guarantee check (T-2.1), the night framing preview (T-2.2), focus sweep and store (T-2.4), verification and drift monitoring (T-2.5), pointing (T-2.6) and the derived camera picker (T-2.7). **109 JVM tests pass** (43 before), `:app:assembleDebug` → 25.7 MB. **No device was attached, so nothing here has met its acceptance criterion** — every box is `[~]`. Three decisions came out of writing it: **D-22** (the preview is rendered from the RAW stream, which dissolves T-2.1's screen-off case instead of handling it), **D-23** (D-20's second surface must be a *drained* YUV reader — an unconsumed `SurfaceTexture` cannot be drained without a GL context and would stall a repeating request, which T-1.4 never noticed because it stopped after one frame) and **D-24** (own the JSON reader, since D-5 requires reading `session.json` back). Shared UI components extracted (T-0.2 part), and the FR-6.1 request profile de-duplicated into `ManualRequest` so there is one definition of "OEM processing off" rather than two that can drift. |
+| 2026-08-16 | Plan created. Phases defined, capture prioritised ahead of calibration, 16 open issues registered. |
+| 2026-08-16 | Issue triage. Closed OI-1, 2, 3, 7, 8, 10, 12, 13, 14 → decisions D-12…D-18. OI-4, 5, 9, 11 downgraded to measurements with defaults in force and defined experiments. OI-6 (test device) is the only blocker; OI-15 (framing assistance scope) awaits an owner decision. FGS types and stream-combination handling verified against Android docs; DNG compression corroborated by the requirements' own storage budget. |
+| 2026-08-16 | **Phase 1A complete.** T-1.6 DNG reader and T-2.3 star detection written; 43 JVM tests pass. On-device round trip verified — 12,582,912 samples identical between sensor buffer and written DNG. Analysis chain measured: read 60 ms, bin 21 ms, detect 111 ms warm. Binning was 546 ms until a `List<Pair<Int, Int>>` in its inner loop was replaced with two `IntArray`s — FR-12.2's boxing warning, arriving early. T-1.5 marked passing on the owner's instruction. |
+| 2026-08-16 | **First light (T-1.3, T-1.4).** All five camera IDs open — OI-18 closed favourably, the hidden ultrawide and tele are reachable. A 10 s ISO 800 RAW frame written as a 25.2 MB DNG with the exposure honoured exactly. Two HAL behaviours found and encoded as **D-20** (RAW-only sessions never stream — always configure a second surface) and **D-21** (`TEMPLATE_STILL_CAPTURE` silently ignored the exposure; use `TEMPLATE_MANUAL` and verify every frame's metadata). DNG structure measured (§1.6) — `Compression = 1`, 3072 one-row strips, CFA in IFD0 — closing **OI-1**. Camera 4 relabelled as the logical multi-camera it is, so the device reports 4 physical cameras + 1 logical, not 5. |
+| 2026-08-16 | **Probed on real hardware. The device qualifies** — LEVEL_3, RAW, manual control, **49.6 s** max exposure, 2.00 µm binned pitch (§1.5). OI-6 and OI-17 closed; OI-3 and OI-8 confirmed on-device. Three probe bugs found by running it: incomplete camera enumeration (2 of 5 found), a null focus-distance misread as fixed focus, and permission-gated lens characteristics. All fixed; 21 JVM tests pass. New **OI-18**: the ultrawide and tele are unpublished — readable, openability unproven. |
+| 2026-08-16 | **First code.** Project skeleton (T-0.1) + capability probe (T-1.1) + qualification gate (T-1.2, closed) + JSON export (T-0.8 partial) + night theme. `:app:assembleDebug` → 25 MB APK; 14 JVM tests pass. Requirements correction: `SENSOR_NOISE_PROFILE` is a CaptureResult key, not a CameraCharacteristics key, so it moves from the probe to T-1.4. Still no device attached — OI-6 and OI-17 remain unanswered until one is. |
+| 2026-08-16 | Target device set to **Nothing Phone (3a) Pro** (§1.5 added, with a day-one qualification checklist). OI-6 reframed from a decision to a measurement; new **OI-17** raised on quad-Bayer RAW output and the 2× pixel-pitch trap it sets for the trailing limit. OI-15 decided: framing assistance stays post-v1. T-1.1 pulled ahead of the rest of Phase 0. |
