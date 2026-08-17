@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Astro Capture — UI Prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --void:#070402;
+  --surface:#120A06;
+  --surface2:#1B0F08;
+  --line:#3A1C0E;
+  --line-soft:#25120A;
+
+  --hot:#FF5A2B;      /* full brightness — one element per screen */
+  --red:#D93F14;
+  --mid:#A63410;
+  --dim:#6E2411;
+  --ghost:#451707;
+
+  --txt:#F0906E;
+  --txt2:#B05E3E;
+  --txt3:#7A3E28;
+
+  --warn:#FFA53D;
+
+  --f-ui:'Space Grotesk',system-ui,sans-serif;
+  --f-num:'IBM Plex Mono',ui-monospace,monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:var(--void);
+  font-family:var(--f-ui);
+  color:var(--txt);
+  min-height:100vh;
+  padding:28px 16px 64px;
+}
+/* faint starfield, kept almost invisible */
+body::before{
+  content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+  background-image:
+    radial-gradient(1px 1px at 12% 22%,rgba(255,90,43,.30),transparent),
+    radial-gradient(1px 1px at 78% 14%,rgba(255,90,43,.22),transparent),
+    radial-gradient(1px 1px at 44% 71%,rgba(255,90,43,.18),transparent),
+    radial-gradient(1px 1px at 88% 62%,rgba(255,90,43,.24),transparent),
+    radial-gradient(1px 1px at 28% 88%,rgba(255,90,43,.16),transparent),
+    radial-gradient(1px 1px at 63% 39%,rgba(255,90,43,.20),transparent);
+}
+
+.masthead{max-width:1180px;margin:0 auto 34px;position:relative;z-index:1}
+.masthead .kick{
+  font-family:var(--f-num);font-size:10px;letter-spacing:.30em;
+  text-transform:uppercase;color:var(--dim);margin-bottom:12px;
+}
+.masthead h1{
+  font-size:clamp(26px,4.6vw,40px);font-weight:700;letter-spacing:-.025em;
+  color:var(--txt);line-height:1.05;
+}
+.masthead p{
+  margin-top:12px;max-width:60ch;font-size:14px;line-height:1.65;color:var(--txt3);
+}
+.masthead p b{color:var(--txt2);font-weight:500}
+
+.rail{
+  max-width:1180px;margin:0 auto;
+  display:grid;grid-template-columns:repeat(3,1fr);gap:26px;
+  position:relative;z-index:1;
+}
+@media(max-width:940px){
+  .rail{grid-template-columns:1fr;max-width:400px}
+}
+
+.screen{display:flex;flex-direction:column;gap:10px}
+.screen > .cap{
+  font-family:var(--f-num);font-size:10px;letter-spacing:.20em;
+  text-transform:uppercase;color:var(--dim);padding-left:2px;
+}
+.phone{
+  background:var(--surface);
+  border:1px solid var(--line-soft);
+  border-radius:26px;
+  overflow:hidden;
+  display:flex;flex-direction:column;
+  min-height:720px;
+  box-shadow:0 0 0 1px #0d0704, 0 24px 60px -24px rgba(255,90,43,.14);
+}
+
+/* ---- status bar ---- */
+.sbar{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:11px 16px 9px;font-family:var(--f-num);font-size:10px;
+  color:var(--dim);letter-spacing:.06em;border-bottom:1px solid var(--line-soft);
+}
+.sbar .grp{display:flex;gap:10px;align-items:center}
+
+/* ---- generic bits ---- */
+.pad{padding:18px 16px}
+.eyebrow{
+  font-family:var(--f-num);font-size:9.5px;letter-spacing:.22em;
+  text-transform:uppercase;color:var(--dim);margin-bottom:9px;
+}
+.rule{height:1px;background:var(--line-soft);margin:0}
+.num{font-family:var(--f-num);font-variant-numeric:tabular-nums}
+
+.card{
+  background:var(--surface2);border:1px solid var(--line-soft);
+  border-radius:12px;padding:13px 14px;
+}
+
+/* ---- buttons ---- */
+.btn{
+  width:100%;border:1px solid var(--red);background:transparent;
+  color:var(--txt);font-family:var(--f-ui);font-size:14px;font-weight:600;
+  padding:14px;border-radius:11px;cursor:pointer;letter-spacing:.01em;
+  transition:background .15s,border-color .15s;
+}
+.btn:hover{background:rgba(217,63,20,.13)}
+.btn:focus-visible{outline:2px solid var(--hot);outline-offset:2px}
+.btn.primary{
+  background:rgba(255,90,43,.13);border-color:var(--hot);color:var(--hot);
+}
+.btn.primary:hover{background:rgba(255,90,43,.22)}
+.btn.quiet{border-color:var(--line);color:var(--txt3);font-weight:500;padding:11px}
+.btn.quiet:hover{background:rgba(217,63,20,.07)}
+
+/* ---- calibration banner ---- */
+.banner{
+  margin:0 16px;border:1px solid var(--dim);border-left:2px solid var(--warn);
+  border-radius:9px;padding:11px 12px;display:flex;gap:11px;align-items:flex-start;
+  background:rgba(255,165,61,.05);
+}
+.banner .bt{font-size:12.5px;font-weight:600;color:var(--warn);margin-bottom:3px}
+.banner .bd{font-size:11.5px;line-height:1.5;color:var(--txt3)}
+.banner .ba{
+  font-family:var(--f-num);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--warn);border:1px solid var(--dim);border-radius:6px;padding:6px 9px;
+  background:none;cursor:pointer;white-space:nowrap;align-self:center;
+}
+.banner .bx{background:none;border:0;color:var(--txt3);cursor:pointer;font-size:15px;line-height:1;padding:2px 0 0}
+
+/* ---- session rows ---- */
+.srow{display:flex;gap:12px;padding:11px 0;border-bottom:1px solid var(--line-soft);align-items:center}
+.srow:last-child{border-bottom:0}
+.thumb{
+  width:52px;height:52px;border-radius:8px;flex-shrink:0;
+  border:1px solid var(--line-soft);
+  background:radial-gradient(circle at 34% 40%,rgba(255,90,43,.30),transparent 58%),
+             radial-gradient(circle at 68% 66%,rgba(255,90,43,.16),transparent 52%),
+             #0d0704;
+  position:relative;overflow:hidden;
+}
+.thumb.empty{background:#0d0704;display:flex;align-items:center;justify-content:center}
+.thumb.empty span{font-family:var(--f-num);font-size:8px;color:var(--dim);letter-spacing:.08em}
+.srow .meta{flex:1;min-width:0}
+.srow .t{font-size:13px;font-weight:600;color:var(--txt);margin-bottom:3px}
+.srow .s{font-family:var(--f-num);font-size:10.5px;color:var(--txt3);letter-spacing:.02em}
+.badge{
+  font-family:var(--f-num);font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;
+  padding:4px 7px;border-radius:5px;border:1px solid var(--line);color:var(--txt3);white-space:nowrap;
+}
+.badge.stacked{border-color:var(--dim);color:var(--txt2)}
+.badge.captured{border-color:var(--mid);color:var(--red);background:rgba(217,63,20,.10)}
+.badge.stale{border-color:var(--warn);color:var(--warn);background:rgba(255,165,61,.07)}
+
+/* ---- device strip ---- */
+.strip{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line-soft);border-top:1px solid var(--line-soft)}
+.strip div{background:var(--surface);padding:11px 8px;text-align:center}
+.strip .k{font-family:var(--f-num);font-size:8.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);margin-bottom:5px}
+.strip .v{font-family:var(--f-num);font-size:13px;color:var(--txt2)}
+
+/* ---- camera picker ---- */
+.cams{display:flex;flex-direction:column;gap:7px}
+.cam{
+  display:flex;gap:11px;align-items:center;padding:11px 12px;
+  border:1px solid var(--line-soft);border-radius:10px;cursor:pointer;background:none;
+  text-align:left;width:100%;font-family:var(--f-ui);
+  transition:border-color .15s,background .15s;
+}
+.cam:hover{border-color:var(--mid)}
+.cam[aria-pressed="true"]{border-color:var(--red);background:rgba(217,63,20,.10)}
+.cam .fl{font-family:var(--f-num);font-size:13px;color:var(--txt2);width:40px;flex-shrink:0}
+.cam[aria-pressed="true"] .fl{color:var(--hot)}
+.cam .cn{font-size:12.5px;font-weight:600;color:var(--txt);margin-bottom:2px}
+.cam .cd{font-size:10.5px;color:var(--txt3);line-height:1.45}
+
+/* ---- solve block ---- */
+.solve{border:1px solid var(--mid);border-radius:12px;overflow:hidden;background:rgba(217,63,20,.05)}
+.solve .head{padding:14px;cursor:pointer;background:none;border:0;width:100%;text-align:left;font-family:var(--f-ui)}
+.solve .line{
+  font-family:var(--f-num);font-size:17px;color:var(--hot);letter-spacing:-.01em;
+  display:flex;flex-wrap:wrap;gap:7px;align-items:baseline;
+}
+.solve .line i{font-style:normal;color:var(--dim)}
+.solve .sub{
+  display:flex;justify-content:space-between;align-items:center;
+  margin-top:9px;font-size:10.5px;color:var(--txt3);
+}
+.solve .sub u{text-decoration:none;font-family:var(--f-num);letter-spacing:.1em;text-transform:uppercase;font-size:9px;color:var(--red)}
+.deriv{border-top:1px solid var(--line-soft);padding:13px 14px;display:none}
+.deriv.open{display:block}
+.deriv dl{display:grid;grid-template-columns:1fr auto;gap:8px 12px;font-family:var(--f-num);font-size:11px}
+.deriv dt{color:var(--txt3)}
+.deriv dd{color:var(--txt2);text-align:right}
+.deriv dd.pick{color:var(--hot)}
+.deriv .note{margin-top:11px;padding-top:11px;border-top:1px solid var(--line-soft);font-size:11px;line-height:1.55;color:var(--txt3)}
+.pin{
+  margin-top:11px;font-family:var(--f-num);font-size:9px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--red);background:none;border:1px solid var(--line);border-radius:6px;padding:7px 10px;cursor:pointer;
+}
+
+/* ---- plan table ---- */
+.plan{display:grid;grid-template-columns:1fr auto;gap:9px 12px;font-family:var(--f-num);font-size:11.5px}
+.plan .k{color:var(--txt3)}
+.plan .v{color:var(--txt2);text-align:right}
+.plan .v.warn{color:var(--warn)}
+
+/* ---- live preview ---- */
+.pv{padding:14px 16px 10px}
+.pvhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:9px}
+.pvtabs{display:flex;gap:0;border:1px solid var(--line-soft);border-radius:7px;overflow:hidden}
+.pvtabs button{
+  font-family:var(--f-num);font-size:9px;letter-spacing:.11em;text-transform:uppercase;
+  background:none;border:0;color:var(--txt3);padding:6px 10px;cursor:pointer;
+}
+.pvtabs button[aria-pressed="true"]{background:rgba(217,63,20,.16);color:var(--red)}
+.pvtabs button:focus-visible{outline:2px solid var(--hot);outline-offset:-2px}
+
+.pvframe{
+  position:relative;border:1px solid var(--line-soft);border-radius:10px;
+  aspect-ratio:4/3;overflow:hidden;cursor:pointer;background:#0a0503;
+  filter:brightness(.62);transition:filter .2s;
+}
+.pvframe:hover{filter:brightness(.78)}
+.pvframe:focus-visible{outline:2px solid var(--hot);outline-offset:2px}
+/* simulated stretched sub-frame: band + nebulosity + stars */
+.pvsky{position:absolute;inset:0;
+  background:
+    radial-gradient(1.6px 1.6px at 18% 24%,rgba(255,236,220,.95),transparent),
+    radial-gradient(1.3px 1.3px at 62% 16%,rgba(255,226,205,.85),transparent),
+    radial-gradient(2px 2px at 44% 58%,rgba(255,245,235,.95),transparent),
+    radial-gradient(1.2px 1.2px at 81% 44%,rgba(210,225,255,.80),transparent),
+    radial-gradient(1.4px 1.4px at 30% 76%,rgba(255,220,200,.85),transparent),
+    radial-gradient(1.1px 1.1px at 71% 82%,rgba(230,235,255,.70),transparent),
+    radial-gradient(1.5px 1.5px at 12% 62%,rgba(255,230,210,.80),transparent),
+    radial-gradient(1px 1px at 90% 70%,rgba(255,240,225,.65),transparent),
+    radial-gradient(1px 1px at 54% 34%,rgba(200,215,255,.60),transparent),
+    radial-gradient(1.2px 1.2px at 36% 12%,rgba(255,235,215,.70),transparent),
+    linear-gradient(107deg,transparent 26%,rgba(196,120,96,.30) 42%,rgba(224,158,124,.24) 52%,rgba(150,96,88,.22) 62%,transparent 78%),
+    radial-gradient(ellipse 60% 40% at 48% 52%,rgba(126,72,72,.30),transparent 70%),
+    #0a0604;
+}
+.pvnoise{position:absolute;inset:0;opacity:.5;
+  background-image:radial-gradient(rgba(255,150,120,.10) .5px,transparent .5px);
+  background-size:3px 3px;}
+.pvtag{
+  position:absolute;left:9px;bottom:8px;font-family:var(--f-num);font-size:8.5px;
+  letter-spacing:.13em;text-transform:uppercase;color:rgba(255,190,160,.85);
+  background:rgba(10,5,3,.72);padding:4px 7px;border-radius:5px;
+}
+.pvexp{
+  position:absolute;right:9px;bottom:8px;font-family:var(--f-num);font-size:8.5px;
+  letter-spacing:.13em;text-transform:uppercase;color:rgba(255,190,160,.7);
+  background:rgba(10,5,3,.72);padding:4px 7px;border-radius:5px;
+}
+.pvfoot{display:flex;justify-content:space-between;margin-top:8px;font-family:var(--f-num);font-size:9.5px;color:var(--txt3);letter-spacing:.04em}
+
+/* ---- live: the ring (compact, beside stats) ---- */
+.ringrow{display:flex;gap:14px;align-items:center;padding:4px 16px 12px}
+.ringwrap{position:relative;flex:0 0 118px;height:118px}
+.ringwrap svg{width:118px;height:118px;overflow:visible}
+.rstats{flex:1;min-width:0;display:flex;flex-direction:column;gap:8px}
+.rstat{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.rstat .k{font-family:var(--f-num);font-size:8.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--dim)}
+.rstat .v{font-family:var(--f-num);font-size:14px;color:var(--txt2)}
+.rstat .v.warn{color:var(--warn)}
+.rc{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none}
+.rc .big{font-family:var(--f-num);font-size:27px;font-weight:600;color:var(--hot);line-height:1;letter-spacing:-.03em}
+.rc .of{font-family:var(--f-num);font-size:9px;color:var(--txt3);margin-top:3px;letter-spacing:.06em}
+
+.legend{display:flex;justify-content:center;gap:15px;padding:0 16px 12px;font-family:var(--f-num);font-size:9px;letter-spacing:.06em;color:var(--txt3)}
+.legend span{display:flex;align-items:center;gap:5px}
+.legend i{width:8px;height:2px;display:block}
+
+/* ---- live metrics ---- */
+.mgrid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line-soft);border-top:1px solid var(--line-soft);border-bottom:1px solid var(--line-soft)}
+.mgrid div{background:var(--surface);padding:13px 14px}
+.mgrid .k{font-family:var(--f-num);font-size:8.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);margin-bottom:6px}
+.mgrid .v{font-family:var(--f-num);font-size:19px;color:var(--txt);letter-spacing:-.01em}
+.mgrid .v small{font-size:10px;color:var(--txt3);margin-left:3px}
+.mgrid .v.warn{color:var(--warn)}
+
+/* frame log */
+.log{padding:13px 16px;display:flex;flex-direction:column;gap:0}
+.lrow{display:flex;gap:10px;align-items:center;padding:6px 0;font-family:var(--f-num);font-size:10.5px;border-bottom:1px solid #190d07}
+.lrow:last-child{border-bottom:0}
+.lrow .id{color:var(--dim);width:34px}
+.lrow .st{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.lrow .st.ok{background:var(--red)}
+.lrow .st.no{background:none;border:1px solid var(--warn)}
+.lrow .dt{color:var(--txt3);flex:1}
+.lrow .why{color:var(--warn);font-size:9.5px}
+.lrow.rej .dt{color:var(--txt3)}
+
+.foot{margin-top:auto;padding:14px 16px;border-top:1px solid var(--line-soft);display:flex;gap:9px}
+.foot .btn{flex:1}
+
+.note-sm{font-size:10.5px;line-height:1.55;color:var(--txt3);margin-top:9px}
+
+.annot{
+  max-width:1180px;margin:44px auto 0;position:relative;z-index:1;
+  border-top:1px solid var(--line-soft);padding-top:26px;
+  display:grid;grid-template-columns:repeat(3,1fr);gap:26px;
+}
+@media(max-width:940px){.annot{grid-template-columns:1fr;max-width:400px}}
+.annot h3{font-size:13px;font-weight:600;color:var(--txt2);margin-bottom:9px}
+.annot p{font-size:12px;line-height:1.65;color:var(--txt3);margin-bottom:9px}
+.annot code{font-family:var(--f-num);font-size:11px;color:var(--red)}
+
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+
+<div class="masthead">
+  <div class="kick">Prototype · night mode</div>
+  <h1>Astro Capture</h1>
+  <p>Three screens in the palette the app actually ships in. Dark adaptation takes about 25 minutes and one white screen ends it — so the interface has <b>no hue axis to work with</b>. State is carried by brightness, weight and shape instead, and full intensity is rationed to exactly one element per screen.</p>
+</div>
+
+<div class="rail">
+
+  <!-- ═══════════ MAIN ═══════════ -->
+  <div class="screen">
+    <div class="cap">01 — Main</div>
+    <div class="phone">
+      <div class="sbar">
+        <span>22:47</span>
+        <div class="grp"><span>BRIGHTNESS 18%</span><span>◗ 84%</span></div>
+      </div>
+
+      <div class="pad" style="padding-bottom:14px">
+        <div class="eyebrow">Tonight</div>
+        <button class="btn primary" style="font-size:15px;padding:17px">Start a session</button>
+        <div class="note-sm">Main camera · calibrated 4 Aug · focus stored</div>
+      </div>
+
+      <div class="banner">
+        <div style="flex:1">
+          <div class="bt">Ultrawide has no flats</div>
+          <div class="bd">Vignetting won't be corrected on this camera. Takes 2 minutes indoors with a white screen.</div>
+        </div>
+        <button class="ba">Fix</button>
+        <button class="bx" aria-label="Dismiss for now">×</button>
+      </div>
+
+      <div class="pad">
+        <div class="eyebrow">Sessions</div>
+        <div class="srow">
+          <div class="thumb"></div>
+          <div class="meta">
+            <div class="t">Cygnus</div>
+            <div class="s">9 Aug · 142/150 · 28m 24s</div>
+          </div>
+          <span class="badge stacked">Stacked</span>
+        </div>
+        <div class="srow">
+          <div class="thumb empty"><span>NO STACK</span></div>
+          <div class="meta">
+            <div class="t">Milky Way core</div>
+            <div class="s">6 Aug · 198/210 · 41m 30s</div>
+          </div>
+          <span class="badge captured">Stack now</span>
+        </div>
+        <div class="srow">
+          <div class="thumb"></div>
+          <div class="meta">
+            <div class="t">Andromeda</div>
+            <div class="s">2 Aug · 88/96 · 22m 00s</div>
+          </div>
+          <span class="badge stale">Stale</span>
+        </div>
+
+        <button class="btn quiet" style="margin-top:13px">All sessions · 12</button>
+      </div>
+
+      <div class="strip" style="margin-top:auto">
+        <div><div class="k">Free</div><div class="v">108 GB</div></div>
+        <div><div class="k">Device</div><div class="v">19°C</div></div>
+        <div><div class="k">Moon</div><div class="v">8%</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ SETUP ═══════════ -->
+  <div class="screen">
+    <div class="cap">02 — Session setup</div>
+    <div class="phone">
+      <div class="sbar">
+        <span>← Back</span>
+        <div class="grp"><span>SETUP</span></div>
+      </div>
+
+      <div class="pad" style="padding-bottom:0">
+        <div class="eyebrow">Camera</div>
+        <div class="cams">
+          <button class="cam" aria-pressed="true">
+            <span class="fl num">24mm</span>
+            <span><span class="cn">Main</span><span class="cd">Best light-gathering. Fully calibrated.</span></span>
+          </button>
+          <button class="cam" aria-pressed="false">
+            <span class="fl num">13mm</span>
+            <span><span class="cn">Ultrawide</span><span class="cd">Widest field, longest subs before trailing. Fixed focus.</span></span>
+          </button>
+          <button class="cam" aria-pressed="false">
+            <span class="fl num">77mm</span>
+            <span><span class="cn">Tele</span><span class="cd">Moon and small bright targets. Fewer stars to register on.</span></span>
+          </button>
+        </div>
+      </div>
+
+      <div class="pad" style="padding-bottom:0">
+        <div class="eyebrow">Pointing</div>
+        <div class="card">
+          <div class="plan">
+            <span class="k">Altitude / azimuth</span><span class="v">47.2° / 168°</span>
+            <span class="k">Declination at centre</span><span class="v">+02° 41′</span>
+            <span class="k">Field rotation</span><span class="v">15.7″/s</span>
+            <span class="k">Focus</span><span class="v">HFR 2.1 px · locked</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="pad" style="padding-bottom:0">
+        <div class="eyebrow">Exposure</div>
+        <div class="solve">
+          <button class="head" onclick="document.getElementById('d').classList.toggle('open')">
+            <div class="line num">ISO 800 <i>·</i> 12s <i>·</i> 150 frames <i>·</i> 30m</div>
+            <div class="sub"><span>Solved from your sensor and this pointing</span><u>Show work ▾</u></div>
+          </button>
+          <div class="deriv" id="d">
+            <dl>
+              <dt>Trailing limit (NPF, dec-corrected)</dt><dd>13.4 s</dd>
+              <dt>Sky-limited at ISO 400</dt><dd>21 s</dd>
+              <dt>Sky-limited at ISO 800</dt><dd class="pick">9 s</dd>
+              <dt>Sky-limited at ISO 1600</dt><dd>5 s</dd>
+              <dt>Dual-gain switch</dt><dd>ISO 640</dd>
+              <dt>Read noise @ 800</dt><dd>1.4 e⁻</dd>
+              <dt>Highlight headroom</dt><dd>1.8 stops</dd>
+            </dl>
+            <div class="note">ISO 800 sits just above the dual-gain switch, reaches sky-limited in 9s, and leaves 3.4s of margin under the trailing limit. ISO 1600 gains nothing here — you're already sky-limited.</div>
+            <button class="pin">Pin ISO manually</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="pad" style="padding-bottom:0">
+        <div class="eyebrow">Plan</div>
+        <div class="card">
+          <div class="plan">
+            <span class="k">Lights</span><span class="v">150 × 12s → 30m</span>
+            <span class="k">Darks (at end)</span><span class="v">20 × 12s → 4m</span>
+            <span class="k">Storage</span><span class="v">3.8 GB of 108 GB</span>
+            <span class="k">Battery at finish</span><span class="v">~61%</span>
+            <span class="k">Ends</span><span class="v">23:21</span>
+            <span class="k">Frame left at end</span><span class="v warn">74% common area</span>
+          </div>
+        </div>
+        <div class="note-sm">Field rotation will cost about a quarter of your frame over 30 minutes. Shorten the session or reframe wider to keep more.</div>
+      </div>
+
+      <div class="foot">
+        <button class="btn quiet" style="flex:0 0 40%">Adjust</button>
+        <button class="btn primary">Start</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ LIVE ═══════════ -->
+  <div class="screen">
+    <div class="cap">03 — Capturing</div>
+    <div class="phone">
+      <div class="sbar">
+        <span>CYGNUS · ISO 800 · 12s</span>
+        <div class="grp"><span>◗ 71%</span></div>
+      </div>
+
+      <div class="pv">
+        <div class="pvhead">
+          <span class="eyebrow" style="margin:0">Live preview</span>
+          <div class="pvtabs">
+            <button aria-pressed="true">Stack</button>
+            <button aria-pressed="false">Last sub</button>
+          </div>
+        </div>
+        <div class="pvframe" tabindex="0" role="button" aria-label="Enlarge preview">
+          <div class="pvsky"></div>
+          <div class="pvnoise"></div>
+          <span class="pvtag">88 stacked · 17m 36s</span>
+          <span class="pvexp">Autostretched</span>
+        </div>
+        <div class="pvfoot">
+          <span>Preview only — masters build after the session</span>
+          <span>Tap to enlarge</span>
+        </div>
+      </div>
+
+      <div class="ringrow">
+        <div class="ringwrap">
+          <svg viewBox="0 0 220 220" id="ring" role="img" aria-label="94 of 150 frames captured, 6 rejected"></svg>
+          <div class="rc">
+            <div class="big num">94</div>
+            <div class="of num">of 150</div>
+          </div>
+        </div>
+        <div class="rstats">
+          <div class="rstat"><span class="k">Kept</span><span class="v">88</span></div>
+          <div class="rstat"><span class="k">Rejected</span><span class="v warn">6</span></div>
+          <div class="rstat"><span class="k">Integration</span><span class="v">17m 36s</span></div>
+          <div class="rstat"><span class="k">Remaining</span><span class="v">11m 12s</span></div>
+        </div>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--red)"></i>Kept</span>
+        <span><i style="background:var(--warn)"></i>Rejected</span>
+        <span><i style="background:var(--ghost)"></i>Remaining</span>
+      </div>
+
+      <div class="mgrid">
+        <div><div class="k">HFR</div><div class="v">2.2<small>px</small></div></div>
+        <div><div class="k">Stars</div><div class="v">312</div></div>
+        <div><div class="k">Common area</div><div class="v warn">81<small>%</small></div></div>
+        <div><div class="k">Sensor</div><div class="v">31<small>°C</small></div></div>
+      </div>
+
+      <div class="log">
+        <div class="eyebrow">Recent frames</div>
+        <div class="lrow"><span class="id">094</span><span class="st ok"></span><span class="dt">HFR 2.2 · ecc 0.14 · 312★</span></div>
+        <div class="lrow"><span class="id">093</span><span class="st ok"></span><span class="dt">HFR 2.1 · ecc 0.12 · 318★</span></div>
+        <div class="lrow rej"><span class="id">092</span><span class="st no"></span><span class="dt">ecc 0.41</span><span class="why">Trailing</span></div>
+        <div class="lrow rej"><span class="id">091</span><span class="st no"></span><span class="dt">104★</span><span class="why">Cloud</span></div>
+        <div class="lrow"><span class="id">090</span><span class="st ok"></span><span class="dt">HFR 2.2 · ecc 0.15 · 305★</span></div>
+      </div>
+
+      <div class="pad" style="padding-top:4px">
+        <div class="card" style="border-color:var(--dim);background:rgba(255,165,61,.05)">
+          <div style="font-size:11.5px;line-height:1.5;color:var(--txt2)">
+            Two frames dropped to cloud at 23:04. Still capturing — they're kept on disk and you can include them later.
+          </div>
+        </div>
+      </div>
+
+      <div class="foot">
+        <button class="btn quiet" style="flex:0 0 40%">Pause</button>
+        <button class="btn">End &amp; take darks</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="annot">
+  <div>
+    <h3>Main</h3>
+    <p>The calibration banner names the camera, the missing item, the consequence and the cost — <code>FR-4.0.4.2</code>. It has a dismiss, and it sits below the start button rather than above it, so it can never read as a gate.</p>
+    <p>Unstacked sessions show <code>Stack now</code> as the badge, not a status word. The badge is the action.</p>
+  </div>
+  <div>
+    <h3>Session setup</h3>
+    <p>One line carries the solve; <code>Show work</code> opens the full derivation including the options that lost and why. Same screen, one tap deeper — no advanced mode.</p>
+    <p>Common area at end is stated during planning, in amber, before the user commits 30 minutes to a frame that will lose a quarter of itself.</p>
+  </div>
+  <div>
+    <h3>Capturing</h3>
+    <p>The ring is one tick per planned frame, ordered clockwise from the top: filled for kept, hollow amber for rejected, faint for not yet taken. Session progress, quality history and the clustering of failures in a single object readable from two metres away in the dark.</p>
+    <p>The preview defaults to the <b>running stack</b>, not the last sub — it visibly cleans up as frames accumulate, which is the reward loop. A raw 12s sub is a near-black rectangle, so the preview is autostretched and labelled as such.</p>
+    <p>The end button says <code>End &amp; take darks</code>, so the last required step is never a surprise.</p>
+  </div>
+</div>
+
+<script>
+(function(){
+  const TOTAL=150, DONE=94, REJ=[8,9,23,57,91,92];
+  const svg=document.getElementById('ring');
+  const cx=110, cy=110, rOut=102, rIn=88;
+  let out='';
+  for(let i=0;i<TOTAL;i++){
+    const a=(i/TOTAL)*Math.PI*2 - Math.PI/2;
+    const x1=cx+Math.cos(a)*rIn, y1=cy+Math.sin(a)*rIn;
+    const x2=cx+Math.cos(a)*rOut, y2=cy+Math.sin(a)*rOut;
+    let col='#451707', w=2;
+    if(i<DONE){
+      if(REJ.includes(i)){col='#FFA53D';w=2;}
+      else{col='#D93F14';w=2.4;}
+    }
+    out+=`<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${col}" stroke-width="${w}" stroke-linecap="round"/>`;
+  }
+  // leading edge marker
+  const a=(DONE/TOTAL)*Math.PI*2 - Math.PI/2;
+  out+=`<circle cx="${(cx+Math.cos(a)*((rIn+rOut)/2)).toFixed(1)}" cy="${(cy+Math.sin(a)*((rIn+rOut)/2)).toFixed(1)}" r="4" fill="#FF5A2B"/>`;
+  svg.innerHTML=out;
+
+  document.querySelectorAll('.cam').forEach(c=>{
+    c.addEventListener('click',()=>{
+      document.querySelectorAll('.cam').forEach(o=>o.setAttribute('aria-pressed','false'));
+      c.setAttribute('aria-pressed','true');
+    });
+  });
+  document.querySelectorAll('.pvtabs button').forEach(b=>{
+    b.addEventListener('click',()=>{
+      const tabs=b.parentElement.querySelectorAll('button');
+      tabs.forEach(o=>o.setAttribute('aria-pressed','false'));
+      b.setAttribute('aria-pressed','true');
+      const tag=document.querySelector('.pvtag');
+      tag.textContent = b.textContent==='Stack' ? '88 stacked · 17m 36s' : 'Frame 094 · 12s · ISO 800';
+    });
+  });
+  document.querySelectorAll('.bx').forEach(b=>b.addEventListener('click',e=>e.target.closest('.banner').style.display='none'));
+})();
+</script>
+</body>
+</html>
