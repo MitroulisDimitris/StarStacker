@@ -79,7 +79,7 @@ Two consequences to accept deliberately:
 | 0 | 9 | 1 | in progress — skeleton builds and installs; shared components extracted (T-0.2 part) |
 | 1A | 6 | 6 | **complete** — probe, qualification, camera lifecycle, first light, DNG reader |
 | 1B | 7 | 2 | **hardware-verified except what needs darkness** — see §5 and §1.7 |
-| 1C | 14 | 1 | **the whole flow works on hardware** — framing → setup → solve → start → live → complete, with resume. Outstanding: T-3.14 preview stack, and T-0.5's SAF root |
+| 1C | 14 | 1 | **field-ready** — framing → setup → solve → start → live → darks → complete, with resume offered on launch and focus settable by hand. Outstanding: T-3.14 preview stack, and T-0.5's SAF root |
 | 2+ | outlined | 0 | not started |
 
 > **Phase 1B has now met every acceptance that does not require a night sky** (2026-08-17). The
@@ -371,6 +371,46 @@ frame during which the phone was actually disturbed at launch.
 > **A note for Phase 6.** A 1.5 s dark frame on this sensor yields ~1300 detections. At a 5σ
 > threshold over 786k pixels, chance alone predicts under one, so these are **hot pixels** — which
 > is FR-4.1.2's map arriving unbidden, and a useful sanity check that the detector finds them.
+
+---
+
+## 1.11 Getting it ready for a field test — 2026-08-17
+
+The owner asked whether the app was ready to take out, and what to press. Answering that
+honestly meant walking the flow as a user rather than as its author, and **it found three real
+defects that no test would have caught, because none of them is a wrong answer — each is a
+missing question.**
+
+| Found | Why it mattered |
+|---|---|
+| **Nothing prompted the user to cover the lens** before darks (T-3.12) | The sequence rolled straight from lights into darks. An unattended session would have filled `darks/` with light frames, and **nothing downstream can tell a light frame in a darks folder from a dark** — it would have quietly poisoned every master built from that session |
+| **Resume was unreachable from the UI** (T-3.13) | The machinery worked and was wired only to the `adb` diagnostic. A session dying at 03:40 was unrecoverable without a laptop — which is the exact and only situation the feature exists for |
+| **The dark-sky branch chose the quietest ISO** rather than the ISO-invariance point (T-3.3) | The branch a *genuinely dark sky* takes. On this sensor read noise is flat above ISO 3200 — 2.07, 2.03, 2.07 e⁻ — while full scale halves at every step. Choosing the minimum outright picks ISO 6400, at 387 e⁻ of well, clipping every star of any brightness to save **0.04 e⁻**. Once read noise stops improving, more gain buys nothing and costs all the highlight range there is |
+
+The pattern is worth naming. Phase 1B's bugs were found by *running* code against hardware
+(§1.7–§1.10); these were found by asking **"what does the user do next, and what happens if it
+fails?"** The first kind is caught by tests and instruments. The second kind is only caught by
+someone walking the path — a test suite cannot fail an assertion about a prompt that was never
+written.
+
+### Two things added because failing well matters more than working
+
+- **`AWAITING_DARKS` is a session state, not a UI flag.** The session can be killed while waiting
+  and has to come back knowing it owes darks and not lights. The sensor is stopped during the
+  wait, and the wait times out after 15 minutes: waiting forever holds the camera and the wake
+  lock all night for someone who has gone to bed, while skipping instantly throws away the darks
+  of someone standing right there. Finishing cleanly and recording *why* there are no darks is
+  the only behaviour that is honest in both cases.
+- **Focus can be set by hand** (T-2.4). The sweep needs measurable stars at several lens
+  positions; under thin cloud or a bright sky it correctly returns `TOO_FEW_STARS` and there is
+  nothing to store. That was an honest failure and a dead end. The lens can now be walked one
+  measured motor step (0.0374 dioptres) at a time against the live HFR readout.
+
+**The fallback nobody has to think about:** with no stored focus the capture request passes 0.0
+dioptres, which this HAL answers with the hyperfocal position — and hyperfocal has infinity
+inside its depth of field by definition. A session shot with no focus step at all is *soft, not
+ruined*. That is the right failure mode for something that can go wrong at 1 a.m., and it is
+worth stating because it is the difference between abandoning a clear night and shooting it.
 
 ---
 
@@ -704,6 +744,11 @@ sky you can't see on a normal preview.
   Indoors the verdict is correctly `TOO_FEW_STARS`. That is worth stating plainly: before the
   saturation fix the same sweep would have returned a **confident bogus curve** built from ~30
   phantom stars per position.
+  **A manual fallback was added 2026-08-17** (§1.11). The sweep needs measurable stars at several
+  positions and correctly reports `TOO_FEW_STARS` when it cannot get them — an honest failure that
+  was also a dead end, since there was no other way to set focus. The lens can now be stepped by
+  hand, one measured motor step (0.0374 dioptres) at a time, against the live HFR readout, and the
+  result stored with verdict `MANUAL` so the log records how it was arrived at.
   **Remaining:** the acceptance — a real sweep on stars, and repeat sweeps agreeing.
 - [~] **T-2.5** Focus verification at session start + live HFR/star-count readout + mid-session
   drift alert (FR-6.3).
@@ -819,8 +864,28 @@ Goal: FR-13/M3 — *press start, walk away, come back to a folder of good subs.*
 - [~] **T-3.12** Dark frames at end of session (FR-4.2.1): prompt to cover the lens, capture at
   matched ISO/exposure, log temperature per frame, write to `darks/`. Skippable, with the cost
   stated.
+  **Written and demonstrated 2026-08-17.** `AWAITING_DARKS` is a real session state so a kill
+  while waiting comes back knowing it owes darks; the prompt is on screen and in the
+  notification; skipping is offered with the cost stated; and no answer within 15 minutes
+  finishes the session cleanly and records why there are no darks. `SequenceSession` tags
+  generations off `CaptureRequest.tag`, so frames still in flight when the lens went on cannot
+  be filed as darks. Verified: 3 lights → prompt → confirm → 2 darks → `DONE`.
+  **Allocation:** 15% of the light count, clamped to [10, 30], and charged *inside* the chosen
+  session length rather than added to it. The 10 floor is thin for a short session — a tuning
+  number to revisit once a real dark master has been stacked.
+  **Remaining:** darks shot against a real session's warming curve.
 - [~] **T-3.13** Interruption, pause/resume, and crash recovery: an interrupted session is
   resumable rather than lost (FR-6.4); on app restart, an incomplete session offers to resume.
+  **Done and demonstrated by killing the process** — `am force-stop` at frame 12 of 30 left a log
+  reading `CAPTURING` with exactly 12 frames recorded and 12 DNGs on disk; resuming continued the
+  same folder to 30, contiguous, one directory, `DONE`. The engine needed no separate resume path
+  because it starts from `lights.size + 1`. `SessionRecovery` scans the root rather than
+  consulting an index (D-5, FR-10.6.4), declines to offer a session with nothing left to shoot,
+  and "leave it" marks the log without deleting anything (D-10).
+  **The offer sits on the landing screen**, not behind framing and setup: walking back through
+  those would mean re-deriving an exposure and focus already decided correctly under a sky that
+  has since moved.
+  **Remaining:** the `Pause`/`Resume` controls have not been exercised mid-session on hardware.
 - [ ] **T-3.14** Live downsampled preview stack (FR-7.4) — translation-only running average until
   Phase 2 supplies real transforms. Depth per **OI-13**.
 - [~] **T-3.15** Completion screen (FR-9.4): result summary, full session path, open/share.
@@ -1004,9 +1069,16 @@ when the number comes back.
 | **Field** | The phase checkpoints — a tripod, a dark sky, and a completed session | Manual, logged in the changelog |
 | **External** | DNGs open in Siril/RawTherapee (T-1.5); on-device master compared to Siril/DSS on identical subs (T-5.7) | Desktop |
 
-**112 JVM tests as of Phase 1B** — qualification 21, star detection 14, focus sweep 11, DNG reader
-10, camera picker 10, pointing 11, stream planning 8, JSON 8, autostretch 7, focus monitor 7,
-image rotation 5.
+**184 JVM tests as of Phase 1C** — qualification 21, star detection 14, session planner 14,
+session log 12, pointing 11, focus sweep 11, exposure solver 11, frame gate 11, DNG reader 10,
+camera picker 10, trailing limit 9, JSON 8, noise model 8, stream planning 8, session recovery 7,
+autostretch 7, focus monitor 7, image rotation 5.
+
+Phase 1C added 72 of those, and the split is worth noting: the exposure engine and the session
+log are **entirely Android-free**, so the sky-limited solver, the trailing limit, the noise
+model, the planner, the frame gate and the whole `session.json` round trip are testable on a
+laptop. What needed a device was, again, exactly what should: opening cameras, configuring
+streams, and whether a HAL honours what it was asked.
 
 **A sixth level, added 2026-08-17: `diag/FieldDiagnostics.kt`.** Phase 1B's camera acceptances are
 driven from `adb` rather than from the UI —
@@ -1040,7 +1112,9 @@ to catch them.
 
 | Date | Change |
 |---|---|
-| 2026-08-17 | **T-3.12's prompt — found by asking whether the app was ready for a field test, not by testing.** The sequence rolled straight from lights into darks with nothing telling anyone to cover the lens, so an unattended session would have filled `darks/` with light frames — and nothing downstream can tell a light frame in a darks folder from a dark. Now a real state (`AWAITING_DARKS`) rather than a UI flag, because the session can be killed while waiting and has to come back knowing it owes darks and not lights. The sensor is stopped during the wait, the prompt is on screen and in the notification, darks are skippable with the cost stated (FR-4.2.1), and after 15 minutes with no answer the session finishes cleanly and records *why* there are no darks — waiting forever holds the camera open all night for someone who has gone to bed. `SequenceSession` now tags generations off `CaptureRequest.tag` like `FramingSession` does, so a frame exposed before the lens went on cannot be filed as a dark. |
+| 2026-08-17 | **Field guide written** (`docs/field-guide.html` → `StarStacker-Field-Guide.pdf`, 15 pages). Every screen, what each number means and its units, the order to press things in, and what to do when focus will not lock. Dark palette from the app's own tokens and a 100×190 mm page, so it reads at native size on a phone without zooming — which is where it will be read. It uses this device's measured figures rather than generic advice (black level 64, clipping at 1023 ADU, read noise 5.6 → 2.0 e⁻, the 0.0374-dioptre motor step, the hyperfocal quirk at 0.0, 25 MB per frame) and states plainly which four acceptances are still untested, so it cannot imply more confidence than the app has earned. |
+| 2026-08-17 | **Three defects found by asking whether the app was ready to take out — §1.11.** None was a wrong answer; each was a missing question, which is why no test caught them. (1) **Nothing prompted the user to cover the lens** before darks, so an unattended session would have filled `darks/` with light frames — undetectable downstream and quietly fatal to every master built from it. (2) **Resume was unreachable from the UI**, wired only to the `adb` diagnostic, so a session dying at 03:40 was unrecoverable without a laptop — the one situation the feature exists for. (3) **The dark-sky branch chose the quietest ISO** instead of the ISO-invariance point: on this sensor read noise is flat above ISO 3200, so it picked ISO 6400 at 387 e⁻ of well, clipping every star to save 0.04 e⁻. Also added a **manual focus fallback** (§1.11), because the sweep correctly failing under thin cloud was an honest failure and a dead end. 184 JVM tests. |
+| 2026-08-17 | **T-3.12's prompt — the first of §1.11's three.** The sequence rolled straight from lights into darks with nothing telling anyone to cover the lens, so an unattended session would have filled `darks/` with light frames — and nothing downstream can tell a light frame in a darks folder from a dark. Now a real state (`AWAITING_DARKS`) rather than a UI flag, because the session can be killed while waiting and has to come back knowing it owes darks and not lights. The sensor is stopped during the wait, the prompt is on screen and in the notification, darks are skippable with the cost stated (FR-4.2.1), and after 15 minutes with no answer the session finishes cleanly and records *why* there are no darks — waiting forever holds the camera open all night for someone who has gone to bed. `SequenceSession` now tags generations off `CaptureRequest.tag` like `FramingSession` does, so a frame exposed before the lens went on cannot be filed as a dark. |
 | 2026-08-17 | **Phase 1C UI — the flow is walkable end to end on the device** (T-3.4, T-3.11, T-3.15). Session setup renders the solve as FR-5.3's single line, `Show work` expands the derivation object itself — every ISO considered with the reason it won or lost, rendered off the solver's own output rather than retold — and pinning re-solves around the pin with the plan, budgets and derivation all following it. Verified live: `ISO 50 · 3.4 s · 490 frames · 28 min`, pinned to 800 becomes `ISO 800 · 1.7 s · 1027 frames · 29 min`. The live capture screen is a pure function of the service's `StateFlow` (D-6), so it survives the Activity being destroyed and shows the same thing on return. `SkyProbe` extracts the on-device measurement so the setup screen and the `--es diag solve` diagnostic run *the same* solve — a diagnostic measuring something the app does not do is worse than none. **§1.10: the bump detector was measuring the wrong quantity** — the magnitude of the accelerometer vector, which is nearly invariant to rotation, so it was blind to tilt and tripping on noise; six of seven frames were rejected as BUMPED with the phone untouched. Now measured as the angle of the gravity vector, with the honest corollary written down: at 1.5 px the trailing tolerance is 0.031°, far below the sensor's noise, so the accelerometer can only catch a knocked tripod and the fine case belongs to Phase 2's registration residuals. 183 JVM tests. |
 | 2026-08-17 | **T-3.13 — interruption and resume.** A 30-frame session killed with `am force-stop` mid-capture left a log reading `CAPTURING` with 12 frames recorded and exactly 12 DNGs on disk; resuming continued the same folder from frame 13 to 30, contiguous, one directory, state `DONE`. `SessionRecovery` scans the root for sessions whose own log says they were still going (D-5, FR-10.6.4 — no index, since an index is a second source of truth that is wrong the moment a folder is copied in from a PC), and declines to offer one with nothing left to shoot, which is a bookkeeping gap rather than lost sky. Abandoning marks the log and deletes nothing (D-10). 182 JVM tests. |
 | 2026-08-17 | **The primary deliverable runs: a full unattended session, screen off, start to finish.** 53 frames (50 lights + 3 darks) at ISO 400 / 1 s written as valid DNGs into the FR-9.1 folder layout with a complete `session.json` — T-3.6, T-3.7, T-3.8, T-3.9, T-3.10 and T-3.12 all exercised on hardware (§1.9). **Per-frame overhead measured at 2 ms**: 53 frames in 52.0 s, so the 25 MB DNG write hides entirely behind the next exposure and capture runs at essentially 100% duty cycle. Battery temperature climbed 31 → 32 °C in the first minute, which is D-16's warming curve showing up per frame as designed. Capture needed **its own session class** rather than a flag on `FramingSession`: framing calls `acquireLatestImage()` and drops frames when busy, which is correct for a preview and would silently shorten the integration the planner promised, so `SequenceSession` uses `acquireNextImage()`, applies back pressure, and keeps the whole `TotalCaptureResult` that `DngCreator` requires. All 50 lights were correctly rejected as `SATURATED` — the phone was face-up under room light — which is §1.7's saturation guard proving itself in the capture path rather than only the framing one. 175 JVM tests. Still outstanding in 1C: the solve and live-capture UI (T-3.4, T-3.11, T-3.15), resume (T-3.13), the live preview stack (T-3.14), and SAF (T-0.5) — capture currently writes to `Android/data/.../files/sessions`, which is reachable from a PC over USB but is not yet FR-9.1's user-chosen root. |
