@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>StarStacker — Field Guide</title>
+<style>
+  @page { size: 100mm 190mm; margin: 8mm 8mm 10mm 8mm; }
+
+  :root{
+    --void:#070402; --surface:#120A06; --surface2:#1B0F08;
+    --line:#3A1C0E; --linesoft:#25120A;
+    --hot:#FF5A2B; --red:#D93F14; --mid:#A63410; --dim:#6E2411;
+    --txt:#F0906E; --txt2:#B05E3E; --txt3:#7A3E28; --warn:#FFA53D;
+  }
+
+  *{ box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+
+  html,body{ margin:0; padding:0; background:var(--void); }
+  body{
+    font-family:"Segoe UI", system-ui, sans-serif;
+    font-size:9.6pt; line-height:1.5; color:var(--txt2);
+  }
+
+  .mono{ font-family:"Consolas","IBM Plex Mono",monospace; }
+
+  h1{ font-size:20pt; line-height:1.1; margin:0 0 2mm; color:var(--txt); letter-spacing:-0.5px; }
+  h2{
+    font-size:13pt; margin:0 0 2mm; color:var(--txt); letter-spacing:-0.3px;
+    padding-bottom:1.5mm; border-bottom:1px solid var(--line);
+  }
+  h3{ font-size:10.5pt; margin:4mm 0 1.5mm; color:var(--txt); }
+  p{ margin:0 0 2mm; }
+  ul,ol{ margin:0 0 2mm; padding-left:5mm; }
+  li{ margin-bottom:1.2mm; }
+
+  .eyebrow{
+    font-family:"Consolas",monospace; font-size:7pt; letter-spacing:1.8px;
+    color:var(--dim); text-transform:uppercase; margin:0 0 1.5mm;
+  }
+
+  section{ page-break-before:always; }
+  section.first{ page-break-before:avoid; }
+
+  .card{
+    border:1px solid var(--linesoft); background:var(--surface2);
+    border-radius:2.5mm; padding:2.5mm 3mm; margin:0 0 2.5mm;
+  }
+
+  /* One full-intensity element per idea, same rule the app follows. */
+  .btn{
+    display:inline-block; font-weight:600; color:var(--hot);
+    border:1px solid var(--hot); background:rgba(255,90,43,0.13);
+    border-radius:1.8mm; padding:0.4mm 1.6mm; font-size:9pt; white-space:nowrap;
+  }
+  .btn.quiet{ color:var(--txt2); border-color:var(--line); background:none; font-weight:500; }
+
+  .warn{ color:var(--warn); }
+  .bad{ color:var(--red); }
+  .good{ color:var(--txt); }
+
+  table{ width:100%; border-collapse:collapse; margin:0 0 2.5mm; }
+  td{ padding:1.4mm 0; vertical-align:top; border-bottom:1px solid var(--linesoft); }
+  td:first-child{ width:26mm; padding-right:2mm; color:var(--txt); }
+  tr:last-child td{ border-bottom:none; }
+
+  .term{ font-family:"Consolas",monospace; font-size:8.6pt; color:var(--txt); font-weight:600; }
+  .unit{ color:var(--txt3); font-weight:400; }
+
+  .banner{
+    border:1px solid rgba(255,165,61,0.45); border-radius:2.5mm;
+    padding:2.5mm 3mm; margin:0 0 2.5mm; color:var(--warn); font-size:9pt;
+  }
+  .banner.stop{ border-color:rgba(217,63,20,0.6); color:var(--red); }
+
+  ol.steps{ list-style:none; padding:0; counter-reset:s; }
+  ol.steps > li{
+    counter-increment:s; position:relative; padding-left:7mm; margin-bottom:3mm;
+  }
+  ol.steps > li::before{
+    content:counter(s); position:absolute; left:0; top:0.2mm;
+    font-family:"Consolas",monospace; font-size:9pt; color:var(--hot);
+    border:1px solid var(--mid); border-radius:50%;
+    width:5mm; height:5mm; line-height:4.6mm; text-align:center;
+  }
+  .look{ color:var(--txt3); font-size:8.8pt; display:block; margin-top:0.8mm; }
+
+  .foot{
+    position:running(footer); font-size:7pt; color:var(--dim);
+  }
+  .lede{ color:var(--txt3); font-size:9pt; }
+  .tag{
+    font-family:"Consolas",monospace; font-size:7pt; letter-spacing:1px;
+    border:1px solid currentColor; border-radius:1.2mm; padding:0.2mm 1.2mm;
+  }
+
+  /* Screen preview only — mirrors the printable column so overflow is visible while
+     authoring. Has no effect on the PDF, which uses the @page margins above. */
+  @media screen {
+    body{ width:84mm; margin:0 auto; padding:6mm 0; background:var(--void); }
+    section{ border-top:1px dashed var(--line); padding-top:5mm; margin-top:5mm; }
+    section.first{ border-top:none; margin-top:0; padding-top:0; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ───────────────────────────── COVER ───────────────────────────── -->
+<section class="first">
+  <p class="eyebrow">Nothing Phone (3a) Pro · A059P</p>
+  <h1>StarStacker<br>Field Guide</h1>
+  <p class="lede">Every screen, every number, and the order to press things in.
+  Built for reading on the phone in the dark — it stays on the red end of the
+  palette so it will not cost you your dark adaptation.</p>
+
+  <div class="card">
+    <p class="eyebrow">If you read one thing</p>
+    <p><strong class="good">Framing and focus happen before you press Start.</strong>
+    Once a session is running there is no picture on screen — only numbers. So get
+    the framing right, get focus locked, and only then start.</p>
+  </div>
+
+  <div class="banner">
+    This is the app's first night out. The exposure engine, the focus sweep and the
+    pointing maths have never been run against real stars. Expect to find things.
+    Every frame is kept on disk regardless, so a session is never wasted.
+  </div>
+
+  <h3>The five screens</h3>
+  <table>
+    <tr><td>1 · Probe</td><td>What the phone can do. Where you resume an interrupted session.</td></tr>
+    <tr><td>2 · Framing</td><td>See the sky, point it, lock focus.</td></tr>
+    <tr><td>3 · Setup</td><td>Measure the sky, solve the exposure, check the plan.</td></tr>
+    <tr><td>4 · Capturing</td><td>Numbers only. Pause, or end and take darks.</td></tr>
+    <tr><td>5 · Complete</td><td>What you got, and where it is.</td></tr>
+  </table>
+</section>
+
+
+<!-- ───────────────────────────── TONIGHT ───────────────────────────── -->
+<section>
+  <p class="eyebrow">Do this</p>
+  <h2>Tonight, in order</h2>
+
+  <ol class="steps">
+    <li><strong class="good">Set up the tripod and let the phone sit.</strong>
+      <span class="look">Give it a minute to stop wobbling before you focus. A tripod
+      still settling will spoil a focus sweep.</span></li>
+
+    <li>Open StarStacker. Scroll down. Tap <span class="btn">Framing &amp; focus</span>
+      <span class="look">Camera 0 · Main is already selected and is the right one —
+      2.00 µm pixels at f/1.88 beats every other lens on this phone.</span></li>
+
+    <li>Tap <span class="btn">Start night preview</span>
+      <span class="look">First frame takes ~3 s, then one per second. The line under
+      the image says the rate so a slow preview does not read as a frozen app.</span></li>
+
+    <li><strong class="good">Point it.</strong> Watch the preview and the
+      <span class="term">Stars</span> count.
+      <span class="look">If it is too faint, tap <span class="btn quiet">Boost · 4 s</span>.
+      Put it back to <span class="btn quiet">1 s</span> before focusing.</span></li>
+
+    <li>Check the <strong class="good">Pointing</strong> card shows a number for
+      <span class="term">Declination at centre</span>.
+      <span class="look">If it says <span class="warn">needs location</span>, you have no GPS
+      fix. Not fatal — the app assumes the celestial equator, which just gives you
+      shorter subs than you need. Opening Maps for a moment usually fixes it.</span></li>
+
+    <li>Tap <span class="btn quiet">Sweep focus</span> and <strong class="good">do not touch
+      the phone</strong> for ~1.5 minutes.
+      <span class="look">Nine lens positions. Look for <span class="term">LOCKED</span> and a
+      clear dip in the bar chart. If it fails, see <em>When focus will not lock</em>.</span></li>
+
+    <li>Tap <span class="btn quiet">Continue to session setup →</span></li>
+
+    <li>Tap <span class="btn quiet">Measure the sky</span> — about a minute.
+      <span class="look">It walks nine ISOs reading the sensor's noise, then measures how
+      bright your sky actually is.</span></li>
+
+    <li><strong class="good">Read the one line.</strong> Something like
+      <span class="mono good">ISO 800 · 12 s · 150 frames · 30 min</span>.
+      <span class="look">Tap <span class="btn quiet">Show work</span> if you want to see why
+      it chose that, and every ISO it rejected. Tap any ISO to pin it.</span></li>
+
+    <li>Pick a length: <span class="btn quiet">15m</span> <span class="btn quiet">30m</span>
+      <span class="btn quiet">60m</span> <span class="btn quiet">120m</span>
+      <span class="look">Check <span class="term">Storage</span> and
+      <span class="term">Battery</span> are not amber. Start is disabled if the session
+      genuinely will not fit.</span></li>
+
+    <li>Tap <span class="btn">Start session</span></li>
+
+    <li><strong class="good">Press the power button</strong> to blank the screen and walk away.
+      <span class="look">Capture keeps running — it lives in a foreground service with a wake
+      lock, not in the app window.</span></li>
+
+    <li>When the lights finish, the phone shows and notifies
+      <strong class="good">Cover the lens</strong>.
+      <span class="look">Cap it or press it face-down on something opaque, then
+      <span class="btn">Lens is covered — take darks</span>. No answer within 15 minutes and it
+      finishes without darks and records why.</span></li>
+
+    <li>Read the completion screen. <strong class="good">Note the folder path.</strong></li>
+  </ol>
+
+  <div class="banner">
+    <strong>The preview stops itself after 2 minutes of no interaction.</strong> That is
+    deliberate — framing at ISO 3200 warms the sensor, and that heat comes out of the session
+    you have not shot yet. Tap anything to keep it alive.
+  </div>
+</section>
+
+
+<!-- ───────────────────────────── GLOSSARY ───────────────────────────── -->
+<section>
+  <p class="eyebrow">Reference</p>
+  <h2>Every number on screen</h2>
+
+  <h3>The four live metrics</h3>
+  <table>
+    <tr>
+      <td><span class="term">HFR</span> <span class="unit">px</span></td>
+      <td><strong>Half-flux radius</strong> — the radius holding half the star's light.
+      <strong class="good">The focus number. Lower is sharper.</strong> Measured on the binned
+      1024×768 analysis image, so one HFR pixel is about four sensor pixels. Judge it by
+      minimising it, not against an absolute.</td>
+    </tr>
+    <tr>
+      <td><span class="term">Stars</span></td>
+      <td>How many stars were detected in this frame. <strong>A relative number, not a
+      score</strong> — a wide lens on the Milky Way gives hundreds, a narrow field gives
+      dozens. What matters is a sudden <em>drop</em>, which means cloud.</td>
+    </tr>
+    <tr>
+      <td><span class="term">Ecc</span></td>
+      <td><strong>Eccentricity.</strong> 0.00 is a perfect circle, 1.00 is a line. Round stars
+      sit around 0.2–0.4 in practice. <span class="warn">Above 0.60 the frame is flagged
+      Trailed</span> — the sub is too long, or something moved.</td>
+    </tr>
+    <tr>
+      <td><span class="term">Sky</span> <span class="unit">ADU</span></td>
+      <td>Median background brightness in raw sensor counts. On this sensor
+      <strong>64 = black</strong> (no light at all) and <strong>1023 = clipped</strong>.
+      65–80 is a genuinely dark sky. 300+ is heavy light pollution.
+      <span class="bad">1023 means the frame is ruined</span> and nothing can be measured
+      from it.</td>
+    </tr>
+  </table>
+
+  <h3>Units you will see</h3>
+  <table>
+    <tr><td><span class="term">ADU</span></td>
+      <td>Analogue-to-Digital Unit — the raw count out of the sensor's converter.
+      10-bit here, so 0–1023.</td></tr>
+    <tr><td><span class="term">e⁻</span></td>
+      <td>Electrons. The physical unit of collected light, and of read noise. Used because
+      you cannot compare sky brightness to sensor noise in ADU — only in electrons.</td></tr>
+    <tr><td><span class="term">e⁻/s</span></td>
+      <td>How fast the sky fills a pixel. <strong>Independent of ISO</strong> — ISO is gain
+      applied after the light is collected, so the app measures this once.</td></tr>
+    <tr><td><span class="term">stops</span></td>
+      <td>Doublings. "1.6 stops of headroom" means the sky could get three times brighter
+      before it clips.</td></tr>
+    <tr><td><span class="term">dioptres</span></td>
+      <td>Focus distance as 1/metres. <strong>0 = infinity</strong>, larger = closer.
+      This lens moves in steps of 0.0374. Asking for exactly 0.0 gets you 0.1216
+      (the hyperfocal position, 8.2 m) — a quirk of this phone.</td></tr>
+    <tr><td><span class="term">″/s</span></td>
+      <td>Arcseconds per second. An arcsecond is 1/3600 of a degree.</td></tr>
+  </table>
+</section>
+
+
+<section>
+  <p class="eyebrow">Reference</p>
+  <h2>Numbers in the solve</h2>
+
+  <table>
+    <tr><td><span class="term">Trailing limit</span></td>
+      <td>The longest single exposure before stars smear more than you allowed. Computed from
+      your <em>measured</em> pixel pitch and focal length and the declination you are pointing
+      at — not the "500 rule".</td></tr>
+    <tr><td><span class="term">Star elongation budget</span></td>
+      <td>How much smear you will accept, in pixels. Default 1.5.</td></tr>
+    <tr><td><span class="term">Sky background</span></td>
+      <td>Your sky's brightness in e⁻/s, measured from a real test frame rather than guessed
+      from a light-pollution map.</td></tr>
+    <tr><td><span class="term">Read noise</span></td>
+      <td>Noise added by reading the sensor, in electrons. On this phone: 5.6 e⁻ at ISO 50
+      falling to about 2.0 e⁻ at ISO 3200 and flat above that.</td></tr>
+    <tr><td><span class="term">Dual-gain switch</span></td>
+      <td>The ISO where read noise drops off a cliff on sensors that have one.
+      <strong>This sensor has none</strong> — it declines smoothly.</td></tr>
+    <tr><td><span class="term">Highlight headroom</span></td>
+      <td>Stops between the sky level and clipping. More headroom = fewer blown-out stars.</td></tr>
+    <tr><td><span class="term">Sky vs read noise</span></td>
+      <td>The whole point of the engine. Once the sky's own shot noise is
+      <strong>3–5× the sensor's read noise in variance</strong>, a longer sub buys you almost
+      nothing and costs you trailing. That is "sky-limited".</td></tr>
+  </table>
+
+  <h3>The two answers it can give</h3>
+  <div class="card">
+    <p><strong class="good">"sky-limited …"</strong> — good. The sub is long enough that your
+    sky, not the sensor, sets the noise. If it adds <em>"set by clipping"</em>, your sky is
+    bright and highlight headroom is what is limiting you.</p>
+    <p style="margin:0"><strong class="warn">"read-noise limited …"</strong> — also fine, and
+    it means <strong>you have a dark sky.</strong> No ISO can reach sky-limited inside the
+    trailing limit. The app shoots at the trailing limit and the answer is to stack more
+    frames, not longer ones.</p>
+  </div>
+
+  <h3>In the plan</h3>
+  <table>
+    <tr><td><span class="term">Frame left at end</span></td>
+      <td>How much of the frame survives field rotation over the session. On a fixed tripod the
+      sky turns as well as drifts, so the edges are not shared by every sub. Below 80% it turns
+      amber.</td></tr>
+    <tr><td><span class="term">Field rotation</span></td>
+      <td>How fast the frame turns, arcsec/s. Fastest looking south, and it diverges near the
+      zenith. This does not blur one sub — it decides how much you keep.</td></tr>
+    <tr><td><span class="term">Declination</span></td>
+      <td>Angular distance from the celestial equator. Stars near the pole barely move; stars
+      on the equator move fastest. This sets the trailing limit.</td></tr>
+    <tr><td><span class="term">Storage</span></td>
+      <td>25 MB per frame, measured. Amber near the limit, and Start is blocked if it will
+      not fit.</td></tr>
+    <tr><td><span class="term">Battery</span></td>
+      <td><span class="warn">An estimate, not a measurement.</span> Tonight is what produces
+      the real number.</td></tr>
+  </table>
+</section>
+
+
+<!-- ───────────────────────────── CAPTURING ───────────────────────────── -->
+<section>
+  <p class="eyebrow">Screen 4</p>
+  <h2>While it is shooting</h2>
+
+  <p>No picture — numbers only. The big ring is frames done out of frames planned; you can
+  read it from across a field without reading anything.</p>
+
+  <h3>The frame line</h3>
+  <p><span class="term">HFR</span> · <span class="term">Stars</span> ·
+  <span class="term">Sky</span> · <span class="term">Kept</span>, then a smaller line with
+  <span class="term">headroom</span>, battery temperature and charge.</p>
+
+  <table>
+    <tr><td><span class="term">Kept</span></td>
+      <td>Frames accepted so far. Turns amber if more than half are being rejected.</td></tr>
+    <tr><td><span class="term">headroom</span></td>
+      <td>Thermal headroom. 0 = cool, 1.0 = at the throttling point. Pacing is switched off
+      deliberately for now — it only logs.</td></tr>
+  </table>
+
+  <h3>Why frames get rejected</h3>
+  <table>
+    <tr><td><span class="tag warn">Trailed</span></td>
+      <td>Eccentricity over 0.60 — stars are streaks. <strong>Shorten the sub.</strong></td></tr>
+    <tr><td><span class="tag warn">Cloud</span></td>
+      <td>Star count fell below half the running baseline. <strong>Wait.</strong></td></tr>
+    <tr><td><span class="tag warn">Bumped</span></td>
+      <td>The phone tilted more than 1.0° during the exposure. <strong>Steady the
+      tripod.</strong></td></tr>
+    <tr><td><span class="tag warn">Saturated</span></td>
+      <td>The frame is clipped — a car, the Moon, a torch. <strong>Too much light.</strong></td></tr>
+  </table>
+
+  <div class="banner">
+    <strong>Nothing is ever deleted.</strong> Rejected frames are written to
+    <span class="mono">lights/</span> like any other and flagged in
+    <span class="mono">session.json</span> with the number that flagged them. You can include
+    them later if you disagree.
+  </div>
+
+  <h3>Controls</h3>
+  <p><span class="btn quiet">Pause</span> stops between frames and can be resumed.
+  <span class="btn quiet">End &amp; take darks</span> skips the rest of the lights and goes
+  straight to the darks prompt.</p>
+
+  <h3>What you get at the end</h3>
+  <p class="mono" style="font-size:8pt; color:var(--txt3); word-break:break-all;">
+  Android/data/com.starstacker/files/sessions/&lt;date&gt;_&lt;label&gt;/</p>
+  <p>with <span class="mono">lights/</span>, <span class="mono">darks/</span>,
+  <span class="mono">flats/</span>, <span class="mono">master/</span> and
+  <span class="mono">session.json</span>. The DNGs open in Siril, DeepSkyStacker or
+  RawTherapee as they are — reachable over USB without the app's help.</p>
+</section>
+
+
+<!-- ───────────────────────────── FOCUS TROUBLE ───────────────────────────── -->
+<section>
+  <p class="eyebrow">When it goes wrong</p>
+  <h2>When focus will not lock</h2>
+
+  <div class="card">
+    <p style="margin:0"><strong class="good">You are never blocked.</strong> With no stored
+    focus the app shoots at the hyperfocal position, which has infinity inside its depth of
+    field. A session with no focus step is <em>soft, not ruined.</em> Do not abandon a clear
+    night over this.</p>
+  </div>
+
+  <h3>Read the verdict</h3>
+  <table>
+    <tr><td><span class="term">TOO_FEW_STARS</span></td>
+      <td>The commonest one. It needs 5+ stars at 3 of the 9 positions.
+      <strong>Check the live Stars count first</strong> — under ~20 and the sweep cannot work.
+      Try <span class="btn quiet">Boost · 4 s</span> (slower, ~6 min), get away from horizon
+      glow, or use the trick below.</td></tr>
+    <tr><td><span class="term">FLAT</span></td>
+      <td>HFR barely changes across the sweep. Usually means you are
+      <strong>measuring hot pixels, not stars</strong> — they do not change shape with focus.
+      A few hundred "stars" in an empty-looking sky is the giveaway.</td></tr>
+    <tr><td><span class="term">MINIMUM_AT_EDGE</span><br><span class="unit">far end</span></td>
+      <td><strong class="good">Not a failure.</strong> "The furthest this lens reached" is the
+      expected answer for stars. It stores it and reads LOCKED. Carry on.</td></tr>
+  </table>
+
+  <div class="card">
+    <p class="eyebrow">The trick worth knowing</p>
+    <p style="margin:0"><strong class="good">Focus is stored per camera, not per target.</strong>
+    Point at a dense star field, sweep there, then re-point at whatever you actually want to
+    shoot. The focus follows you.</p>
+  </div>
+
+  <h3>Focus by hand</h3>
+  <p>Under <span class="term">FOCUS BY HAND</span> on the framing screen:</p>
+  <ol class="steps">
+    <li><span class="btn quiet">◀ Further</span> / <span class="btn quiet">Nearer ▶</span> —
+      one tap is one real motor step.
+      <span class="look">Allow ~2 s per tap for the number to catch up. The sensor pipeline
+      here is ten frames deep.</span></li>
+    <li>Watch <span class="term">HFR</span> on that row.
+      <strong class="good">Lower is sharper.</strong>
+      <span class="look">Star count usually rises as you approach focus, as faint stars climb
+      over the detection threshold.</span></li>
+    <li>Walk it down, overshoot by one, come back.</li>
+    <li>Tap <span class="btn quiet">Use this focus for the session</span></li>
+  </ol>
+</section>
+
+
+<!-- ───────────────────────────── OTHER TROUBLE ───────────────────────────── -->
+<section>
+  <p class="eyebrow">When it goes wrong</p>
+  <h2>Everything else</h2>
+
+  <table>
+    <tr><td><strong class="good">Session died</strong></td>
+      <td>Reopen the app. The <strong>Unfinished session</strong> card is on the first screen
+      with <span class="btn quiet">Resume</span>. It carries on filling the same folder from
+      the next frame, reusing the exposure and focus it already decided.
+      <span class="btn quiet">Leave it</span> only stops the offer — every frame stays on
+      disk.</td></tr>
+    <tr><td><strong class="good">"Measure the sky" errors immediately</strong></td>
+      <td>The camera is probably still closing from the framing loop. Wait two seconds and
+      tap it again.</td></tr>
+    <tr><td><strong class="good">Everything says Saturated</strong></td>
+      <td>Something is lighting the frame — a streetlight, the Moon just out of frame, a
+      phone screen. Re-point, or drop the framing ISO.</td></tr>
+    <tr><td><strong class="good">Preview is a black rectangle</strong></td>
+      <td>Try <span class="btn quiet">Boost · 4 s</span>. If still black, the lens is likely
+      covered or pointing at ground.</td></tr>
+    <tr><td><strong class="good">Compass accuracy is low</strong></td>
+      <td>Wave the phone in a figure of eight. Azimuth feeds declination, which sets the
+      trailing limit.</td></tr>
+    <tr><td><strong class="good">It stopped overnight</strong></td>
+      <td>Battery optimisation is the first suspect — the app is not whitelisted. Worth noting
+      what time it stopped.</td></tr>
+  </table>
+
+  <h3>What to bring back</h3>
+  <p>Whatever happens, <span class="mono">session.json</span> in the session folder records
+  every frame with its ISO, exposure, temperature, HFR, star count, background and the exact
+  reason for any rejection. <strong class="good">That file answers almost any question about
+  what happened</strong> — it beats trying to remember.</p>
+
+  <h3>Known-untested tonight</h3>
+  <ul>
+    <li>Whether the night preview actually shows stars</li>
+    <li>Whether the focus sweep finds a real minimum, and whether two sweeps agree</li>
+    <li>Whether alt/az matches a known star</li>
+    <li>Whether the solved sub length is sensible under a real dark sky</li>
+  </ul>
+  <p class="lede">Those four are exactly what tonight exists to answer. Everything else —
+  capture, writing, gating, darks, resume — has been demonstrated on this phone.</p>
+</section>
+
+</body>
+</html>
