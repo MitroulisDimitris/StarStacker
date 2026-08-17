@@ -13,6 +13,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
@@ -20,14 +21,19 @@ import android.util.Log
 import com.starstacker.camera.CameraAccess
 import com.starstacker.camera.OpenabilityProbe
 import com.starstacker.camera.RawCapture
+import com.starstacker.device.CameraPicker
 import com.starstacker.device.CameraProbe
 import com.starstacker.device.DeviceProfile
 import com.starstacker.device.ProfileJson
 import com.starstacker.device.Qualification
 import com.starstacker.dng.DngReader
+import com.starstacker.pointing.PointingFix
+import com.starstacker.pointing.PointingSource
 import com.starstacker.stars.CfaBinner
 import com.starstacker.stars.StarDetector
 import com.starstacker.ui.DiagnosticsState
+import com.starstacker.ui.FramingController
+import com.starstacker.ui.FramingScreen
 import com.starstacker.ui.ProbeScreen
 import com.starstacker.ui.theme.StarStackerTheme
 import kotlinx.coroutines.Dispatchers
@@ -39,18 +45,31 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Phase 1A entry point. Right now the whole app is the capability probe (T-1.1/T-1.2) —
- * deliberately, because until it reports on real hardware there is no way to know whether
- * the rest of the plan has a device to run on (OI-6).
+ * Phase 1A/1B entry point.
+ *
+ * Two screens so far: the capability probe (T-1.1/T-1.2), which answers whether there is a
+ * device to run on at all, and framing & focus (Phase 1B), which is the first screen that does
+ * something on a tripod. The real navigation graph is T-0.3; this is deliberately a switch
+ * rather than a half-built version of it.
  */
 class MainActivity : ComponentActivity() {
 
+    private enum class Screen { PROBE, FRAMING }
+
     private var profile by mutableStateOf<DeviceProfile?>(null)
     private var diagnostics by mutableStateOf(DiagnosticsState())
+    private var locationGranted by mutableStateOf(false)
+
+    private val pointingSource by lazy { PointingSource(this) }
+    private val framing by lazy { FramingController(this, lifecycleScope) }
 
     private val requestCamera = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { reprobe() }
+
+    private val requestLocation = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted -> locationGranted = granted }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -83,25 +102,85 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        locationGranted = pointingSource.hasLocationPermission()
+
         setContent {
             StarStackerTheme {
                 val current = profile ?: return@StarStackerTheme
+                val qualification = remember(current) { Qualification.qualifyDevice(current) }
                 var exportedPath by remember { mutableStateOf<String?>(null) }
+                var screen by remember { mutableStateOf(Screen.PROBE) }
                 val scope = rememberCoroutineScope()
 
-                ProbeScreen(
-                    profile = current,
-                    qualification = Qualification.qualifyDevice(current),
-                    exportedPath = exportedPath,
-                    onExport = { exportedPath = exportAndShare(current) },
-                    diagnostics = diagnostics.copy(
-                        cameraPermissionGranted = hasCameraPermission(),
-                    ),
-                    onOpenabilityTest = { scope.launch { runOpenabilityTest(current) } },
-                    onCaptureRaw = { exposureNs -> scope.launch { runCapture(exposureNs) } },
-                )
+                val options = remember(current, qualification) {
+                    CameraPicker.options(current, qualification)
+                }
+                var selectedCameraId by remember(options) {
+                    mutableStateOf(
+                        options.firstOrNull { it.recommended }?.id
+                            ?: options.firstOrNull { it.selectable }?.id,
+                    )
+                }
+                LaunchedEffect(selectedCameraId) {
+                    current.cameras.firstOrNull { it.id == selectedCameraId }
+                        ?.let { framing.selectCamera(it) }
+                }
+
+                var pointing by remember { mutableStateOf<PointingFix?>(null) }
+                LaunchedEffect(screen, locationGranted) {
+                    if (screen != Screen.FRAMING || !pointingSource.hasRequiredSensors()) {
+                        return@LaunchedEffect
+                    }
+                    // Sensors run only while the framing screen is up: a magnetometer polled
+                    // through a 45-minute session is battery spent on a number nobody is reading.
+                    pointingSource.fixes().collect { pointing = it }
+                }
+
+                when (screen) {
+                    Screen.PROBE -> ProbeScreen(
+                        profile = current,
+                        qualification = qualification,
+                        exportedPath = exportedPath,
+                        onExport = { exportedPath = exportAndShare(current) },
+                        diagnostics = diagnostics.copy(
+                            cameraPermissionGranted = hasCameraPermission(),
+                        ),
+                        onOpenabilityTest = { scope.launch { runOpenabilityTest(current) } },
+                        onCaptureRaw = { exposureNs -> scope.launch { runCapture(exposureNs) } },
+                        onOpenFraming = { screen = Screen.FRAMING },
+                    )
+
+                    Screen.FRAMING -> FramingScreen(
+                        options = options,
+                        selectedCameraId = selectedCameraId,
+                        controller = framing,
+                        pointing = pointing,
+                        pointingAvailable = pointingSource.hasRequiredSensors(),
+                        locationGranted = locationGranted,
+                        onSelectCamera = { selectedCameraId = it },
+                        onRequestLocation = {
+                            requestLocation.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                        },
+                        onBack = {
+                            framing.stop()
+                            screen = Screen.PROBE
+                        },
+                    )
+                }
             }
         }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // The camera is a single-holder resource. Leaving the framing loop running when the app
+        // goes away would lock it for every other app on the phone (T-1.3).
+        framing.stop()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        framing.close()
     }
 
     /** T-1.3 / OI-18 — which of the five camera IDs will actually open? */

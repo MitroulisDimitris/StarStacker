@@ -3,10 +3,19 @@
 
     <uses-permission android:name="android.permission.CAMERA" />
 
+    <!-- Latitude drives the field-rotation rate and the dec-corrected trailing limit (FR-5.1).
+         Denial is survivable: pointing still reports alt/az, and the exposure engine falls
+         back to the pole-agnostic form and says so. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
     <!-- Declared, never required: the app must be installable on a device it cannot
          support, so that FR-3.1's qualification screen can explain *why* it can't. -->
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <uses-feature android:name="android.hardware.camera.raw" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.compass" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false" />
 
     <application
         android:allowBackup="false"

@@ -1,16 +1,19 @@
 package com.starstacker.device
 
+import com.starstacker.json.Json
+
 /**
  * FR-3.2.1 — the device profile is exportable as JSON so a friend can send their device's
  * profile without installing a calibration workflow.
  *
  * Hand-rolled rather than pulling in a serialization dependency: the shape is fixed, the
  * output is read by humans and desktop scripts, and this stays unit-testable on the JVM
- * (org.json is an Android stub in unit tests).
+ * (org.json is an Android stub in unit tests). The writer itself now lives in [Json], which
+ * also reads — `session.json` has to be parsed back (D-5), not just written.
  */
 object ProfileJson {
 
-    fun encode(profile: DeviceProfile): String = write(profile.toMap(), indent = 0)
+    fun encode(profile: DeviceProfile): String = Json.write(profile.toMap())
 
     private fun DeviceProfile.toMap(): Map<String, Any?> = linkedMapOf(
         "schemaVersion" to schemaVersion,
@@ -90,54 +93,6 @@ object ProfileJson {
         "noiseProfile" to noiseProfile?.map { listOf(it.s, it.o) },
         "mandatoryStreamCombinations" to mandatoryStreamCombinations,
     )
-
-    // ---- minimal JSON writer -------------------------------------------------------
-
-    private fun write(value: Any?, indent: Int): String {
-        val pad = "  ".repeat(indent)
-        val padInner = "  ".repeat(indent + 1)
-        return when (value) {
-            null -> "null"
-            is String -> quote(value)
-            is Boolean -> value.toString()
-            is Number -> numberOf(value)
-            is Map<*, *> -> if (value.isEmpty()) "{}" else value.entries.joinToString(
-                separator = ",\n",
-                prefix = "{\n",
-                postfix = "\n$pad}",
-            ) { (k, v) -> "$padInner${quote(k.toString())}: ${write(v, indent + 1)}" }
-
-            is Collection<*> -> if (value.isEmpty()) "[]" else value.joinToString(
-                separator = ",\n",
-                prefix = "[\n",
-                postfix = "\n$pad]",
-            ) { "$padInner${write(it, indent + 1)}" }
-
-            else -> quote(value.toString())
-        }
-    }
-
-    private fun numberOf(n: Number): String {
-        val d = n.toDouble()
-        return if (d.isNaN() || d.isInfinite()) "null" else n.toString()
-    }
-
-    private fun quote(s: String): String {
-        val sb = StringBuilder(s.length + 2)
-        sb.append('"')
-        for (ch in s) {
-            when (ch) {
-                '"' -> sb.append("\\\"")
-                '\\' -> sb.append("\\\\")
-                '\n' -> sb.append("\\n")
-                '\r' -> sb.append("\\r")
-                '\t' -> sb.append("\\t")
-                else -> if (ch < ' ') sb.append("\\u%04x".format(ch.code)) else sb.append(ch)
-            }
-        }
-        sb.append('"')
-        return sb.toString()
-    }
 
     private fun Double.round(places: Int): Double {
         var factor = 1.0

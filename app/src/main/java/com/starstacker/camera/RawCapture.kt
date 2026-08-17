@@ -3,13 +3,10 @@ package com.starstacker.camera
 import android.graphics.ImageFormat
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraDevice
-import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.DngCreator
 import android.media.Image
 import android.media.ImageReader
-import android.os.Build
 import android.util.Log
 import android.view.Surface
 import com.starstacker.dng.DngReader
@@ -23,30 +20,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * T-1.4 — a single manual RAW_SENSOR frame written as a DNG.
  *
- * Every OEM processing stage that would corrupt the linear signal is turned off explicitly
- * (FR-6.1). Anything left on here silently poisons every downstream stage: a noise-reduced sub
- * cannot be un-noise-reduced, and a lens-shading-corrected frame cannot be flat-fielded.
+ * The FR-6.1 request profile itself lives in [ManualRequest], shared with the framing and focus
+ * loops so there is one definition of "OEM processing off" rather than two that can drift apart.
  */
-
-/**
- * How much of the "turn the ISP off" request to apply.
- *
- * Ordered from least to most aggressive so a stalling HAL can be bisected: the goal is the
- * strongest profile that still produces frames on this device.
- */
-enum class RequestProfile {
-    /** Manual ISO and exposure only, everything else left at the still-capture template. */
-    MINIMAL,
-
-    /** MINIMAL + noise reduction, edge enhancement and hot-pixel correction off. */
-    NO_ISP,
-
-    /** NO_ISP + shading correction off with the shading map still reported. */
-    NO_SHADING,
-
-    /** NO_SHADING + CONTROL_MODE off and distortion correction off. FR-6.1 in full. */
-    FULL,
-}
 
 data class CaptureOutcome(
     val file: File?,
@@ -88,10 +64,6 @@ object RawCapture {
     private const val PROBE_TIMEOUT_MS = 8_000L
     private const val DRAIN_DELAY_MS = 200L
     private const val MAX_SETTLE_ATTEMPTS = 5
-
-    /** Exposure is honoured to within a rounding step, not exactly. */
-    private fun matches(applied: Long, requested: Long): Boolean =
-        kotlin.math.abs(applied - requested) <= requested / 100 + 1_000L
 
     /**
      * Finds a working capture configuration by trying them in order of increasing strictness,
@@ -182,14 +154,14 @@ object RawCapture {
                 // Warm the pipeline on the preview surface where there is one; a HAL that
                 // will not stream RAW-only still needs a settled 3A/stream state.
                 val warmTargets = listOfNotNull(previewSurface) .ifEmpty { listOf(reader.surface) }
-                val warmRequest = buildRequest(
-                    device, chars, warmTargets, iso, PROBE_EXPOSURE_NS, profile,
+                val warmRequest = ManualRequest.build(
+                    device, chars, warmTargets, iso, PROBE_EXPOSURE_NS, profile = profile,
                 )
                 withTimeout(timeoutMs) { access.warmUp(session, warmRequest) }
                 delay(DRAIN_DELAY_MS)
 
-                val request = buildRequest(
-                    device, chars, listOf(reader.surface), iso, exposureNs, profile,
+                val request = ManualRequest.build(
+                    device, chars, listOf(reader.surface), iso, exposureNs, profile = profile,
                 )
 
                 // Sensor settings take effect several frames after submission, so the first
@@ -207,7 +179,7 @@ object RawCapture {
                         "settle attempt $attempt: exp=$applied " +
                             "iso=${r.get(CaptureResult.SENSOR_SENSITIVITY)}",
                     )
-                    if (applied != null && matches(applied, exposureNs)) {
+                    if (ManualRequest.exposureMatches(applied, exposureNs)) {
                         settled = true
                         break
                     }
@@ -227,7 +199,7 @@ object RawCapture {
                 val file = fileName?.let { File(outputDir, it) }
                 // Snapshot the sensor buffer before DngCreator consumes it, so the file can be
                 // checked against what actually came off the sensor (T-1.6 acceptance).
-                val sensorSamples = if (file != null && verifyRoundTrip) samplesOf(image) else null
+                val sensorSamples = if (file != null && verifyRoundTrip) RawPlane.copy(image) else null
                 try {
                     if (file != null) {
                         DngCreator(chars, result).use { dng ->
@@ -273,115 +245,6 @@ object RawCapture {
     }
 
 
-    /**
-     * FR-6.1: no OEM ISP processing. Fixed white balance, fixed focus, fixed exposure, NR and
-     * sharpening off, OIS off, lens shading map *reported* but not applied.
-     */
-    private fun buildRequest(
-        device: CameraDevice,
-        chars: CameraCharacteristics,
-        targets: List<Surface>,
-        iso: Int,
-        exposureNs: Long,
-        profile: RequestProfile,
-    ): CaptureRequest {
-        // TEMPLATE_MANUAL disables 3A in the template itself. TEMPLATE_STILL_CAPTURE starts
-        // from auto everything and relies on our overrides winning, which is a weaker
-        // guarantee on an OEM HAL.
-        val hasManual = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
-            ?.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR) == true
-        val template =
-            if (hasManual) CameraDevice.TEMPLATE_MANUAL else CameraDevice.TEMPLATE_STILL_CAPTURE
-
-        val b = device.createCaptureRequest(template)
-        targets.forEach { b.addTarget(it) }
-
-        // Manual exposure is the one thing every profile needs.
-        b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-        b.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_OFF)
-        b.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
-        b.set(CaptureRequest.SENSOR_SENSITIVITY, iso)
-        b.set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs)
-        b.set(CaptureRequest.SENSOR_FRAME_DURATION, exposureNs)
-        b.set(CaptureRequest.LENS_FOCUS_DISTANCE, 0f)
-
-        // Tripod use: stabilisation only introduces motion between subs.
-        b.set(
-            CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
-            CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF,
-        )
-        b.set(
-            CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
-            CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
-        )
-
-        if (profile >= RequestProfile.NO_ISP) {
-            setIfSupported(b, CaptureRequest.NOISE_REDUCTION_MODE,
-                CaptureRequest.NOISE_REDUCTION_MODE_OFF,
-                chars.get(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES))
-            setIfSupported(b, CaptureRequest.EDGE_MODE,
-                CaptureRequest.EDGE_MODE_OFF,
-                chars.get(CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES))
-            setIfSupported(b, CaptureRequest.HOT_PIXEL_MODE,
-                CaptureRequest.HOT_PIXEL_MODE_OFF,
-                chars.get(CameraCharacteristics.HOT_PIXEL_AVAILABLE_HOT_PIXEL_MODES))
-        }
-
-        if (profile >= RequestProfile.NO_SHADING) {
-            // Shading correction off, but the map still reported — FR-6.1 and the input to flats.
-            b.set(CaptureRequest.SHADING_MODE, CaptureRequest.SHADING_MODE_OFF)
-            b.set(
-                CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE,
-                CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE_ON,
-            )
-        }
-
-        if (profile >= RequestProfile.FULL) {
-            b.set(CaptureRequest.CONTROL_MODE, CameraCharacteristics.CONTROL_MODE_OFF)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                // Geometric distortion correction would resample the frame before we ever see
-                // it, which breaks the measured lens intrinsics of FR-4.1.5.
-                b.set(
-                    CaptureRequest.DISTORTION_CORRECTION_MODE,
-                    CaptureRequest.DISTORTION_CORRECTION_MODE_OFF,
-                )
-            }
-        }
-
-        return b.build()
-    }
-
-    /**
-     * Copies the CFA plane out of a RAW_SENSOR image, honouring row stride — the buffer is not
-     * necessarily tightly packed, and assuming it is shears the frame.
-     *
-     * Uses a duplicate of the plane buffer so DngCreator still sees an untouched position.
-     */
-    private fun samplesOf(image: Image): ShortArray {
-        val plane = image.planes[0]
-        val buffer = plane.buffer.duplicate()
-        val width = image.width
-        val height = image.height
-        val rowStride = plane.rowStride
-        val pixelStride = plane.pixelStride
-
-        val out = ShortArray(width * height)
-        val row = ByteArray(rowStride)
-        var index = 0
-        for (y in 0 until height) {
-            buffer.position(y * rowStride)
-            val available = minOf(rowStride, buffer.remaining())
-            buffer.get(row, 0, available)
-            for (x in 0 until width) {
-                val at = x * pixelStride
-                val lo = row[at].toInt() and 0xFF
-                val hi = row[at + 1].toInt() and 0xFF
-                out[index++] = ((hi shl 8) or lo).toShort()
-            }
-        }
-        return out
-    }
-
     /** Reads the written DNG back and compares it sample-for-sample with the sensor buffer. */
     private fun verify(file: File, sensorSamples: ShortArray): String = try {
         val decoded = DngReader.read(file)
@@ -412,17 +275,4 @@ object RawCapture {
         "READ FAILED: ${t::class.java.simpleName}: ${t.message}"
     }
 
-    private fun <T> setIfSupported(
-        builder: CaptureRequest.Builder,
-        key: CaptureRequest.Key<T>,
-        value: T,
-        available: IntArray?,
-    ) {
-        val intValue = value as? Int
-        if (available == null || intValue == null || available.contains(intValue)) {
-            builder.set(key, value)
-        } else {
-            Log.i(TAG, "${key.name}=$value unsupported; leaving at template default")
-        }
-    }
 }

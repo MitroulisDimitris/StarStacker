@@ -2,7 +2,6 @@ package com.starstacker.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -65,6 +64,7 @@ fun ProbeScreen(
     diagnostics: DiagnosticsState,
     onOpenabilityTest: () -> Unit,
     onCaptureRaw: (Long) -> Unit,
+    onOpenFraming: () -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier
@@ -117,6 +117,14 @@ fun ProbeScreen(
                     }
                 }
             }
+        }
+
+        item {
+            HotButton(
+                text = "Framing & focus",
+                enabled = diagnostics.cameraPermissionGranted && qualification.bestTier != Tier.UNSUPPORTED,
+                onClick = onOpenFraming,
+            )
         }
 
         item { Eyebrow("Camera checks") }
@@ -297,7 +305,7 @@ private fun DiagnosticsPanel(
         state.openResults.forEach { Mono(it, color = Night.Txt2, size = 10.sp) }
 
         Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        ButtonRow {
             Box(Modifier.weight(1f)) {
                 QuietButton(
                     text = "RAW · 100 ms",
@@ -306,7 +314,7 @@ private fun DiagnosticsPanel(
                 )
             }
             Box(Modifier.weight(1f)) {
-                HotButton(
+                QuietButton(
                     text = "RAW · 10 s",
                     enabled = state.busy == null && state.cameraPermissionGranted,
                     onClick = { onCaptureRaw(10_000_000_000L) },
@@ -324,20 +332,12 @@ private fun DiagnosticsPanel(
 
 @Composable
 private fun TierBadge(tier: Tier) {
-    val color = when (tier) {
-        Tier.FULL, Tier.FUNCTIONAL -> Night.Red
-        Tier.DEGRADED -> Night.Warn
-        Tier.UNSUPPORTED -> Night.Warn
-    }
-    Text(
-        tier.name,
-        fontFamily = NumFamily,
-        fontSize = 8.5.sp,
-        letterSpacing = 1.4.sp,
-        color = color,
-        modifier = Modifier
-            .border(1.dp, color, RoundedCornerShape(5.dp))
-            .padding(horizontal = 7.dp, vertical = 4.dp),
+    Badge(
+        text = tier.name,
+        color = when (tier) {
+            Tier.FULL, Tier.FUNCTIONAL -> Night.Red
+            Tier.DEGRADED, Tier.UNSUPPORTED -> Night.Warn
+        },
     )
 }
 
@@ -389,79 +389,4 @@ private fun Detail(label: String, value: String?) {
     }
 }
 
-// ---- shared bits (promoted to a component file in T-0.2) ---------------------------
-
-@Composable
-private fun Card(
-    onClick: (() -> Unit)? = null,
-    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
-) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .border(1.dp, Night.LineSoft, RoundedCornerShape(12.dp))
-            .background(Night.Surface2, RoundedCornerShape(12.dp))
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(13.dp),
-    ) { content() }
-}
-
-@Composable
-private fun Eyebrow(text: String) {
-    Text(
-        text.uppercase(),
-        fontFamily = NumFamily,
-        fontSize = 9.5.sp,
-        letterSpacing = 2.2.sp,
-        color = Night.Dim,
-        modifier = Modifier.padding(bottom = 6.dp),
-    )
-}
-
-@Composable
-private fun Mono(
-    text: String,
-    color: Color,
-    size: androidx.compose.ui.unit.TextUnit = 10.5.sp,
-    modifier: Modifier = Modifier,
-) {
-    Text(text, fontFamily = NumFamily, fontSize = size, color = color, modifier = modifier)
-}
-
-@Composable
-private fun HotButton(text: String, enabled: Boolean = true, onClick: () -> Unit) {
-    val tint = if (enabled) Night.Hot else Night.Dim
-    Text(
-        text,
-        fontSize = 14.sp,
-        fontWeight = FontWeight.SemiBold,
-        color = tint,
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(1.dp, tint, RoundedCornerShape(11.dp))
-            .background(
-                if (enabled) Color(0x22FF5A2B) else Color.Transparent,
-                RoundedCornerShape(11.dp),
-            )
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(vertical = 14.dp),
-        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-    )
-}
-
-@Composable
-private fun QuietButton(text: String, enabled: Boolean = true, onClick: () -> Unit) {
-    val tint = if (enabled) Night.Txt2 else Night.Dim
-    Text(
-        text,
-        fontSize = 13.sp,
-        fontWeight = FontWeight.Medium,
-        color = tint,
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(1.dp, Night.Line, RoundedCornerShape(11.dp))
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(vertical = 12.dp),
-        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-    )
-}
+// Card, Eyebrow, Mono, HotButton and QuietButton now live in Components.kt (T-0.2).
