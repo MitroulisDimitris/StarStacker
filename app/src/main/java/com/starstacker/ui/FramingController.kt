@@ -108,6 +108,23 @@ class FramingController(
     private var monitor: FocusMonitor? = null
     private var camera: CameraProfile? = null
 
+    /**
+     * Where the lens has been driven by hand, when it has been (T-2.4's fallback).
+     *
+     * The sweep is the right way to focus and it needs a sky with measurable stars at several
+     * lens positions. Under thin cloud, a bright suburban sky, or a lens so far out that no star
+     * clears the detection threshold at *any* position, it returns TOO_FEW_STARS and there is
+     * nothing to store. That is an honest failure, and it must not be a dead end at 1 a.m. in a
+     * field — so the lens can also be walked by hand, one motor step at a time, against the live
+     * HFR and star count the screen is already showing.
+     */
+    var manualFocus: Float? by mutableStateOf(null)
+        private set
+
+    /** The lens position the loop is currently using, whatever set it. */
+    val activeFocus: Float?
+        get() = manualFocus ?: storedFocus?.takeIf { !it.fixedFocus }?.diopters
+
     val idleTimeoutSeconds: Int get() = (IDLE_TIMEOUT_MS / 1000).toInt()
 
     /** Roughly how often a new frame lands, for the "this is not frozen" label. */
@@ -279,8 +296,56 @@ class FramingController(
     private fun request() = FramingRequest(
         iso = iso,
         exposureNs = exposureNs,
-        focusDiopters = storedFocus?.takeIf { !it.fixedFocus }?.diopters,
+        focusDiopters = activeFocus,
     )
+
+    /**
+     * Moves the lens by [steps] motor steps and leaves the loop running there.
+     *
+     * The step is the **measured** quantisation of this VCM (§1.7), not a guess: asking for less
+     * than one step moves the lens nowhere and looks like a broken control.
+     */
+    fun nudgeFocus(steps: Int) {
+        val profile = camera ?: return
+        val from = activeFocus ?: DEFAULT_MANUAL_START
+        val next = (from + steps * FOCUS_STEP_DIOPTERS)
+            .coerceIn(FocusSweep.NEAR_INFINITY, maxDiopters(profile))
+        manualFocus = next
+        touch()
+        session?.let { runCatching { it.apply(request()) } }
+        focusMessage = "manual focus at %.3f dioptres — watch HFR and stars, lower is sharper"
+            .format(next)
+    }
+
+    /** Accepts the hand-set position as this camera's focus, so the session will use it. */
+    fun storeManualFocus(altitudeDeg: Double?) {
+        val profile = camera ?: return
+        val position = manualFocus ?: return
+        val measured = frame
+        val record = FocusRecord(
+            cameraId = profile.id,
+            fixedFocus = false,
+            diopters = position,
+            hfr = measured?.hfr ?: Double.NaN,
+            starCount = measured?.starCount ?: 0,
+            altitudeDeg = altitudeDeg,
+            exposureNs = exposureNs,
+            iso = iso,
+            verdict = "MANUAL",
+            capturedAtEpochMs = System.currentTimeMillis(),
+        )
+        focusStore.save(record)
+        storedFocus = record
+        manualFocus = null
+        // Set by hand against a live readout rather than bracketed by a curve, so it is a
+        // starting point for the drift monitor and not a verified minimum.
+        monitor = measured?.hfr?.let { FocusMonitor(it) }
+        focusStatus = if (measured?.hfr != null) FocusStatus.LOCKED else FocusStatus.UNKNOWN
+        focusMessage = "focus set by hand at %.3f dioptres%s".format(
+            position,
+            measured?.hfr?.let { " · HFR %.2f px".format(it) }.orEmpty(),
+        )
+    }
 
     private suspend fun onFrame(frame: FramingFrame) {
         val bitmap = withContext(Dispatchers.Default) { toBitmap(frame.preview) }
@@ -349,5 +414,11 @@ class FramingController(
         const val IDLE_TIMEOUT_MS = 120_000L
         const val IDLE_CHECK_MS = 5_000L
         const val ANALYSIS_ALLOWANCE_SECONDS = 0.3
+
+        /** Measured VCM quantisation on the reference device (§1.7). One tap, one real step. */
+        const val FOCUS_STEP_DIOPTERS = 0.0374f
+
+        /** Manual focus starts at the far end, where stars are, not at the near limit. */
+        const val DEFAULT_MANUAL_START = 0.05f
     }
 }

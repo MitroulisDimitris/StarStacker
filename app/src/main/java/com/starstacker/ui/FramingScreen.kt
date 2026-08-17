@@ -436,6 +436,50 @@ private fun FocusCard(controller: FramingController, altitudeDeg: Double?) {
             )
         }
 
+        // The fallback when the sweep will not converge. Stepping by hand against the live HFR
+        // is worse than a bracketed curve and enormously better than no focus at all — and a
+        // sweep that fails under thin cloud must not be a dead end in a field at 1 a.m.
+        Spacer(Modifier.height(12.dp))
+        Eyebrow("Focus by hand")
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Mono(
+                controller.activeFocus?.let { "%.3f dioptres".format(it) } ?: "lens at default",
+                color = if (controller.manualFocus != null) Night.Txt else Night.Txt3,
+                size = 11.sp,
+            )
+            Spacer(Modifier.weight(1f))
+            Mono(
+                controller.frame?.hfr?.let { "HFR %.2f".format(it) } ?: "HFR —",
+                color = Night.Txt2,
+                size = 11.sp,
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        ButtonRow {
+            Box(Modifier.weight(1f)) {
+                QuietButton(
+                    text = "◀ Further",
+                    enabled = controller.running && controller.busy == null,
+                    onClick = { controller.nudgeFocus(-1) },
+                )
+            }
+            Box(Modifier.weight(1f)) {
+                QuietButton(
+                    text = "Nearer ▶",
+                    enabled = controller.running && controller.busy == null,
+                    onClick = { controller.nudgeFocus(+1) },
+                )
+            }
+        }
+        if (controller.manualFocus != null) {
+            Spacer(Modifier.height(6.dp))
+            QuietButton(
+                text = "Use this focus for the session",
+                enabled = controller.busy == null,
+                onClick = { controller.storeManualFocus(altitudeDeg) },
+            )
+        }
+
         Spacer(Modifier.height(10.dp))
         ButtonRow {
             Box(Modifier.weight(1f)) {
