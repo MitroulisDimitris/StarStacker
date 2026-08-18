@@ -81,7 +81,7 @@ Two consequences to accept deliberately:
 | 1A | 6 | 6 | **complete** — probe, qualification, camera lifecycle, first light, DNG reader |
 | 1B | 7 | 2 | **hardware-verified except what needs darkness** — see §5 and §1.7 |
 | 1C | 16 | 1 | **field-ready** — framing → setup → solve → start → live → darks → complete, with resume offered on launch and focus settable by hand. Outstanding: T-3.14 preview stack, T-3.16 DNG metadata, and T-0.5's benchmark (OI-5) |
-| 1D | 9 | 0 | planned and largely built 2026-08-18 (§1.15). All photographed except T-3.23, which is not started |
+| 1D | 9 | 0 | **all nine built 2026-08-18** (§1.15) and verified on device; T-3.21 waits on T-6.1's list screen |
 | 2+ | outlined | 0 | not started |
 
 > **Phase 1B has now met every acceptance that does not require a night sky** (2026-08-17). The
@@ -1425,9 +1425,22 @@ the same app surface as Phase 1C, but they sit behind their own checkpoint: 1C i
   animates it, so nothing ticks from the capture thread and nothing animates with the screen off.
   Verified on a 30-frame run at 4 s: ticks, dot, inner sweep and `exposing 3s left` all correct.
 
-- [ ] **T-3.23** **Drop the camera-openability tests from the UI.** They answered OI-18 in
+- [~] **T-3.23** **Drop the camera-openability tests from the UI.** They answered OI-18 in
   §1 — all five cameras open — and a resolved question does not need a permanent button. The code
   stays as an adb diagnostic; only the panel goes.
+  **Done 2026-08-18.** The button and its results are gone from the probe screen; `RawCapture`'s
+  two buttons stay, because "can this camera still produce a DNG" is a live question and "will
+  these cameras open" is a settled one.
+  **The task's own promise turned out to be false, which is why it is now true.** It said the
+  probe survives on the `--ez autodiag true` path. It does not: autodiag guards the call with
+  `profile?.let { }`, and measured on device it went straight to `RawCapture` and logged no
+  openability line at all. Rather than ship the claim, the probe got its own trigger —
+  `--es diag openability` — which logs `openability: 0: OPENED; 1: OPENED; 2: OPENED; 3: OPENED;
+  4: OPENED`, OI-18's answer intact.
+  Tidied alongside: `FieldDiagnostics` was logging `unknown diag mode` for every mode handled
+  elsewhere (`capture`, `storage`, `crash`), which it now skips.
+  **Still open, and not this task's:** why `profile` is null inside autodiag when `reprobe()` runs
+  before it in `onCreate`. It affects only that debug path.
 
 - [~] **T-3.24** **Focus, from the preview and unambiguous.** `Find focus` becomes an action on the
   preview itself rather than a separate card below it. Focus state gets three visibly distinct

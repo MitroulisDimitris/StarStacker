@@ -265,6 +265,14 @@ class MainActivity : ComponentActivity() {
         // T-0.5's acceptance / OI-5. Needs no camera, so it sits ahead of the capture diagnostics:
         //   adb shell am start -n com.starstacker/.MainActivity --es diag storage \
         //       --ei files 200 --ei sizeMb 25
+        // T-3.23: the openability probe lost its button, so it gets its own trigger rather than
+        // relying on `autodiag`, whose `profile?.let { }` silently skips it — measured 2026-08-18,
+        // where autodiag went straight to RawCapture and logged no openability line at all.
+        //   adb shell am start -n com.starstacker/.MainActivity --es diag openability
+        if (intent?.getStringExtra("diag") == "openability" && hasCameraPermission()) {
+            lifecycleScope.launch { runOpenabilityTest(CameraProbe.probe(this@MainActivity)) }
+        }
+
         // T-0.6's acceptance: force a crash and recover the log from the device.
         //   adb shell am start -n com.starstacker/.MainActivity --es diag crash
         // Deliberately on a background thread — the uncaught-exception handler has to work for
@@ -331,7 +339,10 @@ class MainActivity : ComponentActivity() {
             // exactly the screen starting one from the button lands on.
         }
 
+        // Modes handled above are not FieldDiagnostics' business; without this it logs
+        // "unknown diag mode" for every one of them.
         val fieldDiag = intent?.getStringExtra("diag")
+            ?.takeUnless { it in setOf("capture", "storage", "crash", "openability") }
         if (fieldDiag != null && hasCameraPermission()) {
             val frames = intent?.getIntExtra("frames", 12) ?: 12
             val exposureMs = intent?.getIntExtra("exposureMs", 1000) ?: 1000
@@ -483,7 +494,6 @@ class MainActivity : ComponentActivity() {
                         diagnostics = diagnostics.copy(
                             cameraPermissionGranted = hasCameraPermission(),
                         ),
-                        onOpenabilityTest = { scope.launch { runOpenabilityTest(current) } },
                         onCaptureRaw = { exposureNs -> scope.launch { runCapture(exposureNs) } },
                         onOpenFraming = {
                             askForNotificationsOnce()
@@ -634,15 +644,12 @@ class MainActivity : ComponentActivity() {
 
     /** T-1.3 / OI-18 — which of the five camera IDs will actually open? */
     private suspend fun runOpenabilityTest(profile: DeviceProfile) {
-        diagnostics = diagnostics.copy(busy = "Opening each camera", openResults = emptyList())
+        diagnostics = diagnostics.copy(busy = "Opening each camera")
         val ids = profile.cameras.map { it.id }
         val results = CameraAccess(this).use { access ->
             withContext(Dispatchers.IO) { OpenabilityProbe.run(access, ids) }
         }
-        diagnostics = diagnostics.copy(
-            busy = null,
-            openResults = results.map { it.describe() },
-        )
+        diagnostics = diagnostics.copy(busy = null)
         Log.i(TAG, "openability: " + results.joinToString("; ") { it.describe() })
     }
 

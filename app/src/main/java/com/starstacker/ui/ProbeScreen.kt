@@ -54,7 +54,6 @@ import com.starstacker.ui.theme.NumFamily
 /** Results of the on-device checks that only running the camera can answer (T-1.3, T-1.4). */
 data class DiagnosticsState(
     val busy: String? = null,
-    val openResults: List<String> = emptyList(),
     val captureLines: List<String> = emptyList(),
     val cameraPermissionGranted: Boolean = false,
 )
@@ -64,7 +63,6 @@ fun ProbeScreen(
     profile: DeviceProfile,
     qualification: DeviceQualification,
     diagnostics: DiagnosticsState,
-    onOpenabilityTest: () -> Unit,
     onCaptureRaw: (Long) -> Unit,
     onOpenFraming: () -> Unit,
     /** An interrupted session found on disk at launch (T-3.13), or null. */
@@ -164,7 +162,7 @@ fun ProbeScreen(
         }
 
         item { Eyebrow("Camera checks") }
-        item { DiagnosticsPanel(diagnostics, onOpenabilityTest, onCaptureRaw) }
+        item { DiagnosticsPanel(diagnostics, onCaptureRaw) }
 
         item { QuietButton(text = "Back", onClick = onOpenSettings) }
 
@@ -310,7 +308,6 @@ private fun CameraCard(cam: CameraProfile, q: CameraQualification) {
 @Composable
 private fun DiagnosticsPanel(
     state: DiagnosticsState,
-    onOpenabilityTest: () -> Unit,
     onCaptureRaw: (Long) -> Unit,
 ) {
     Card {
@@ -325,14 +322,10 @@ private fun DiagnosticsPanel(
             Spacer(Modifier.height(10.dp))
         }
 
-        QuietButton(
-            text = "Test which cameras will open",
-            enabled = state.busy == null && state.cameraPermissionGranted,
-            onClick = onOpenabilityTest,
-        )
-        state.openResults.forEach { Mono(it, color = Night.Txt2, size = 10.sp) }
-
-        Spacer(Modifier.height(10.dp))
+        // T-3.23: the openability test is gone. It answered OI-18 in §1 — all five cameras open,
+        // including the three the system does not publish — and a question that has been answered
+        // does not need a permanent button on a screen someone reads in the dark. It survives as
+        // `runOpenabilityTest`, which the `--ez autodiag true` path still runs and logs.
         ButtonRow {
             Box(Modifier.weight(1f)) {
                 QuietButton(
