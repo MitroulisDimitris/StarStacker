@@ -345,6 +345,12 @@ Three structural points that fell out of building it:
 
 ## 1.10 The bump detector was measuring the wrong thing — 2026-08-17
 
+> **Superseded 2026-08-18 (§1.13).** The conclusion below — accelerometer, 1.0° — was still
+> measuring the wrong thing, one level down. An accelerometer cannot separate rotation from
+> translation either, and on a tripod extension arm it rejected 49 of 105 frames while flagging
+> the sharpest ones. It now reads the **gyroscope**, which is blind to translation, at 0.5°.
+> The reasoning below is kept because its arithmetic is still right and its error is instructive.
+
 The first live capture screen showed six of seven frames rejected as **BUMPED** while the phone
 lay untouched on a desk. The numbers in the log said `0.4 m/s² of movement (limit 0.4)` — the
 threshold was sitting exactly on the sensor's noise floor.
@@ -456,6 +462,56 @@ corrupting the pixel data to gain a tidier place to put text. Not worth it.
 **Not yet audited:** no exhaustive tag dump of a real capture exists. §1.6 listed the tags the
 reader consumes, not everything present. T-3.16 starts by dumping one, because this document's
 rule is that measured beats assumed.
+
+---
+
+## 1.13 What is actually in a DNG, and what the gate did on sky — 2026-08-18
+
+### The tag dump T-3.16 asked for
+
+54 tags in IFD0, and **no Exif sub-IFD and no GPS IFD at all**. §1.6 listed the ten the reader
+consumes; four of the rest change what was assumed:
+
+| Tag | Measured | Why it matters |
+|---|---|---|
+| `ImageDescription` (270) | **present, empty** | Not absent as §1.12 assumed. `setDescription` fills a tag that is already there |
+| `Orientation` (274) | **9** | TIFF defines 1–8. An undefined value leaves every reader free to invent one; now set to 1 |
+| `BlackLevel` (50714) | **6425/100 = 64.25**, not 64 | §1.6 recorded 64. A quarter-ADU pedestal across 12.6 M pixels is not nothing when the sky background is ~81 ADU |
+| `DefaultCropOrigin`/`Size` | **8,8** and **4080×3056** | §1.6 said "whole frame is active — no margin to crop" from `ActiveArea` alone. There *is* an 8 px margin the DNG asks readers to trim, and a stacker that honours it while our own code does not would be working on a different frame |
+| `OpcodeList2` (3908 B), `OpcodeList3` (88 B) | present | Lens-shading gain map and warp, to be applied on read. **A stacker that honours OpcodeList2 already flat-fields the frame** — FR-4.1.3's own flats would then be a second correction on top of the first |
+
+The colour description is complete and does not need help: `ColorMatrix1/2`,
+`CameraCalibration1/2`, `ForwardMatrix1/2`, `AsShotNeutral`, `NoiseProfile`, both calibration
+illuminants. What was missing was never the sensor's account of itself — it was the session's.
+
+### The gate, re-measured on sky
+
+Session `2026-08-18_0123` ran on the rebuilt gate, and both fixes hold:
+
+| | Session `0050` (before) | Session `0123` (after) |
+|---|---|---|
+| Accepted | **0 of 105** | **42 of 49** |
+| `TRAILED` | 56 | **0** |
+| `BUMPED` | 49 | 7 |
+
+The `TRAILED` rejections vanished while the eccentricity itself did not change at all — median
+0.873 against 0.855, still far over the 0.6 limit, still meaningless at HFR 0.99. The check is
+skipped rather than passed, which is the honest outcome for a measurement the sampling cannot
+support.
+
+**The gyro's seven rejections are the interesting part, because they are all real.** Frames 1–4
+(2.80°, 0.90°, 0.69°, 0.54°) are the phone settling after the start button; frames 47–49 (34.13°,
+19.17°, 38.50°) are it being picked up at the end. The 42 frames in between are clean. The
+accelerometer it replaced flagged the *sharpest* frames in the session.
+
+> **One residual, and it is the window rather than the sensor.** Frames 47–49 report tens of
+> degrees while carrying 93–200 stars at HFR ~1.0 — pixels that a 34° rotation could not leave
+> behind. The peak is accumulated between *consume* calls, so it spans the readout and the DNG
+> write as well as the exposure. Motion during the gap rejects a frame whose pixels are fine.
+> The fix is available and cheap: the device profile reports `timestampSource: REALTIME`, which
+> means `SENSOR_TIMESTAMP` and `SensorEvent.timestamp` share a clock, so the peak can be queried
+> over exactly `[timestamp, timestamp + exposure]`. Without REALTIME the two clocks would not be
+> comparable and this would not be possible at all.
 
 ---
 
@@ -930,6 +986,10 @@ Goal: FR-13/M3 — *press start, walk away, come back to a folder of good subs.*
 - [~] **T-3.10** Cheap live quality gating (the subset that needs no registration): eccentricity →
   trailing, star-count collapse → cloud, accelerometer spike → bump. Rejected frames kept on disk
   and flagged (D-10). Registration-residual gating and the common-area indicator arrive in Phase 2.
+  **Verified on sky 2026-08-18** (§1.13): 42 of 49 accepted, zero false `TRAILED`, and the
+  seven `BUMPED` are the phone being touched at the start and picked up at the end. The two
+  detectors it shipped with were both wrong — see §1.10 for the accelerometer and §1.13 for the
+  eccentricity — and neither was catchable from the JVM, since both were about the physical world.
 - [~] **T-3.11** Live capture screen (prototype screen 03): the per-frame ring, metrics grid
   (HFR / stars / common area / sensor temp), recent-frame log with reject reasons, the
   non-blocking event note, `Pause` and `End & take darks`.
@@ -962,7 +1022,7 @@ Goal: FR-13/M3 — *press start, walk away, come back to a folder of good subs.*
 - [ ] **T-3.14** Live downsampled preview stack (FR-7.4) — translation-only running average until
   Phase 2 supplies real transforms. Depth per **OI-13**.
 - [~] **T-3.15** Completion screen (FR-9.4): result summary, full session path, open/share.
-- [ ] **T-3.16** **Make the DNGs self-describing** (§1.12). A frame separated from its
+- [~] **T-3.16** **Make the DNGs self-describing** (§1.12). A frame separated from its
   `session.json` currently cannot say which session it belongs to, whether it is a light or a
   dark, or what the sensor temperature was.
   1. **Dump a real frame first** — `exiftool` over a capture from `lights/`, recorded in §1.6 as
@@ -984,6 +1044,22 @@ Goal: FR-13/M3 — *press start, walk away, come back to a folder of good subs.*
   frame **by its metadata alone**, with the file moved out of its directory. `DngReader` still
   parses every frame — the description must not disturb the strip layout — and the per-frame write
   budget is unchanged within noise.
+  **Steps 1-3 done and verified on hardware 2026-08-18.** The tag dump is §1.13, and it changed
+  the task: `ImageDescription` turned out to be **present and empty** rather than absent, and
+  `Orientation` was **9**, which is not a value TIFF defines. `session/FrameDescription.kt` now
+  builds the line and `CaptureEngine` passes it; a captured frame carries
+  `StarStacker session=… frame=1 kind=LIGHT iso=800 exposure=0.2000s utc=… batteryTempC=35.0
+  thermalHeadroom=0.739 battery=54%` in tag 270, and orientation is 1.
+  **Step 2 is narrower than this task originally claimed, and the claim was wrong.** HFR, star
+  count, eccentricity, background and the gate verdict **cannot** be in the DNG: the write
+  ordering (§6) puts the bytes down *before* the pixels are analysed, so at write time those
+  numbers do not exist. Getting them in would mean rewriting the file afterwards — the value sits
+  in the IFD value area, and changing its length moves all 3072 `StripOffsets` — or analysing
+  before writing, which trades a guarantee for a nicety. The DNG carries **identity and intent**;
+  `session.json` keeps the measurements.
+  **Remaining:** step 4, `setLocation`. It needs latitude/longitude threaded through
+  `CaptureEngine.Request`, which does not carry them today, and every session so far has had a
+  null pointing fix so there has been nothing to write.
   *Deferred:* `setThumbnail` would make sessions browsable in a file manager and in Lightroom,
   where they currently show as blank. It needs a downsampled image at write time, and the binned
   analysis plane does not exist yet at that point in the ordering (it is computed after the bytes
@@ -1128,7 +1204,7 @@ when the number comes back.
 | **OI-19** | **Will the hidden cameras also *capture*, not just open?** All five IDs open, but only camera 0 has completed a real RAW capture. An ID that opens can still fail session configuration or never deliver a frame | Assume the tele and ultrawide work; verify before promising them to the user | Run the T-1.4 capture against IDs 2, 3 and 4 — cheap now the harness exists | 7 |
 | **OI-20** | **Screen-off capture needs a foreground service, not just a surface-free session.** Measured 2026-08-17: the framing loop is frozen a few seconds after the screen goes off, process still alive. D-22 dissolved the *surface* problem but not the *lifecycle* one (§1.7) | Assume the `camera`-type FGS of D-12 is sufficient — it is what the type exists for | T-3.6's own acceptance: a 45-minute sequence with the screen off and the app backgrounded, then repeated with battery optimisation left on | 1C |
 | **OI-4** | Framing preview exposure length | 1 s, boost to 4 s, auto-stop after 2 min idle — **now implemented as the default** (T-2.2), so the experiment is a tuning pass rather than a build | Real-sky trial: shortest exposure at which framing is workable | 1B |
-| **OI-5** | SAF write throughput and root-scan cost | Cached index assumed necessary (D-5) | T-0.5: sustained MB/s for 25 MB files; wall-clock scan of ~12 sessions × ~200 files | 0 |
+| **OI-5** | SAF write throughput and root-scan cost | **File baseline measured 2026-08-18: 200 × 24 MiB at 570 MiB/s (0.042 s/file), root scan 0.001 s.** SAF half still unmeasured — it needs a folder picked through the UI, which adb cannot do. The scan figure is from a 2-session root, not the ~12 the issue asks for, so it does not yet test D-5's premise | T-0.5: the same run against `SafSessionStore`, and a root with ~12 sessions | 0 |
 | **OI-9** | Is the OEM `SENSOR_NOISE_PROFILE` good enough to pick a sane ISO at Functional tier? | Yes — use it. **Half-answered 2026-08-17: the profile is a real per-ISO measurement, not a stub** — nine distinct read-noise values across nine ISOs, falling smoothly from 5.64 e⁻ at ISO 50 to 2.07 e⁻ at ISO 3200 (§1.8). No dual-gain step is visible; the decline is the ordinary ADC-noise-over-gain trend. What remains is whether the *absolute* figures are right, which needs the Phase 6 bias series to compare against | **Trigger:** run the T-3.3 solver twice, once on OEM data and once on read noise measured from a quick bias pair. If the chosen ISO differs by more than one stop, promote the §4.1.1 noise model out of Phase 6 into 1C | 1C |
 | **OI-21** | **Battery drain per hour of capture is unmeasured.** `SessionPlanner` warns against a placeholder of 18 %/h, chosen pessimistically so the warning fires early rather than late | 18 %/h | T-3.9's session log already records battery level per frame; a single 45-minute session yields the real figure | 1C |
 | **OI-11** | Thermal pacing aggressiveness | No pacing; log only | T-3.9 logs temperature and dropped frames across a full 45-min session, then set the threshold from the curve. Tuning a pacing rule before seeing one real thermal curve is guesswork | 1C |

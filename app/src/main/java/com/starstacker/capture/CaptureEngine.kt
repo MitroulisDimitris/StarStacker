@@ -3,10 +3,12 @@ package com.starstacker.capture
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.DngCreator
+import android.media.ExifInterface
 import android.util.Log
 import com.starstacker.camera.CameraAccess
 import com.starstacker.camera.FramingSession
 import com.starstacker.camera.SequenceSession
+import com.starstacker.session.FrameDescription
 import com.starstacker.session.FrameKind
 import com.starstacker.session.FrameRecord
 import com.starstacker.session.SessionLog
@@ -50,9 +52,10 @@ class CaptureEngine(
         fun reading(): ThermalPolicy.Reading
 
         /**
-         * Peak angular movement of the gravity vector since the last call, **degrees**. Null when
-         * there is no accelerometer. See [DeviceEnvironment] for why it is an angle and not an
-         * acceleration.
+         * Peak rotation since the last call, **degrees**. Null when it could not be measured —
+         * no gyroscope, or its zero-rate estimate has not settled — in which case [FrameGate]
+         * skips the check rather than guessing. See [DeviceEnvironment] for why this reads the
+         * gyroscope and not the accelerometer.
          */
         fun consumePeakTiltDeg(): Double?
 
@@ -311,7 +314,31 @@ class CaptureEngine(
                         batteryPercent = reading.batteryPercent,
                     )
                 },
-                write = { out -> captured.writeDng(out) },
+                write = { out ->
+                    // T-3.16: the frame states its own identity, so a DNG separated from
+                    // session.json can still say which session and which sub it is.
+                    captured.writeDng(
+                        out = out,
+                        // Measured: DngCreator leaves Orientation at 9, which is not a value TIFF
+                        // defines (1-8) and leaves every reader free to invent one. On a tripod
+                        // the answer is always "do not rotate" — the sensor data is identical
+                        // whichever way up the phone is, and a reader that rotated one frame and
+                        // not another would break the stack.
+                        orientation = ExifInterface.ORIENTATION_NORMAL,
+                        description = FrameDescription.of(
+                            sessionId = writer.log.info.sessionId,
+                            index = index,
+                            kind = kind,
+                            iso = appliedIso,
+                            exposureNs = appliedExposure,
+                            capturedAtEpochMs = capturedAt,
+                            temperatureC = reading.batteryTempC,
+                            thermalHeadroom = reading.headroom,
+                            batteryPercent = reading.batteryPercent,
+                            focusDiopters = request.focusDiopters,
+                        ),
+                    )
+                },
             )
             captured.copyPixels(pixels)
             stored

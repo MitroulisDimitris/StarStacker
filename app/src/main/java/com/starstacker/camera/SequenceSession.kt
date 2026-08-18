@@ -71,10 +71,20 @@ class SequenceSession private constructor(
         val appliedExposureNs: Long? get() = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
         val appliedFocus: Float? get() = result.get(CaptureResult.LENS_FOCUS_DISTANCE)
 
-        /** Writes the DNG straight from the sensor buffer — no intermediate copy. */
-        fun writeDng(out: OutputStream, orientation: Int? = null) {
+        /**
+         * Writes the DNG straight from the sensor buffer — no intermediate copy.
+         *
+         * [description] fills `ImageDescription`, which `DngCreator` otherwise writes empty
+         * (T-3.16). It is the only place a frame can record which session it belongs to.
+         */
+        fun writeDng(
+            out: OutputStream,
+            orientation: Int? = null,
+            description: String? = null,
+        ) {
             DngCreator(chars, result).use { dng ->
                 orientation?.let { dng.setOrientation(it) }
+                description?.let { dng.setDescription(it) }
                 dng.writeImage(out, image)
             }
         }
