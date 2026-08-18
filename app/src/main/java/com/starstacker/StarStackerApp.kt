@@ -1,6 +1,8 @@
 package com.starstacker
 
 import android.app.Application
+import com.starstacker.core.AppContainer
+import com.starstacker.core.ContainerHost
 import com.starstacker.diag.FieldLog
 
 /**
@@ -11,7 +13,11 @@ import com.starstacker.diag.FieldLog
  * initialisation. A crash log that cannot record startup crashes is missing the case it is least
  * able to reproduce afterwards.
  */
-class StarStackerApp : Application() {
+class StarStackerApp : Application(), ContainerHost {
+
+    /** T-0.7 — built once, here, because this is the only object that outlives everything else. */
+    override val container: AppContainer by lazy { AppContainer(this) }
+
     override fun onCreate() {
         super.onCreate()
         FieldLog.start(this)

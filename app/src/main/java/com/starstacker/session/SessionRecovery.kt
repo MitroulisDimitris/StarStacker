@@ -1,5 +1,7 @@
 package com.starstacker.session
 
+import com.starstacker.core.Clock
+import com.starstacker.core.SystemClock
 /**
  * T-3.13 / FR-6.4 — an interrupted session is resumable rather than lost.
  *
@@ -76,9 +78,9 @@ object SessionRecovery {
      * Marks a session abandoned so it stops being offered, without deleting anything (D-10).
      * The frames stay exactly where they are and remain stackable.
      */
-    fun abandon(store: SessionStore, folderName: String) {
+    fun abandon(store: SessionStore, folderName: String, clock: Clock = SystemClock) {
         val folder = store.openSession(folderName) ?: return
         val writer = SessionWriter.resume(folder) ?: return
-        writer.setState(SessionState.FAILED, System.currentTimeMillis())
+        writer.setState(SessionState.FAILED, clock.nowEpochMs())
     }
 }

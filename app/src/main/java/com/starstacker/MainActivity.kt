@@ -12,6 +12,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.LaunchedEffect
@@ -46,6 +47,9 @@ import com.starstacker.stars.CfaBinner
 import com.starstacker.stars.StarDetector
 import com.starstacker.ui.DiagnosticsState
 import com.starstacker.ui.FramingController
+import androidx.activity.compose.BackHandler
+import com.starstacker.ui.BackStack
+import com.starstacker.ui.Screen
 import com.starstacker.ui.CaptureScreen
 import com.starstacker.ui.FramingScreen
 import com.starstacker.ui.SetupController
@@ -74,8 +78,6 @@ import java.util.Locale
  * belongs to the service, not to this Activity, and survives it being destroyed.
  */
 class MainActivity : ComponentActivity() {
-
-    private enum class Screen { PROBE, FRAMING, SETUP, CAPTURE, SETTINGS }
 
     private var profile by mutableStateOf<DeviceProfile?>(null)
     private var diagnostics by mutableStateOf(DiagnosticsState())
@@ -300,7 +302,15 @@ class MainActivity : ComponentActivity() {
                 val current = profile ?: return@StarStackerTheme
                 val qualification = remember(current) { Qualification.qualifyDevice(current) }
                 var exportedPath by remember { mutableStateOf<String?>(null) }
-                var screen by remember { mutableStateOf(Screen.PROBE) }
+                var nav by rememberSaveable(stateSaver = BackStack.Saver) {
+                    mutableStateOf(BackStack())
+                }
+                val screen = nav.current
+
+                // T-0.3: without this the system back gesture leaves the app from any screen,
+                // including mid-session. At the root it stays unhandled, which is where "back"
+                // legitimately means "leave".
+                BackHandler(enabled = nav.canGoBack) { nav = nav.pop() }
                 val scope = rememberCoroutineScope()
 
                 val options = remember(current, qualification) {
@@ -339,7 +349,7 @@ class MainActivity : ComponentActivity() {
                         capture.state == SessionState.DARKS ||
                         capture.state == SessionState.AWAITING_DARKS
                     ) {
-                        screen = Screen.CAPTURE
+                        nav = nav.enterCapture()
                     }
                 }
 
@@ -354,10 +364,10 @@ class MainActivity : ComponentActivity() {
                         onCaptureRaw = { exposureNs -> scope.launch { runCapture(exposureNs) } },
                         onOpenFraming = {
                             askForNotificationsOnce()
-                            screen = Screen.FRAMING
+                            nav = nav.push(Screen.FRAMING)
                         },
                         sessionRoot = sessionRootLabel,
-                        onOpenSettings = { screen = Screen.SETTINGS },
+                        onOpenSettings = { nav = nav.push(Screen.SETTINGS) },
                         resumable = resumable.takeIf { !CaptureService.running },
                         onResumeSession = {
                             val session = resumable ?: return@ProbeScreen
@@ -375,7 +385,7 @@ class MainActivity : ComponentActivity() {
                                 resumeFolder = session.folderName,
                             )
                             resumable = null
-                            screen = Screen.CAPTURE
+                            nav = nav.enterCapture()
                         },
                         onDiscardResumable = {
                             val session = resumable ?: return@ProbeScreen
@@ -397,20 +407,20 @@ class MainActivity : ComponentActivity() {
                         },
                         onBack = {
                             framing.stop()
-                            screen = Screen.PROBE
+                            nav = nav.toRoot()
                         },
                         onContinue = {
                             framing.stop()
                             current.cameras.firstOrNull { it.id == selectedCameraId }
                                 ?.let { setup.select(it) }
-                            screen = Screen.SETUP
+                            nav = nav.push(Screen.SETUP)
                         },
                     )
 
                     Screen.SETUP -> SetupScreen(
                         controller = setup,
                         pointing = pointing,
-                        onBack = { screen = Screen.FRAMING },
+                        onBack = { nav = nav.pop() },
                         onStart = {
                             val plan = setup.plan ?: return@SetupScreen
                             val camera = setup.camera ?: return@SetupScreen
@@ -432,7 +442,7 @@ class MainActivity : ComponentActivity() {
                                 ),
                                 label = "session",
                             )
-                            screen = Screen.CAPTURE
+                            nav = nav.enterCapture()
                         },
                     )
 
@@ -458,7 +468,7 @@ class MainActivity : ComponentActivity() {
                         onSkipDarks = {
                             CaptureService.send(this@MainActivity, CaptureService.ACTION_SKIP_DARKS)
                         },
-                        onDone = { screen = Screen.PROBE },
+                        onDone = { nav = nav.toRoot() },
                     )
 
                     Screen.SETTINGS -> SettingsScreen(
@@ -478,7 +488,7 @@ class MainActivity : ComponentActivity() {
                         onShareLog = { shareFieldLog() },
                         onExportProfile = { exportedPath = exportAndShare(current) },
                         exportedPath = exportedPath,
-                        onBack = { screen = Screen.PROBE },
+                        onBack = { nav = nav.pop() },
                     )
                 }
             }

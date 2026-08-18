@@ -620,9 +620,32 @@ work has to be redone.
   two call sites make the shared contract real. `HotButton` is the one full-intensity control, so
   the "one per screen" rule is now a grep, not a judgement.
   **Remaining:** the bundled fonts (D-11 — still on the platform families) and the gallery screen.
-- [ ] **T-0.3** Navigation skeleton: Main → Session setup → Live → Session detail → Settings.
+- [~] **T-0.3** Navigation skeleton: Main → Session setup → Live → Session detail → Settings.
   Screens are stubs with the prototype's static content.
   *Accept:* all five reachable, back stack correct, screen rotation locked to portrait.
+  **Done 2026-08-18.** The screens stopped being stubs long ago, so what was left was the part the
+  task named and nobody had built: **the back stack**.
+  **This was a missing feature, not a simplification.** Navigation was a single `var screen`, so
+  the system back gesture was never handled and therefore *left the app* from any screen,
+  including mid-session. Found by tripping over it — a back press during testing dropped straight
+  out of the app onto the launcher. It is the kind of defect nobody files, because it looks like
+  the phone behaving normally right up until it loses your place.
+  `ui/Navigation.kt` is plain data so the two rules that matter are tested rather than clicked:
+  pushing the screen you are already on is a no-op (automatic navigation fires from a state change,
+  and a flow can emit twice), and **entering capture resets the stack to `[PROBE, CAPTURE]`** —
+  backing out of a running session onto Setup would show a Start button for a session already
+  running, which invites starting a second on top of the first. The session belongs to the service
+  and survives the screen (D-6), so leaving the capture screen is safe; it just must not lead back
+  into the flow that began it.
+  A list, not a navigation library: the flow is a stack of five, this codebase adds dependencies
+  reluctantly (D-7, D-11), and neither rule above is one a library would have got right for us.
+  The stack survives process death, since the app is designed to sit backgrounded for 45 minutes
+  and the system may kill it meanwhile.
+  **Verified on device:** launch to probe, tap to settings, back to probe rather than out of the
+  app. Rotation is locked to portrait in the manifest.
+  **Two honesties.** `Session detail` in the task's list is Phase 4 (T-6.3) and does not exist; the
+  five are probe, framing, setup, capture and settings. And only the probe-settings leg was walked
+  on hardware today — the other three rest on unit tests and prior sessions, not a fresh walk.
 - [~] **T-0.4** Permission flow: `CAMERA`, `ACCESS_FINE_LOCATION`, `POST_NOTIFICATIONS`,
   `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CAMERA`. Rationale UI in plain language; denial is
   survivable (location denied → pointing unavailable → exposure engine falls back, and says so).
@@ -701,8 +724,31 @@ work has to be redone.
   no human has tapped them; only the file half is demonstrated. Worth knowing for the field: the
   `--es diag crash` trigger needs `--activity-single-top`, since `am start` on a task-root
   activity otherwise just brings the task forward without delivering the intent.
-- [ ] **T-0.7** `AppContainer`, dispatchers, and a `Clock`/`SensorSource`/`CameraSource` seam so
+- [~] **T-0.7** `AppContainer`, dispatchers, and a `Clock`/`SensorSource`/`CameraSource` seam so
   logic is testable without hardware.
+  **Done 2026-08-18, and smaller than the task implies — because most of it was already there.**
+  The seams that carry the weight were built where they were needed: `SessionStore` hides SAF from
+  the capture engine, `CaptureEngine.Environment` hides the sensors and the thermal API. Those are
+  why 228 tests run on a laptop with no phone attached, and re-doing them as a framework would
+  have bought nothing.
+  What was genuinely missing was duller: **nothing owned the construction.** The Activity and the
+  Service each built their own store, camera and environment from whatever `Context` they happened
+  to be, so changing how any of them is made meant finding every place that made one.
+  `core/AppContainer.kt` is that one place, hung off the Application. Camera and environment are
+  **factories, not fields** — each owns hardware that must be closed, and a process-scoped instance
+  would hold the camera open between sessions and sample the gyro all night.
+  `core/Clock.kt` splits two things that were being used interchangeably: wall-clock for naming and
+  timestamping, monotonic for every *duration*. A 15-minute darks prompt measured on wall-clock
+  time resolves instantly the moment the network corrects the clock backwards. §1.14 makes the
+  monotonic one load-bearing: it is the base `SensorEvent.timestamp` and `SENSOR_TIMESTAMP` share,
+  which is the only reason a gyro window can be compared against an exposure at all.
+  **Deliberately left.** `AppDispatchers` names the dispatchers but they are not yet threaded
+  through every call site, and the ten `System.currentTimeMillis()` calls in `FieldDiagnostics` and
+  `FramingController` are untouched — stopwatch measurements inside diagnostics, not logic under
+  test, and converting them would be churn dressed as rigour. The clock now backs
+  `DeviceEnvironment`, session naming and `SessionRecovery`.
+  **This is the precondition for testability, not the tests.** It makes the Service and the
+  controllers injectable; nothing yet injects a fake into them.
 - [~] **T-0.8** Device profile store: JSON in app-private storage, versioned schema, export via
   share sheet (FR-3.2.1).
   **Done:** `ProfileJson` (hand-rolled writer, no serialization dependency, JVM-testable),

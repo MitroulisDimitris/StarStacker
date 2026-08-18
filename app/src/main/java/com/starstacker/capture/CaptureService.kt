@@ -15,6 +15,7 @@ import android.util.Log
 import com.starstacker.MainActivity
 import com.starstacker.camera.CameraAccess
 import com.starstacker.exposure.ExposureSolver
+import com.starstacker.core.AppContainer
 import com.starstacker.session.SessionPointing
 import com.starstacker.session.SessionRoot
 import com.starstacker.session.SessionStore
@@ -94,9 +95,10 @@ class CaptureService : Service() {
     private fun begin(request: CaptureEngine.Request, label: String, resumeFolder: String?) {
         if (job?.isActive == true) return
 
-        // T-0.5: the user's chosen folder when there is one, app-private storage otherwise. The
-        // engine never learns which — that is the point of SessionStore.
-        val store = SessionRoot.store(this)
+        // T-0.7: the container owns construction. T-0.5: it hands back the user's chosen folder
+        // when there is one and app-private storage otherwise — the engine never learns which.
+        val container = AppContainer.from(this)
+        val store = container.sessionStore()
 
         // T-3.13: resuming fills the *same* folder from the frame after the last one logged, and
         // does not re-derive the exposure or re-run focus — the value of resuming is that those
@@ -108,8 +110,8 @@ class CaptureService : Service() {
             ?: newSession(store, request, label)
         writer.begin()
 
-        val env = DeviceEnvironment(this).also { environment = it }
-        val camera = CameraAccess(this).also { access = it }
+        val env = container.deviceEnvironment().also { environment = it }
+        val camera = container.cameraAccess().also { access = it }
         val created = CaptureEngine(camera, writer, env)
         engine = created
         _progress.value = created.progress.value
@@ -133,7 +135,7 @@ class CaptureService : Service() {
         request: CaptureEngine.Request,
         label: String,
     ): SessionWriter {
-        val startedAt = System.currentTimeMillis()
+        val startedAt = AppContainer.from(this).clock.nowEpochMs()
         val folderName = SessionLayout.folderName(startedAt, label)
         return SessionWriter(
             store.createSession(folderName),

@@ -11,6 +11,8 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
 import android.util.Log
+import com.starstacker.core.Clock
+import com.starstacker.core.SystemClock
 import kotlin.math.exp
 import kotlin.math.sqrt
 
@@ -56,7 +58,10 @@ import kotlin.math.sqrt
  * [SensorEvent.timestamp] on the same clock. Without it there is no common base and the query
  * declines to answer.
  */
-class DeviceEnvironment(private val context: Context) : CaptureEngine.Environment, AutoCloseable {
+class DeviceEnvironment(
+    private val context: Context,
+    private val clock: Clock = SystemClock,
+) : CaptureEngine.Environment, AutoCloseable {
 
     private val power = context.getSystemService(Context.POWER_SERVICE) as PowerManager
     private val sensors = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
@@ -253,7 +258,7 @@ class DeviceEnvironment(private val context: Context) : CaptureEngine.Environmen
         }
     }
 
-    override fun nowEpochMs(): Long = System.currentTimeMillis()
+    override fun nowEpochMs(): Long = clock.nowEpochMs()
 
     /**
      * `getThermalHeadroom` refuses to answer more often than once every ten seconds, returning
