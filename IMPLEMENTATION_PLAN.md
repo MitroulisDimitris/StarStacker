@@ -1093,8 +1093,30 @@ Goal: FR-13/M3 — *press start, walk away, come back to a folder of good subs.*
   those would mean re-deriving an exposure and focus already decided correctly under a sky that
   has since moved.
   **Remaining:** the `Pause`/`Resume` controls have not been exercised mid-session on hardware.
-- [ ] **T-3.14** Live downsampled preview stack (FR-7.4) — translation-only running average until
+- [~] **T-3.14** Live downsampled preview stack (FR-7.4) — translation-only running average until
   Phase 2 supplies real transforms. Depth per **OI-13**.
+  **Done 2026-08-18, rendering on hardware.** `stars/PreviewStack.kt` is D-18's capped running
+  mean over the ~1 MP analysis plane, downsampled again to 512x384 and autostretched;
+  `stars/StarOffset.kt` supplies the translation.
+  **Offsets by voting, not matching.** Pairing star A with star A is the hard problem asterism
+  matching solves in Phase 2, and it can be skipped here: every correct pair yields the same
+  offset and wrong pairs scatter, so binning all pairs and taking the fullest bin is a vote in
+  which the signal agrees and the noise does not. The vote is also its own confidence — too few
+  agreeing pairs returns null rather than a plausible number.
+  **Aligned frame-to-frame and accumulated, not each frame against the first.** The field drifts
+  by design: at 1.5 sensor px per sub, frame 1 and frame 40 are ~15 analysis px apart and their
+  star lists stop overlapping enough for a vote to find them. First measured version aligned
+  against the reference and the preview stuck at **depth 1 while the counter climbed to 21** —
+  which reads as a broken app.
+  **A failed vote does not drop the frame** (D-18: no rejection logic of its own). The gate has
+  already passed it, so it goes in carried on the last known drift. Verified with the lens dark
+  and zero stars detected: depth tracked the accepted count exactly, 22 of 22.
+  **Two costs paid deliberately**, because D-18's thermal argument is the whole design and a
+  preview that heats the sensor degrades the frames it is previewing: the stretch's median and MAD
+  are taken on every 16th pixel rather than all of them, and the stats buffer is preallocated.
+  **Remaining:** it has never run under a real sky, so nothing has yet confirmed that the vote
+  finds a genuine star field or that the accumulated drift tracks it over a long session. Field
+  rotation is uncorrected by construction and will smear stars away from the centre until Phase 2.
 - [~] **T-3.15** Completion screen (FR-9.4): result summary, full session path, open/share.
 - [~] **T-3.16** **Make the DNGs self-describing** (§1.12). A frame separated from its
   `session.json` currently cannot say which session it belongs to, whether it is a light or a

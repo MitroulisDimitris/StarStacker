@@ -17,6 +17,11 @@ import com.starstacker.session.SessionPointing
 import com.starstacker.session.SessionState
 import com.starstacker.session.SessionWriter
 import com.starstacker.stars.CfaBinner
+import com.starstacker.stars.BinnedPlane
+import com.starstacker.stars.FrameStars
+import com.starstacker.stars.PreviewStack
+import com.starstacker.stars.Star
+import com.starstacker.stars.StarOffset
 import com.starstacker.stars.StarDetector
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -94,6 +99,13 @@ class CaptureEngine(
         val cooling: Boolean = false,
         val message: String? = null,
         val sessionPath: String? = null,
+        /**
+         * T-3.14 — the live preview stack, ARGB at [PreviewStack.WIDTH] x [PreviewStack.HEIGHT],
+         * or null before the first accepted frame. Carried by reference; the engine owns the
+         * buffer and overwrites it, so the UI must render it rather than retain it.
+         */
+        val preview: IntArray? = null,
+        val previewDepth: Int = 0,
         /**
          * The log as it stands. Carried here rather than fetched separately so the screen sees a
          * frame count and the frames it names from the same instant — [SessionLog] is immutable,
@@ -188,6 +200,26 @@ class CaptureEngine(
      * is the same fix the trailing limit was derived from.
      */
     private var dngLocation: Location? = null
+
+    /**
+     * T-3.14 / D-18. Built lazily on the first accepted light, because a session that never gets
+     * one should not pay 1.5 MB for a preview of nothing.
+     */
+    private var preview: PreviewStack? = null
+
+    /**
+     * Alignment is **frame to frame**, accumulated — not every frame against the first.
+     *
+     * The field drifts by design: the trailing limit budgets 1.5 sensor px per sub, so over 40
+     * subs the first frame and the last are ~15 analysis pixels apart and the star lists stop
+     * overlapping enough for a vote to find them. Matching each frame against its predecessor
+     * keeps the offsets small and the vote healthy; the running total carries the drift.
+     */
+    private var previousStars: List<Star>? = null
+    private var offsetX = 0.0
+    private var offsetY = 0.0
+    private var lastDeltaX = 0.0
+    private var lastDeltaY = 0.0
 
     /** Reused across the whole sequence — a 25 MB allocation per frame is FR-12.2's warning. */
     private var buffer: ShortArray? = null
@@ -390,7 +422,8 @@ class CaptureEngine(
 
         // Analysis runs with the sensor buffer already released, so it overlaps the next
         // exposure rather than delaying it (≈130 ms against a multi-second sub).
-        val stars = analyse(session, pixels, request)
+        val analysis = analyse(session, pixels, request)
+        val stars = analysis?.stars
         val metrics = FrameGate.Metrics(
             starCount = stars?.count ?: 0,
             medianEccentricity = stars?.medianEccentricity,
@@ -428,6 +461,10 @@ class CaptureEngine(
             log.copy(frames = log.frames.map { if (it.index == index && it.kind == kind) measured else it })
         }
 
+        if (verdict.accepted && kind == FrameKind.LIGHT && analysis != null) {
+            updatePreview(analysis)
+        }
+
         val log = writer.log
         _progress.value = _progress.value.copy(
             framesCaptured = log.lights.size,
@@ -438,9 +475,14 @@ class CaptureEngine(
             lastBackground = stars?.background,
             lastRejection = verdict.detail,
             thermalNote = thermal.evaluate(reading).note,
+            preview = preview?.toArgb(),
+            previewDepth = preview?.depth ?: 0,
             log = log,
         )
     }
+
+    /** The binned plane and what was found in it — the preview needs the pixels, not just stars. */
+    private class Analysis(val plane: BinnedPlane, val stars: FrameStars)
 
     private fun analyse(
         session: SequenceSession,
@@ -454,9 +496,50 @@ class CaptureEngine(
             cfaCodes = session.cfaCodes,
             factor = session.plan.binFactor,
         )
-        (detector ?: StarDetector(saturationLevel = session.whiteLevel))
-            .detect(binned.data, binned.width, binned.height)
+        Analysis(
+            binned,
+            (detector ?: StarDetector(saturationLevel = session.whiteLevel))
+                .detect(binned.data, binned.width, binned.height),
+        )
     }.onFailure { Log.w(TAG, "frame analysis failed", it) }.getOrNull()
+
+    /**
+     * Folds an accepted light into the preview (D-18: no rejection logic of its own — the gate has
+     * already decided).
+     *
+     * A frame whose offset cannot be established is **skipped rather than stacked unaligned**. The
+     * vote returning null means the frames do not agree, and adding it anyway would smear the one
+     * thing the preview exists to show.
+     */
+    private fun updatePreview(analysis: Analysis) {
+        val stack = preview ?: PreviewStack(PreviewStack.WIDTH, PreviewStack.HEIGHT)
+            .also { preview = it }
+        val stars = analysis.stars.stars
+        val previous = previousStars
+
+        if (previous != null) {
+            // D-18: no rejection logic of its own. A failed vote is not a verdict on the frame —
+            // the gate already passed it — so the frame still goes in, carried on the last known
+            // drift rather than dropped. Skipping instead leaves the depth stuck at 1 while the
+            // counter climbs, which reads as a broken app rather than a cautious one.
+            val delta = StarOffset.estimate(previous, stars)
+            if (delta != null) {
+                lastDeltaX = delta.dx
+                lastDeltaY = delta.dy
+            }
+            offsetX += lastDeltaX
+            offsetY += lastDeltaY
+        }
+        previousStars = stars
+
+        stack.add(
+            analysis.plane.data,
+            analysis.plane.width,
+            analysis.plane.height,
+            offsetX,
+            offsetY,
+        )
+    }
 
     private suspend fun awaitUnpaused() {
         if (!paused) return

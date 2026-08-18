@@ -22,6 +22,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
+import android.graphics.Bitmap
+import androidx.compose.foundation.Image
+import androidx.compose.runtime.remember
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import com.starstacker.stars.PreviewStack
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.starstacker.capture.CaptureEngine
@@ -118,6 +124,11 @@ fun CaptureScreen(
         }
 
         item { ProgressRing(progress) }
+
+        if (progress.preview != null) {
+            item { Eyebrow("Live stack - FR-7.4") }
+            item { PreviewStackCard(progress.preview, progress.previewDepth) }
+        }
 
         item { Eyebrow("This frame") }
         item {
@@ -384,4 +395,41 @@ private fun rejectionBreakdown(log: SessionLog?): String? {
         .entries
         .joinToString(" · ") { "${it.value} ${it.key}" }
         .let { "rejected: $it — all kept on disk" }
+}
+
+/**
+ * T-3.14 / D-18 — the live preview stack.
+ *
+ * The caption states the depth *and* that this is not the result, because a stretched running mean
+ * of a dozen subs looks enough like an astrophoto to be mistaken for one, and the real stack is a
+ * full-resolution job that happens after the session (FR-7.4). Someone who thinks this is the
+ * output will stop the session early.
+ *
+ * The bitmap is rebuilt from the engine's buffer on each change: the engine owns that array and
+ * overwrites it in place, so holding on to it would show a frame that no longer exists.
+ */
+@Composable
+private fun PreviewStackCard(argb: IntArray, depth: Int) {
+    val bitmap = remember(argb, depth) {
+        Bitmap.createBitmap(
+            argb, PreviewStack.WIDTH, PreviewStack.HEIGHT, Bitmap.Config.ARGB_8888,
+        ).asImageBitmap()
+    }
+    Card {
+        Image(
+            bitmap = bitmap,
+            contentDescription = "Live stack of $depth frames",
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(PreviewStack.WIDTH.toFloat() / PreviewStack.HEIGHT),
+            contentScale = ContentScale.Fit,
+        )
+        Spacer(Modifier.height(8.dp))
+        Mono(
+            "$depth frames aligned on translation only - a preview, not the stack. " +
+                "Stars away from centre will smear until registration lands.",
+            color = Night.Txt3,
+            size = 10.sp,
+        )
+    }
 }
