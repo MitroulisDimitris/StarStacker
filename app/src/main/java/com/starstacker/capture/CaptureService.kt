@@ -15,6 +15,7 @@ import android.util.Log
 import com.starstacker.MainActivity
 import com.starstacker.camera.CameraAccess
 import com.starstacker.exposure.ExposureSolver
+import com.starstacker.session.SessionPointing
 import com.starstacker.session.SessionRoot
 import com.starstacker.session.SessionStore
 import com.starstacker.session.SessionInfo
@@ -147,6 +148,16 @@ class CaptureService : Service() {
                     plannedLightCount = request.lightCount,
                     plannedDarkCount = request.darkCount,
                     focusDiopters = request.focusDiopters,
+                    // FR-9.2: the declination is the one input to the sub length that leaves no
+                    // trace in the result, so a log without it cannot say whether the trailing
+                    // limit was relaxed or worst-cased at the equator.
+                    latitudeDeg = request.pointing?.latitudeDeg,
+                    longitudeDeg = request.pointing?.longitudeDeg,
+                    altitudeDeg = request.pointing?.altitudeDeg,
+                    azimuthDeg = request.pointing?.azimuthTrueDeg,
+                    declinationDeg = request.pointing?.declinationDeg,
+                    fieldRotationArcsecPerSec = request.pointing?.fieldRotationArcsecPerSec,
+                    compassAccuracy = request.pointing?.compassAccuracy,
                 ),
             ),
         )
@@ -259,7 +270,11 @@ class CaptureService : Service() {
         wakeLock = null
     }
 
-    private fun Intent.toRequest(): CaptureEngine.Request? {
+    /** NaN as the "absent" sentinel, matching how the nullable focus extra is already carried. */
+private fun Intent.optDouble(key: String): Double? =
+    getDoubleExtra(key, Double.NaN).takeIf { !it.isNaN() }
+
+private fun Intent.toRequest(): CaptureEngine.Request? {
         val cameraId = getStringExtra(EXTRA_CAMERA_ID) ?: return null
         val iso = getIntExtra(EXTRA_ISO, -1).takeIf { it > 0 } ?: return null
         val exposure = getLongExtra(EXTRA_EXPOSURE_NS, -1L).takeIf { it > 0 } ?: return null
@@ -270,6 +285,15 @@ class CaptureService : Service() {
             focusDiopters = getFloatExtra(EXTRA_FOCUS, Float.NaN).takeIf { !it.isNaN() },
             lightCount = getIntExtra(EXTRA_LIGHTS, 0),
             darkCount = getIntExtra(EXTRA_DARKS, 0),
+            pointing = SessionPointing(
+                latitudeDeg = optDouble(EXTRA_LAT),
+                longitudeDeg = optDouble(EXTRA_LON),
+                altitudeDeg = optDouble(EXTRA_ALT),
+                azimuthTrueDeg = optDouble(EXTRA_AZ),
+                declinationDeg = optDouble(EXTRA_DEC),
+                fieldRotationArcsecPerSec = optDouble(EXTRA_FIELD_ROT),
+                compassAccuracy = getStringExtra(EXTRA_COMPASS),
+            ).takeIf { !it.isEmpty },
         )
     }
 
@@ -296,6 +320,13 @@ class CaptureService : Service() {
         private const val EXTRA_LIGHTS = "lights"
         private const val EXTRA_DARKS = "darks"
         private const val EXTRA_LABEL = "label"
+        private const val EXTRA_LAT = "lat"
+        private const val EXTRA_LON = "lon"
+        private const val EXTRA_ALT = "alt"
+        private const val EXTRA_AZ = "az"
+        private const val EXTRA_DEC = "dec"
+        private const val EXTRA_FIELD_ROT = "fieldRot"
+        private const val EXTRA_COMPASS = "compass"
 
         /** Folder name of a session to continue filling, per T-3.13. */
         private const val EXTRA_RESUME = "resume"
@@ -329,6 +360,15 @@ class CaptureService : Service() {
                 putExtra(EXTRA_LIGHTS, request.lightCount)
                 putExtra(EXTRA_DARKS, request.darkCount)
                 putExtra(EXTRA_LABEL, label)
+                request.pointing?.let { p ->
+                    p.latitudeDeg?.let { putExtra(EXTRA_LAT, it) }
+                    p.longitudeDeg?.let { putExtra(EXTRA_LON, it) }
+                    p.altitudeDeg?.let { putExtra(EXTRA_ALT, it) }
+                    p.azimuthTrueDeg?.let { putExtra(EXTRA_AZ, it) }
+                    p.declinationDeg?.let { putExtra(EXTRA_DEC, it) }
+                    p.fieldRotationArcsecPerSec?.let { putExtra(EXTRA_FIELD_ROT, it) }
+                    p.compassAccuracy?.let { putExtra(EXTRA_COMPASS, it) }
+                }
             }
             context.startForegroundService(intent)
         }

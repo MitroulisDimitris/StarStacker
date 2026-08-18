@@ -126,6 +126,11 @@ data class SessionInfo(
     val azimuthDeg: Double? = null,
     val declinationDeg: Double? = null,
     val fieldRotationArcsecPerSec: Double? = null,
+    /**
+     * Compass accuracy at the moment the pointing was taken. Recorded because a declination
+     * cannot be judged afterwards without it — see [SessionPointing].
+     */
+    val compassAccuracy: String? = null,
     val focusDiopters: Float? = null,
     val focusHfr: Double? = null,
     /** Null until calibration exists (Phase 6) — recorded so a restack knows what was applied. */
@@ -203,6 +208,7 @@ data class SessionLog(
                 "altitude" to info.altitudeDeg,
                 "azimuth" to info.azimuthDeg,
                 "declination" to info.declinationDeg,
+                "compassAccuracy" to info.compassAccuracy,
                 "fieldRotationArcsecPerSec" to info.fieldRotationArcsecPerSec,
             ),
             "focus" to linkedMapOf(
@@ -254,6 +260,7 @@ data class SessionLog(
                 altitudeDeg = pointing.double("altitude"),
                 azimuthDeg = pointing.double("azimuth"),
                 declinationDeg = pointing.double("declination"),
+                compassAccuracy = pointing.string("compassAccuracy"),
                 fieldRotationArcsecPerSec = pointing.double("fieldRotationArcsecPerSec"),
                 focusDiopters = focus.float("diopters"),
                 focusHfr = focus.double("hfr"),

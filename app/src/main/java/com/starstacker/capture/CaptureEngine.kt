@@ -3,6 +3,7 @@ package com.starstacker.capture
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.DngCreator
+import android.location.Location
 import android.media.ExifInterface
 import android.util.Log
 import com.starstacker.camera.CameraAccess
@@ -12,6 +13,7 @@ import com.starstacker.session.FrameDescription
 import com.starstacker.session.FrameKind
 import com.starstacker.session.FrameRecord
 import com.starstacker.session.SessionLog
+import com.starstacker.session.SessionPointing
 import com.starstacker.session.SessionState
 import com.starstacker.session.SessionWriter
 import com.starstacker.stars.CfaBinner
@@ -69,6 +71,12 @@ class CaptureEngine(
         val focusDiopters: Float?,
         val lightCount: Int,
         val darkCount: Int,
+        /**
+         * Where the camera was pointed when Start was pressed, frozen at that instant — see
+         * [SessionPointing]. Null when there was no fix, which is survivable: the trailing limit
+         * assumes the equator and says so.
+         */
+        val pointing: SessionPointing? = null,
     )
 
     data class Progress(
@@ -147,6 +155,7 @@ class CaptureEngine(
                 // once, here, and never touched again — a re-applied request is a chance for the
                 // HAL to land somewhere different, and every frame must be the same frame.
                 session.apply(request.iso, request.exposureNs, request.focusDiopters)
+                dngLocation = locationOf(request.pointing)
                 buffer = ShortArray(session.plan.raw.width * session.plan.raw.height)
                 detector = StarDetector(saturationLevel = session.whiteLevel)
                 captureRun(session, request)
@@ -172,9 +181,28 @@ class CaptureEngine(
         }
     }
 
+    /**
+     * T-3.16 step 4 — the GPS tags, built once because the fix is frozen at Start and every frame
+     * of the session therefore carries the same one. A desktop plate-solve asks for this, and it
+     * is the same fix the trailing limit was derived from.
+     */
+    private var dngLocation: Location? = null
+
     /** Reused across the whole sequence — a 25 MB allocation per frame is FR-12.2's warning. */
     private var buffer: ShortArray? = null
     private var detector: StarDetector? = null
+
+    /** Null unless there is a real fix — an absent GPS IFD is honest, a zeroed one is not. */
+    private fun locationOf(pointing: SessionPointing?): Location? {
+        val lat = pointing?.latitudeDeg ?: return null
+        val lon = pointing.longitudeDeg ?: return null
+        if (lat !in -90.0..90.0 || lon !in -180.0..180.0) return null
+        return Location("starstacker").apply {
+            latitude = lat
+            longitude = lon
+            time = environment.nowEpochMs()
+        }
+    }
 
     private suspend fun captureRun(session: SequenceSession, request: Request) {
         val already = writer.log.lights.size
@@ -325,6 +353,7 @@ class CaptureEngine(
                         // whichever way up the phone is, and a reader that rotated one frame and
                         // not another would break the stack.
                         orientation = ExifInterface.ORIENTATION_NORMAL,
+                        location = dngLocation,
                         description = FrameDescription.of(
                             sessionId = writer.log.info.sessionId,
                             index = index,

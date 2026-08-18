@@ -79,7 +79,7 @@ Two consequences to accept deliberately:
 | 0 | 9 | 1 | in progress — skeleton builds and installs; shared components extracted (T-0.2 part); SAF storage written but unmeasured (T-0.5, OI-5) |
 | 1A | 6 | 6 | **complete** — probe, qualification, camera lifecycle, first light, DNG reader |
 | 1B | 7 | 2 | **hardware-verified except what needs darkness** — see §5 and §1.7 |
-| 1C | 15 | 1 | **field-ready** — framing → setup → solve → start → live → darks → complete, with resume offered on launch and focus settable by hand. Outstanding: T-3.14 preview stack, T-3.16 DNG metadata, and T-0.5's benchmark (OI-5) |
+| 1C | 16 | 1 | **field-ready** — framing → setup → solve → start → live → darks → complete, with resume offered on launch and focus settable by hand. Outstanding: T-3.14 preview stack, T-3.16 DNG metadata, and T-0.5's benchmark (OI-5) |
 | 2+ | outlined | 0 | not started |
 
 > **Phase 1B has now met every acceptance that does not require a night sky** (2026-08-17). The
@@ -1057,14 +1057,41 @@ Goal: FR-13/M3 — *press start, walk away, come back to a folder of good subs.*
   in the IFD value area, and changing its length moves all 3072 `StripOffsets` — or analysing
   before writing, which trades a guarantee for a nicety. The DNG carries **identity and intent**;
   `session.json` keeps the measurements.
-  **Remaining:** step 4, `setLocation`. It needs latitude/longitude threaded through
-  `CaptureEngine.Request`, which does not carry them today, and every session so far has had a
-  null pointing fix so there has been nothing to write.
+  **Step 4 done 2026-08-18** once the pointing record (T-3.17) put latitude and longitude on
+  `CaptureEngine.Request`. A captured frame's GPS IFD went from **absent to 7 tags**, and IFD0
+  from 54 to 55. `setLocation` is wrapped in `runCatching` — it throws on coordinates it dislikes,
+  and a frame is worth more than its GPS tags.
+  **Remaining:** the acceptance's dark half. `kind=DARK` is unit-tested but has not been shot on
+  hardware — the darks path waits on a confirmation that only the UI can send, since the service
+  is not exported and adb cannot reach it (correct security posture, not a defect).
   *Deferred:* `setThumbnail` would make sessions browsable in a file manager and in Lightroom,
   where they currently show as blank. It needs a downsampled image at write time, and the binned
   analysis plane does not exist yet at that point in the ordering (it is computed after the bytes
   are down, deliberately — §6). The secondary YUV stream is the candidate source. Worth doing,
   not worth reordering the write path for.
+
+- [~] **T-3.17** **Record the pointing in the session log** (FR-9.2). `SessionInfo` has declared
+  latitude, longitude, altitude, azimuth, declination and field rotation since the schema was
+  written; `SessionLog` serialises and parses all six; and **nothing ever set them**, so every
+  session ever written has a null pointing block.
+  It is not exposure time that was lost — this camera's half-diagonal field is 42.6°, so unless
+  the centre is above ~43° declination the fastest corner reaches the equator anyway and 7.399 s
+  is the *correct* answer rather than a conservative one. What was lost is **auditability**: the
+  declination is the only input to the sub length that leaves no trace in the pixels, so the log
+  could not say whether the limit had been relaxed or worst-cased. Diagnosing the 2026-08-18
+  session meant inferring "no fix" from the exposure matching cos δ = 1 exactly.
+  **Done 2026-08-18** — `session/SessionPointing.kt` freezes the fix at Start and carries it
+  through `CaptureEngine.Request` into `SessionInfo`. Frozen deliberately: the compass is not
+  polled during capture, and the pointing that matters is the one the exposure was solved
+  against, so re-reading it an hour later would describe a sky that has moved.
+  **`compassAccuracy` is recorded alongside**, because a declination cannot be judged afterwards
+  without it — a metal tripod head beside the magnetometer is an ordinary way to get a
+  confident-looking, wrong azimuth, and that was the first hypothesis for the 2026-08-18 session.
+  Verified end to end from adb (`--es lat 51.5 --es dec 22.3 --es compass HIGH`), which also
+  exercises the intent transport that no JVM test can reach.
+  **Remaining:** the producer. Nothing has yet confirmed that a fix taken from the *real* compass
+  on the setup screen arrives non-null — every session so far predates this, and `PointingFix`
+  yields a null declination unless magnetic declination, latitude and azimuth are all present.
 
 **Checkpoint 1C — the one that matters:**
 > A 45-minute unattended session on a tripod completes with the screen off, without thermal

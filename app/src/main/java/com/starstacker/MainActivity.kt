@@ -34,7 +34,9 @@ import com.starstacker.diag.StorageBenchmark
 import com.starstacker.dng.DngReader
 import com.starstacker.focus.FocusSweep
 import com.starstacker.pointing.PointingFix
+import com.starstacker.session.SessionPointing
 import com.starstacker.session.SessionRoot
+import com.starstacker.session.toSessionPointing
 import com.starstacker.session.SessionRecovery
 import com.starstacker.session.SessionState
 import com.starstacker.pointing.PointingSource
@@ -194,7 +196,12 @@ class MainActivity : ComponentActivity() {
 
             CaptureService.start(
                 context = this,
-                request = request,
+                // Pointing is normally frozen at Start from the live compass, which the diag
+                // path has no access to at onCreate. Passing it as strings lets the whole
+                // transport — intent extras, SessionInfo, session.json, the DNG's GPS tags — be
+                // exercised from adb without waiting for a sky:
+                //   --es lat 51.5 --es lon -0.12 --es dec 22.3 --es compass HIGH
+                request = request.copy(pointing = intent.diagPointing()),
                 label = intent.getStringExtra("label") ?: "diag",
                 resumeFolder = interrupted?.folderName,
             )
@@ -343,6 +350,11 @@ class MainActivity : ComponentActivity() {
                                         ?.takeIf { !it.fixedFocus }?.diopters,
                                     lightCount = plan.lightCount,
                                     darkCount = plan.darkCount,
+                                    // Frozen here, at Start. The compass is not polled during
+                                    // capture, and the pointing that matters is the one the
+                                    // exposure was solved against — re-reading it an hour later
+                                    // would describe a sky that has moved.
+                                    pointing = pointing?.toSessionPointing(),
                                 ),
                                 label = "session",
                             )
@@ -552,6 +564,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun sessionStore() = SessionRoot.store(this)
+
+    /** Diagnostic-only pointing, supplied as strings so `am` needs no typed-extra flags. */
+    private fun Intent.diagPointing(): SessionPointing? = SessionPointing(
+        latitudeDeg = getStringExtra("lat")?.toDoubleOrNull(),
+        longitudeDeg = getStringExtra("lon")?.toDoubleOrNull(),
+        altitudeDeg = getStringExtra("alt")?.toDoubleOrNull(),
+        azimuthTrueDeg = getStringExtra("az")?.toDoubleOrNull(),
+        declinationDeg = getStringExtra("dec")?.toDoubleOrNull(),
+        fieldRotationArcsecPerSec = getStringExtra("fieldRot")?.toDoubleOrNull(),
+        compassAccuracy = getStringExtra("compass"),
+    ).takeIf { !it.isEmpty }
 
     private fun hasCameraPermission() =
         ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==

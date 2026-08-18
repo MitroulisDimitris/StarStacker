@@ -8,6 +8,7 @@ import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.DngCreator
 import android.hardware.camera2.TotalCaptureResult
+import android.location.Location
 import android.media.Image
 import android.media.ImageReader
 import android.util.Log
@@ -81,10 +82,14 @@ class SequenceSession private constructor(
             out: OutputStream,
             orientation: Int? = null,
             description: String? = null,
+            location: Location? = null,
         ) {
             DngCreator(chars, result).use { dng ->
                 orientation?.let { dng.setOrientation(it) }
                 description?.let { dng.setDescription(it) }
+                // setLocation rejects coordinates it considers invalid by throwing, and a frame
+                // is worth more than its GPS tags: a bad fix must not cost the exposure.
+                location?.let { runCatching { dng.setLocation(it) } }
                 dng.writeImage(out, image)
             }
         }
