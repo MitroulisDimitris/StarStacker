@@ -62,6 +62,7 @@ Two consequences to accept deliberately:
 | **1A** | First light | M1, §3, FR-6.1 | Tap a button → a valid DNG lands in the session folder |
 | **1B** | Framing & focus | FR-6.3, §4.1.4 | Point the phone at the sky in the dark and see stars; focus locks |
 | **1C** | Unattended session | M3, §5, §6, §9 | **Press start, walk away, come back to a folder of good subs** |
+| **1D** | The interface | §1.15, prototype | Someone who has never seen it can start a session without reading a paragraph |
 | **2** | Registration & live gating | M4 (reg), M5 | Live per-frame accept/reject with real transforms; common-area readout |
 | **3** | Stacking | M4 | Linear master out, comparable to Siril on the same subs |
 | **4** | Session management | M5.5 | Capture and stacking fully decoupled; restack, multi-night |
@@ -80,6 +81,7 @@ Two consequences to accept deliberately:
 | 1A | 6 | 6 | **complete** — probe, qualification, camera lifecycle, first light, DNG reader |
 | 1B | 7 | 2 | **hardware-verified except what needs darkness** — see §5 and §1.7 |
 | 1C | 16 | 1 | **field-ready** — framing → setup → solve → start → live → darks → complete, with resume offered on launch and focus settable by hand. Outstanding: T-3.14 preview stack, T-3.16 DNG metadata, and T-0.5's benchmark (OI-5) |
+| 1D | 9 | 0 | **planned 2026-08-18** from the owner's walkthrough against the prototype (§1.15) |
 | 2+ | outlined | 0 | not started |
 
 > **Phase 1B has now met every acceptance that does not require a night sky** (2026-08-17). The
@@ -565,6 +567,52 @@ worth revisiting with a warm phone and a longer sub before tightening, since 0.5
 
 ---
 
+## 1.15 The interface drifted off the prototype — 2026-08-18
+
+The owner walked the app against `astro-app-ui-prototype.html` and the gap is structural, not
+cosmetic. Worth writing down *how* it happened, because the mechanism will repeat otherwise.
+
+**The main screen was never built.** What sits there is the **capability probe** — device model,
+qualification verdict, per-camera capability tables, sensor list, camera-open tests, profile export.
+That screen was correct for Phase 1A, when the only question was "does this device work at all",
+and it was never replaced. The prototype's main screen is a different thing entirely: *Start a
+session*, a calibration banner, recent sessions with thumbnails, and a free-space / temperature /
+moon strip. The probe is a diagnostic that ended up wearing the front door's clothes.
+
+**Everything since has been bolted to it.** T-0.5 put the session-root card there, T-0.6 the field
+log, because each needed somewhere to live. T-0.9 moved them into Settings, which was right, and
+then Settings inherited the same disease.
+
+### The correction, stated as a rule
+
+> **The UI explains what the user must decide. Everything else is a comment.**
+
+The settings screen shipped with a paragraph justifying why the app is dark, a paragraph on why the
+camera permission is needed, and a paragraph on where files live and what happens on uninstall.
+None of that is a decision the user makes. Dark is self-evident once seen; a camera app needing the
+camera is self-evident; and storage has a sensible default that most users will never change. The
+reasoning belongs in KDoc and in this document, which is where the rest of it already is — writing
+it into the interface put the author's thinking in front of someone standing in a field at 2 a.m.
+
+Consequence is not the same as justification, and survives: "without notifications the darks prompt
+never appears" is a fact the user cannot deduce and would be hurt by not knowing (T-0.4). "The app
+is dark because dark adaptation takes 25 minutes" is a fact they can see.
+
+### What the prototype actually specifies
+
+| Screen | Shape |
+|---|---|
+| **Main** | `Start a session` as the one bright element · calibration banner *below* it so it can never read as a gate · recent sessions as rows with thumbnail, target, `142/150 · 28m 24s` and an **action** badge (`Stack now`) rather than a status word · `All sessions · 12` · bottom strip of free space, device temperature, moon |
+| **Setup** | camera chooser with a one-line reason per camera · the solve as **one line** with `Show work` a tap deeper · common-area warning stated *before* committing · `Adjust` / `Start` foot |
+| **Live** | preview with `Stack` / `Last sub` tabs · **per-frame tick ring**, one tick per frame coloured kept / rejected / remaining, with a leading-edge dot · stats beside it · metric grid · recent-frame log with reasons · `Pause` / `End & take darks` foot |
+
+The current ring is a single arc. The prototype's is 150 individual ticks, which is a different
+object: it shows *where the rejections fell*, not just how many.
+
+---
+
+---
+
 ## 2. Decisions
 
 | ID | Decision | Rationale | Reversal cost |
@@ -592,6 +640,7 @@ worth revisiting with a warm phone and a longer sub before tightening, since 0.5
 | **D-22** | **The framing preview is rendered from the RAW stream, not from a display surface.** A repeating ~1 s exposure is read as RAW, binned, star-detected and autostretched; the screen shows that raster. No display surface is ever part of a capture session | The preview a user frames on is then literally the data that will be stacked, through the same pipeline, so what looks framed *is* framed. It also dissolves T-2.1's screen-off requirement rather than handling it: nothing in the session belongs to the display, so there is no surface to lose when the screen goes off and nothing to reconfigure on wake. | Medium |
 | **D-23** | The second stream demanded by **D-20** is a **drained YUV `ImageReader`**, not an unconsumed `SurfaceTexture` | A `SurfaceTexture(0)` with no EGL context cannot be drained — `updateTexImage()` needs a bound GL texture — so its buffer queue fills and stalls a *repeating* request. It survived T-1.4 only because that stopped after one frame. A YUV reader drains with `acquireLatestImage().close()`, and `YUV(PREVIEW) + RAW(MAXIMUM)` is on the device's own guaranteed list. Free side effect: OI-3's YUV analysis fallback is now always configured. | Low |
 | **D-24** | **A minimal JSON reader is owned in-tree** (`json/Json.kt`), extending the writer that already existed | D-5 makes `session.json` the source of truth, so the app must *read* what it wrote — including folders copied back from a PC (FR-10.6.4). `org.json` is a stub in JVM unit tests, which would push every session-log test onto a device; a serialization library is an annotation processor on the build for a handful of flat records. | Low |
+| **D-25** | **The UI explains only what the user must decide.** Reasoning lives in KDoc and this document, never on screen. Consequence the user cannot deduce is not reasoning and stays | §1.15. Written after the settings screen shipped with paragraphs justifying dark mode, the camera permission and the storage location — none of them a decision anyone makes. The author's thinking in front of someone in a field at 2 a.m. is a cost with no reader | Low |
 
 ---
 
@@ -1283,6 +1332,85 @@ At this point the app is already useful: it is a better capture tool than anythi
 with, even with zero stacking.
 
 ---
+
+---
+
+## 6.5 Phase 1D — The interface it was designed to have
+
+Nine changes from the owner's walkthrough (§1.15). They keep the `T-3.x` prefix because they are
+the same app surface as Phase 1C, but they sit behind their own checkpoint: 1C is about a session
+*working*, and none of this changes whether it does.
+
+- [ ] **T-3.18** **Main screen rebuilt to the prototype.** `Start a session` as the single
+  full-intensity element, calibration banner below it, recent sessions, bottom strip of free space
+  / device temperature / moon phase.
+  The capability probe **moves to Settings** — it is a diagnostic and stops being the front door.
+  *Depends on:* a session list, which is T-6.1's job in Phase 4. Build the subset now: scan the
+  root, read each `session.json` for target, frame counts and integration. Thumbnails need a
+  stacked master (Phase 3), so `NO STACK` is the honest placeholder rather than a blank.
+  Moon phase is pure arithmetic and belongs beside `Astro.kt`; free space is
+  `SessionStore.freeBytes()`; device temperature is already on every frame record.
+  *Accept:* the main screen answers "what do I do now" and "what did I shoot" without scrolling.
+
+- [ ] **T-3.19** **Settings icon top-right**, on the main screen's status bar, per the prototype.
+  The capability probe lands behind it alongside the field log and the permission list.
+
+- [ ] **T-3.20** **Cut the explaining from Settings** (§1.15's rule). Delete the night-mode
+  justification and the camera-permission rationale outright. Keep only consequence the user
+  cannot deduce: the darks prompt lost with notifications, the equator fallback lost with location.
+  Storage becomes a path plus a change control, with no essay about uninstall.
+
+- [ ] **T-3.21** **Open the session folder from an icon**, on both the main screen and Settings,
+  and from the all-sessions list.
+  **The obstacle is real and shapes the design:** `Android/data/...` is unbrowsable on Android 11+,
+  so an app-private default *cannot* be opened by any file manager (§ "Where your images are",
+  measured 2026-08-18). A folder icon that does nothing is worse than none. So: when a SAF root
+  exists, open it through `DocumentsUI`; when it does not, the icon offers to pick one — which is
+  the moment the choice is actually motivated, and turns the constraint into the feature. Storage
+  stays app-private by default and silent about it (T-3.20).
+
+- [ ] **T-3.22** **Inner ring: the exposure in flight.** The outer ring becomes the prototype's
+  per-frame ticks (kept / rejected / remaining, leading-edge dot); a new inner ring sweeps 0→1 over
+  the current sub.
+  *Do not tick it from the capture thread.* Publish the exposure's start and duration on
+  `Progress` and let Compose animate locally — the engine is busy and the screen is usually off.
+  **The gap is not optional detail:** §1.14 measured ~3.4 s of readout and DNG write after a 7.4 s
+  sub, so an inner ring that only knows about exposure sits full and apparently stuck for a third
+  of every cycle. It needs a distinct second state (writing / analysing) or it will read as a hang.
+
+- [ ] **T-3.23** **Drop the camera-openability tests from the UI.** They answered OI-18 in
+  §1 — all five cameras open — and a resolved question does not need a permanent button. The code
+  stays as an adb diagnostic; only the panel goes.
+
+- [ ] **T-3.24** **Focus, from the preview and unambiguous.** `Find focus` becomes an action on the
+  preview itself rather than a separate card below it. Focus state gets three visibly distinct
+  answers — **stored**, **not stored**, **stale** — because "no focus" currently looks much like
+  "focus fine" and the fallback (hyperfocal at 0.0 dioptres, §1.11) is *soft but not ruined*, which
+  is exactly the failure a user will not notice until morning.
+
+- [ ] **T-3.25** **Setup: solve on its own, and show what the frames will look like.**
+  Remove the `Solve for an exposure` button — measuring the sky is the screen's purpose, so it
+  should not need asking twice.
+  Add a **predicted histogram** of the frames the current settings will produce. It is derivable
+  from what the solver already holds: sky background in ADU, the per-ISO noise model, and the white
+  level give the peak's position and width, and `clippingHeadroomStops` gives the distance to the
+  right wall. This is the one picture that makes "sky-limited" mean something to a beginner.
+  Add **exposure compensation**: a ± offset from the solved answer, with the histogram moving under
+  it and the cost named (`skyToReadVariance` falling, or headroom shrinking). The solver keeps
+  deciding; the user keeps the veto.
+
+- [ ] **T-3.26** **Session length as a continuous drag, not presets.**
+  Remove the 15 / 30 minute buttons. One slider: **leftmost is a single frame**, rightmost about
+  two hours, and the label tracks frames *and* wall-clock time as it moves.
+  The quantum is the frame, not the minute, so the slider's value is a frame count and the time is
+  derived — the reverse rounds to something that cannot be shot. Use the **measured cadence**, not
+  the exposure: §1.14 puts ~3.4 s of readout and write on top of every sub, so a 7.4 s sub costs
+  ~10.8 s of wall clock and a "30 minute" session built from exposure alone would run 45.
+  Darks are charged inside the budget as they already are (15% clamped to [10, 30]).
+
+**Checkpoint 1D:**
+> Someone who has never seen the app can open it, understand what to press, and start a session
+> without reading a paragraph. The three screens look like the prototype they were designed from.
 
 ## 7. Phase 2 — Registration & live gating
 
