@@ -324,6 +324,7 @@ class CaptureEngine(
             starCount = stars?.count ?: 0,
             medianEccentricity = stars?.medianEccentricity,
             saturated = stars?.saturatedFrame ?: false,
+            medianHfr = stars?.medianHfr,
             peakTiltDeg = environment.consumePeakTiltDeg(),
         )
         // A dark is not judged on its stars — it is supposed to have none. Running the gate over

@@ -70,6 +70,9 @@ fun ProbeScreen(
     resumable: SessionRecovery.Resumable? = null,
     onResumeSession: () -> Unit = {},
     onDiscardResumable: () -> Unit = {},
+    /** Where sessions are written, and whether that survives uninstall (T-0.5). */
+    sessionRoot: String = "",
+    onPickSessionRoot: () -> Unit = {},
 ) {
     LazyColumn(
         modifier = Modifier
@@ -98,6 +101,10 @@ fun ProbeScreen(
         }
 
         item { VerdictCard(qualification) }
+
+        if (sessionRoot.isNotBlank()) {
+            item { SessionRootCard(sessionRoot, onPickSessionRoot) }
+        }
 
         item { Eyebrow("Cameras") }
 
@@ -174,6 +181,30 @@ fun ProbeScreen(
         }
 
         item { Spacer(Modifier.height(40.dp)) }
+    }
+}
+
+/**
+ * T-0.5 — where sessions land, stated on the landing screen.
+ *
+ * It says so unprompted because the app-private default is *deleted when the app is uninstalled*,
+ * and a 2.4 GB session that vanished with a sideload is not a thing to discover afterwards. The
+ * wording carries the consequence rather than the path alone: "app-private storage" tells the
+ * user nothing they can act on, and neither does a `content://` URI.
+ */
+@Composable
+private fun SessionRootCard(sessionRoot: String, onPick: () -> Unit) {
+    val atRisk = sessionRoot.contains("uninstall")
+    Card {
+        Eyebrow("Session folder · FR-9.1")
+        Text(
+            sessionRoot,
+            fontFamily = NumFamily,
+            fontSize = 11.5.sp,
+            color = if (atRisk) Night.Warn else Night.Txt2,
+        )
+        Spacer(Modifier.height(9.dp))
+        QuietButton(if (atRisk) "Choose a folder" else "Change folder", onClick = onPick)
     }
 }
 

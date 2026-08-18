@@ -30,10 +30,11 @@ import com.starstacker.device.DeviceProfile
 import com.starstacker.device.ProfileJson
 import com.starstacker.device.Qualification
 import com.starstacker.diag.FieldDiagnostics
+import com.starstacker.diag.StorageBenchmark
 import com.starstacker.dng.DngReader
 import com.starstacker.focus.FocusSweep
 import com.starstacker.pointing.PointingFix
-import com.starstacker.session.FileSessionStore
+import com.starstacker.session.SessionRoot
 import com.starstacker.session.SessionRecovery
 import com.starstacker.session.SessionState
 import com.starstacker.pointing.PointingSource
@@ -89,12 +90,29 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission(),
     ) { granted -> locationGranted = granted }
 
+    /**
+     * T-0.5 — the session root picker. `OpenDocumentTree` returns null when the user backs out,
+     * which leaves the previous choice alone rather than clearing it.
+     */
+    private val pickSessionRoot = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri != null && SessionRoot.remember(this, uri)) {
+            sessionRootLabel = SessionRoot.describe(this)
+        }
+    }
+
+    /** Surfaced on the landing screen so the storage in use is stated, not assumed. */
+    private var sessionRootLabel by mutableStateOf("")
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         // Session screens are read on a tripod in the dark; keeping the screen alive is the
         // behaviour the whole app wants, so it starts here rather than being bolted on later.
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        sessionRootLabel = SessionRoot.describe(this)
 
         reprobe()
 
@@ -128,13 +146,28 @@ class MainActivity : ComponentActivity() {
         // is, exactly as the real Start button will be:
         //   adb shell am start -n com.starstacker/.MainActivity --es diag capture \
         //       --ei frames 8 --ei exposureMs 1000 --ei iso 800 --ei darks 2
+        // T-0.5's acceptance / OI-5. Needs no camera, so it sits ahead of the capture diagnostics:
+        //   adb shell am start -n com.starstacker/.MainActivity --es diag storage \
+        //       --ei files 200 --ei sizeMb 25
+        if (intent?.getStringExtra("diag") == "storage") {
+            val files = intent.getIntExtra("files", 200)
+            val sizeMb = intent.getIntExtra("sizeMb", 24)
+            lifecycleScope.launch(Dispatchers.IO) {
+                runCatching {
+                    StorageBenchmark.run(
+                        store = SessionRoot.store(this@MainActivity),
+                        files = files,
+                        bytesEach = sizeMb * 1024 * 1024,
+                    )
+                }.onFailure { Log.e("StorageBenchmark", "benchmark failed", it) }
+            }
+        }
+
         if (intent?.getStringExtra("diag") == "capture" && hasCameraPermission()) {
             // `--ez resume true` continues the most recent interrupted session instead of
             // starting a new one, which is T-3.13's acceptance driven from adb.
             val resuming = intent.getBooleanExtra("resume", false)
-            val store = FileSessionStore(
-                File(getExternalFilesDir(null) ?: filesDir, "sessions").apply { mkdirs() },
-            )
+            val store = SessionRoot.store(this)
             val interrupted = if (resuming) SessionRecovery.mostRecent(store) else null
             if (resuming && interrupted == null) {
                 Log.i(TAG, "resume asked for, but no interrupted session was found")
@@ -242,6 +275,8 @@ class MainActivity : ComponentActivity() {
                         onOpenabilityTest = { scope.launch { runOpenabilityTest(current) } },
                         onCaptureRaw = { exposureNs -> scope.launch { runCapture(exposureNs) } },
                         onOpenFraming = { screen = Screen.FRAMING },
+                        sessionRoot = sessionRootLabel,
+                        onPickSessionRoot = { pickSessionRoot.launch(SessionRoot.current(this@MainActivity)) },
                         resumable = resumable.takeIf { !CaptureService.running },
                         onResumeSession = {
                             val session = resumable ?: return@ProbeScreen
@@ -516,9 +551,7 @@ class MainActivity : ComponentActivity() {
         return stops
     }
 
-    private fun sessionStore() = FileSessionStore(
-        File(getExternalFilesDir(null) ?: filesDir, "sessions").apply { mkdirs() },
-    )
+    private fun sessionStore() = SessionRoot.store(this)
 
     private fun hasCameraPermission() =
         ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==

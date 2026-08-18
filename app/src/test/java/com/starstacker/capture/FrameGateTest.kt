@@ -73,6 +73,45 @@ class FrameGateTest {
         assertTrue(gate.accept(good().copy(peakTiltDeg = 0.3)).accepted)
     }
 
+    /**
+     * The regression from session `2026-08-18_0050`, which rejected 56 of 105 good frames.
+     *
+     * On a 4× binned plane the reference camera's stars are about one pixel across, and second
+     * moments over a blob that size are degenerate — the measured eccentricity was 0.855 where
+     * the real 0.375-pixel trail predicts about 0.13. A frame reporting HFR 1.0 and eccentricity
+     * 0.86 is not describing an elongated star; it is describing the pixel grid.
+     */
+    @Test
+    fun `eccentricity is not judged on stars too small to have a shape`() {
+        val gate = FrameGate()
+        settle(gate)
+
+        val verdict = gate.accept(good(stars = 194, ecc = 0.86).copy(medianHfr = 1.0))
+
+        assertTrue(verdict.accepted, "rejected an undersampled frame: ${verdict.detail}")
+    }
+
+    @Test
+    fun `eccentricity still rejects once the stars are large enough to measure`() {
+        val gate = FrameGate()
+        settle(gate)
+
+        val verdict = gate.accept(good(stars = 194, ecc = 0.86).copy(medianHfr = 2.4))
+
+        assertEquals(RejectReason.TRAILED, verdict.reason)
+    }
+
+    /** Null HFR is "not measured", which must not silently disable the check. */
+    @Test
+    fun `an unmeasured HFR leaves the eccentricity check in force`() {
+        val gate = FrameGate()
+        settle(gate)
+
+        val verdict = gate.accept(good(stars = 194, ecc = 0.86).copy(medianHfr = null))
+
+        assertEquals(RejectReason.TRAILED, verdict.reason)
+    }
+
     @Test
     fun `a clipped frame is its own diagnosis`() {
         val verdict = FrameGate().accept(

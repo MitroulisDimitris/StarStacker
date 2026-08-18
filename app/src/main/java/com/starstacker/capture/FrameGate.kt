@@ -27,6 +27,7 @@ class FrameGate(
     private val baselineWindow: Int = DEFAULT_BASELINE_WINDOW,
     private val minBaselineFrames: Int = DEFAULT_MIN_BASELINE_FRAMES,
     private val bumpThresholdDeg: Double = DEFAULT_BUMP_THRESHOLD_DEG,
+    private val minHfrForEccentricity: Double = DEFAULT_MIN_HFR_FOR_ECCENTRICITY,
 ) {
 
     /** What the gate needs to know about a frame. Everything else about it is irrelevant here. */
@@ -34,6 +35,12 @@ class FrameGate(
         val starCount: Int,
         val medianEccentricity: Double?,
         val saturated: Boolean,
+        /**
+         * Median half-flux radius in **analysis-plane pixels**, or null if unmeasured. Present
+         * only so the eccentricity check can tell whether the stars are large enough for their
+         * shape to mean anything — see [DEFAULT_MIN_HFR_FOR_ECCENTRICITY].
+         */
+        val medianHfr: Double? = null,
         /**
          * Peak angular movement of the phone during the exposure, degrees. Null if unmeasured.
          *
@@ -83,7 +90,10 @@ class FrameGate(
         }
 
         val eccentricity = metrics.medianEccentricity
-        if (eccentricity != null && metrics.starCount > 0 && eccentricity > maxEccentricity) {
+        val sampled = metrics.medianHfr?.let { it >= minHfrForEccentricity } ?: true
+        if (sampled && eccentricity != null && metrics.starCount > 0 &&
+            eccentricity > maxEccentricity
+        ) {
             // Trailing, not cloud: the stars are there and they are streaks. The remedy is a
             // shorter sub, which is the opposite of the advice a cloud diagnosis gives.
             return Verdict(
@@ -127,6 +137,26 @@ class FrameGate(
         /** Half the usual star count is cloud by any reasonable reading. */
         const val DEFAULT_STAR_COLLAPSE_FRACTION = 0.5
 
+        /**
+         * Below this median HFR (analysis-plane pixels) the eccentricity check is **skipped**,
+         * because a star that small has no measurable shape.
+         *
+         * Second moments over a one- or two-pixel blob are degenerate: put the flux across two
+         * adjacent pixels and the minor eigenvalue collapses towards zero, driving eccentricity
+         * towards 1 whatever the star actually looks like. The threshold is where a Gaussian is
+         * comfortably above Nyquist — HFR ≈ 1.18σ and FWHM = 2.355σ, so HFR 1.5 px is a FWHM of
+         * about 3 px.
+         *
+         * Session `2026-08-18_0050` is the case that found this. Analysis runs on a 4× binned
+         * plane, so one analysis pixel is 297 arcsec, and the real trail in a 7.4 s sub at the
+         * equator was 111 arcsec — **0.375 analysis pixels**, which predicts an eccentricity near
+         * 0.13. The measured median was 0.855 and all 56 otherwise-good frames were rejected as
+         * trailed. At f/1.88 the diffraction-limited star is about 1.3 µm across against an 8 µm
+         * analysis pixel: the pixel grid was being measured, not the star. The giveaway is that
+         * the same frames reported HFR 1.0 — nothing can be both 2:1 elongated and one pixel wide.
+         */
+        const val DEFAULT_MIN_HFR_FOR_ECCENTRICITY = 1.5
+
         const val DEFAULT_BASELINE_WINDOW = 15
 
         /**
@@ -137,17 +167,22 @@ class FrameGate(
         const val DEFAULT_MIN_BASELINE_FRAMES = 3
 
         /**
-         * Gross movement only, in degrees.
+         * Gross movement only, in degrees, measured by the gyroscope — see [DeviceEnvironment]
+         * for why it cannot be the accelerometer.
          *
-         * Set from measurement rather than intuition, and the measurement says something worth
-         * writing down: a phone lying **still** on a desk registers a few hundredths of a degree
-         * of apparent tilt from accelerometer noise, while the field motion that would actually
-         * trail a star is smaller still — 1.5 px at the reference camera's plate scale is 0.031°.
-         * The accelerometer therefore *cannot* see the motion that matters; it can only see a
-         * tripod being knocked. This threshold is set to catch that and nothing else, and the
-         * sub-pixel case belongs to registration residuals in Phase 2 (FR-7.2), which measure
-         * the frame rather than the phone.
+         * Bounded from both sides. Below, by what the instrument can actually resolve: integrated
+         * over a multi-second sub, MEMS gyro noise and residual zero-rate drift amount to a few
+         * hundredths of a degree, so a threshold near the trailing budget itself — 1.5 px at the
+         * reference camera's 74.2 arcsec/px is 0.031° — would sit in the noise and reject good
+         * frames, which is the failure this check has already caused once. Above, by the point a
+         * frame is genuinely spoiled rather than merely nudged.
+         *
+         * 0.5° is roughly 24 px of streak at the reference plate scale: unambiguously a knocked
+         * tripod, an order of magnitude clear of the noise floor, and far beyond anything a
+         * springy mount produces by ringing. Everything finer is left to registration residuals
+         * in Phase 2 (FR-7.2), which measure the frame rather than the phone and are the right
+         * instrument for sub-pixel motion.
          */
-        const val DEFAULT_BUMP_THRESHOLD_DEG = 1.0
+        const val DEFAULT_BUMP_THRESHOLD_DEG = 0.5
     }
 }

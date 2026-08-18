@@ -10,7 +10,7 @@ import android.hardware.SensorManager
 import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
-import kotlin.math.acos
+import kotlin.math.exp
 import kotlin.math.sqrt
 
 /**
@@ -22,30 +22,60 @@ import kotlin.math.sqrt
  * headroom for pacing. All of them are logged per frame — the one that turns out to correlate
  * with dark current is not known in advance, and a session log that recorded only the one we
  * guessed would be unable to answer the question later.
+ *
+ * ### The bump detector reads the gyroscope, and the reason is not a preference
+ *
+ * Only **rotation** moves a star field. Stars are at infinity, so translating the camera — even
+ * by a centimetre — shifts the image by nothing at all. An accelerometer cannot tell the two
+ * apart: it measures specific force, so a sideways nudge tips the apparent gravity vector
+ * exactly as a real tilt does, and at this scale 1° of apparent tilt is only 0.17 m/s².
+ *
+ * That is not a theoretical objection. Session `2026-08-18_0050`, phone on a tripod extension
+ * arm, rejected 49 of 105 frames on an accelerometer-derived tilt — and the frames it flagged
+ * hardest were the *sharpest* in the session: frame 8 was called a 7.85° movement, which at the
+ * reference camera's 74.2 arcsec/px would be a 382-pixel streak, while carrying 208 detected
+ * stars at HFR 0.925. Median HFR was 0.946 on the flagged frames against 1.057 on the rest, so
+ * the signal was not merely noisy, it was anti-correlated with the damage it claimed to find.
+ * The arm was translating, not rotating, and the accelerometer had no way to know.
+ *
+ * A gyroscope measures angular rate directly and is blind to translation, which is precisely the
+ * discrimination the check needs. Devices without one report null and the check is skipped.
  */
 class DeviceEnvironment(private val context: Context) : CaptureEngine.Environment, AutoCloseable {
 
     private val power = context.getSystemService(Context.POWER_SERVICE) as PowerManager
     private val sensors = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
-    private val accelerometer: Sensor? = sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-
-    /** Peak angular deviation of the gravity vector during the frame, degrees. */
-    @Volatile
-    private var peakTiltDeg = 0.0
+    private val gyroscope: Sensor? = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
 
     /**
-     * The smoothed gravity direction. **A direction, not a magnitude** — and that distinction is
-     * the whole measurement.
-     *
-     * Rotating a phone barely changes `|a|`: gravity is still 9.81 m/s² whichever way the phone
-     * faces. So a check on the magnitude is nearly blind to tilt, which is precisely the motion
-     * that moves the star field, while being sensitive to linear shake, which largely does not.
-     * Measured 2026-08-17: a phone lying still on a desk produced magnitude deviations of
-     * 0.4 m/s², enough to trip a magnitude threshold on frame after frame while the phone had not
-     * moved at all. The angle between the current gravity vector and the smoothed one is the
-     * quantity that actually corresponds to the field moving.
+     * Guards [accumulated], [bias] and [peakRad], which the sensor thread writes and the capture
+     * thread reads. A three-element array cannot be made volatile the way a single double could.
      */
-    private var steadyGravity: DoubleArray? = null
+    private val lock = Any()
+
+    /**
+     * Rotation accumulated since the last [consumePeakTiltDeg], radians, as a small-angle vector.
+     *
+     * Summing rate × dt componentwise ignores that rotations do not commute. At the magnitudes
+     * that matter here — a degree is 0.017 rad — the error from that is far below the sensor's
+     * own noise, and the alternative (carrying a quaternion) would buy nothing.
+     */
+    private val accumulated = DoubleArray(3)
+
+    /** Largest excursion from the frame's starting orientation, radians. */
+    private var peakRad = 0.0
+
+    /**
+     * Slowly-tracked zero-rate offset, rad/s. Every MEMS gyro reads non-zero while perfectly
+     * still, and over a 7.4 s sub even 0.05°/s of offset would integrate to 0.37° of phantom
+     * rotation — enough to trip the gate on its own. Subtracting a slow average of the rate
+     * removes it. The time constant is long ([BIAS_TAU_SECONDS]) so that a real bump, which is
+     * over in well under a second, cannot be absorbed into the definition of "still".
+     */
+    private val bias = DoubleArray(3)
+    private var biasReady = false
+    private var lastEventNs = 0L
+    private var settlingUntilNs = 0L
 
     private var lastHeadroomAtMs = 0L
     private var lastHeadroom: Double? = null
@@ -55,38 +85,52 @@ class DeviceEnvironment(private val context: Context) : CaptureEngine.Environmen
             val x = event.values[0].toDouble()
             val y = event.values[1].toDouble()
             val z = event.values[2].toDouble()
-            val magnitude = sqrt(x * x + y * y + z * z)
-            if (magnitude < 1e-3) return
+            val now = event.timestamp
 
-            val steady = steadyGravity
-            if (steady == null) {
-                steadyGravity = doubleArrayOf(x, y, z)
-                return
+            synchronized(lock) {
+                if (!biasReady) {
+                    bias[0] = x; bias[1] = y; bias[2] = z
+                    biasReady = true
+                    lastEventNs = now
+                    settlingUntilNs = now + SETTLE_NS
+                    return
+                }
+
+                val dt = (now - lastEventNs) / 1e9
+                lastEventNs = now
+                // A dropped batch or a clock step would otherwise integrate as a huge rotation.
+                if (dt <= 0.0 || dt > MAX_SAMPLE_GAP_SECONDS) return
+
+                val rx = x - bias[0]
+                val ry = y - bias[1]
+                val rz = z - bias[2]
+
+                accumulated[0] += rx * dt
+                accumulated[1] += ry * dt
+                accumulated[2] += rz * dt
+                val excursion = sqrt(
+                    accumulated[0] * accumulated[0] +
+                        accumulated[1] * accumulated[1] +
+                        accumulated[2] * accumulated[2],
+                )
+                if (excursion > peakRad) peakRad = excursion
+
+                // Rate-independent smoothing: the gyro is registered at GAME rate but delivery is
+                // not guaranteed to be even, and a per-sample weight would make the time constant
+                // depend on how fast samples happened to arrive.
+                val alpha = exp(-dt / BIAS_TAU_SECONDS)
+                bias[0] = bias[0] * alpha + x * (1 - alpha)
+                bias[1] = bias[1] * alpha + y * (1 - alpha)
+                bias[2] = bias[2] * alpha + z * (1 - alpha)
             }
-
-            val steadyMagnitude = sqrt(
-                steady[0] * steady[0] + steady[1] * steady[1] + steady[2] * steady[2],
-            )
-            if (steadyMagnitude > 1e-3) {
-                val cosine = (x * steady[0] + y * steady[1] + z * steady[2]) /
-                    (magnitude * steadyMagnitude)
-                val tilt = Math.toDegrees(acos(cosine.coerceIn(-1.0, 1.0)))
-                if (tilt > peakTiltDeg) peakTiltDeg = tilt
-            }
-
-            // Track slowly, so a genuine bump stands out but a tripod settling over a minute
-            // does not become the new definition of "still".
-            steady[0] = steady[0] * SMOOTHING + x * (1 - SMOOTHING)
-            steady[1] = steady[1] * SMOOTHING + y * (1 - SMOOTHING)
-            steady[2] = steady[2] * SMOOTHING + z * (1 - SMOOTHING)
         }
 
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
     }
 
     init {
-        accelerometer?.let {
-            sensors.registerListener(listener, it, SensorManager.SENSOR_DELAY_NORMAL)
+        gyroscope?.let {
+            sensors.registerListener(listener, it, SensorManager.SENSOR_DELAY_GAME)
         }
     }
 
@@ -96,11 +140,20 @@ class DeviceEnvironment(private val context: Context) : CaptureEngine.Environmen
         batteryPercent = batteryPercent(),
     )
 
+    /**
+     * Peak rotation during the frame, degrees, and null when it was not measured — no gyroscope,
+     * or the bias estimate has not settled yet. Null means "unknown", and [FrameGate] skips the
+     * check rather than guessing; a check that cannot be made is better skipped than faked.
+     */
     override fun consumePeakTiltDeg(): Double? {
-        if (accelerometer == null) return null
-        val peak = peakTiltDeg
-        peakTiltDeg = 0.0
-        return peak
+        if (gyroscope == null) return null
+        synchronized(lock) {
+            if (!biasReady || lastEventNs < settlingUntilNs) return null
+            val peak = Math.toDegrees(peakRad)
+            peakRad = 0.0
+            accumulated[0] = 0.0; accumulated[1] = 0.0; accumulated[2] = 0.0
+            return peak
+        }
     }
 
     override fun nowEpochMs(): Long = System.currentTimeMillis()
@@ -142,8 +195,18 @@ class DeviceEnvironment(private val context: Context) : CaptureEngine.Environmen
     }
 
     private companion object {
-        /** Per-sample weight on the existing estimate. At ~5 Hz this is a few seconds of memory. */
-        const val SMOOTHING = 0.98
+        /** Time constant of the zero-rate estimate. Long against a bump, short against drift. */
+        const val BIAS_TAU_SECONDS = 30.0
+
+        /** How long the bias estimate is given to converge before its output is trusted. */
+        const val SETTLE_NS = 3_000_000_000L
+
+        /**
+         * Samples further apart than this are treated as a break in the record rather than a
+         * long interval to integrate over — the phone suspending the sensor for a second would
+         * otherwise appear as one enormous rotation.
+         */
+        const val MAX_SAMPLE_GAP_SECONDS = 0.5
 
         const val HEADROOM_INTERVAL_MS = 10_000L
         const val HEADROOM_FORECAST_SECONDS = 30

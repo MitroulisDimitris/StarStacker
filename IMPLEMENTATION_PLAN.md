@@ -76,10 +76,10 @@ Two consequences to accept deliberately:
 
 | Phase | Tasks | Done | Status |
 |---|---|---|---|
-| 0 | 9 | 1 | in progress — skeleton builds and installs; shared components extracted (T-0.2 part) |
+| 0 | 9 | 1 | in progress — skeleton builds and installs; shared components extracted (T-0.2 part); SAF storage written but unmeasured (T-0.5, OI-5) |
 | 1A | 6 | 6 | **complete** — probe, qualification, camera lifecycle, first light, DNG reader |
 | 1B | 7 | 2 | **hardware-verified except what needs darkness** — see §5 and §1.7 |
-| 1C | 14 | 1 | **field-ready** — framing → setup → solve → start → live → darks → complete, with resume offered on launch and focus settable by hand. Outstanding: T-3.14 preview stack, and T-0.5's SAF root |
+| 1C | 15 | 1 | **field-ready** — framing → setup → solve → start → live → darks → complete, with resume offered on launch and focus settable by hand. Outstanding: T-3.14 preview stack, T-3.16 DNG metadata, and T-0.5's benchmark (OI-5) |
 | 2+ | outlined | 0 | not started |
 
 > **Phase 1B has now met every acceptance that does not require a night sky** (2026-08-17). The
@@ -414,6 +414,51 @@ worth stating because it is the difference between abandoning a clear night and 
 
 ---
 
+## 1.12 The DNGs carry sensor truth and no session truth — 2026-08-18
+
+The owner noticed the frames are thin on metadata. They are, and the shape of the gap is precise:
+**everything `DngCreator` derives for itself is present; everything it has to be told is absent.**
+
+`SequenceSession.writeDng` constructs `DngCreator(chars, result)` and calls `writeImage`. That
+yields the sensor's own description of the frame — geometry, `CFAPattern`, black and white levels,
+`ActiveArea`, exposure, ISO, colour matrices, noise profile, make and model (§1.6 measured the
+ones the reader depends on). What it does not yield is any statement of *which session this frame
+belongs to and what was happening when it was taken*.
+
+`DngCreator` exposes exactly four metadata levers, and the app currently uses **none** of them:
+
+| Lever | Tag written | Status |
+|---|---|---|
+| `setDescription(String)` | `ImageDescription` (270) — free text | Never called |
+| `setLocation(Location)` | GPS IFD | Never called |
+| `setOrientation(int)` | `Orientation` (274) | Parameter exists on `writeDng`; `CaptureEngine` passes nothing |
+| `setThumbnail(...)` | Embedded preview | Never called |
+
+Everything else it computes from `CameraCharacteristics` and the `TotalCaptureResult` and will not
+let you override. **There is no API for arbitrary TIFF tags**, so anything astro-specific — frame
+kind, sensor temperature, sky background, HFR, star count, target, gate verdict — has nowhere
+structured to go. DNG has no tag for most of them in the first place; FITS is the format with that
+vocabulary, and these are not FITS files.
+
+**Why this has not hurt yet, and when it will.** D-5 makes `session.json` the source of truth, and
+it already holds every one of those numbers per frame. Inside this app's own pipeline the DNGs do
+not need to be self-describing. The moment they leave — handed to someone else, imported into
+Siril or PixInsight next winter, or simply separated from their folder — a frame that cannot say
+what it is becomes a frame you have to guess about. `lights/` and `darks/` convey frame kind by
+directory alone, which survives exactly as long as nobody moves a file.
+
+**The fix is cheap and it is the free-text one.** `setDescription` takes a string; a compact
+`key=value` record costs nothing per frame, is read by exiftool, Siril and PixInsight alike, and
+carries the whole per-frame log entry. Injecting real TIFF tags instead would mean rewriting all
+**3072 `StripOffsets`** when the IFD grows (§1.6: `RowsPerStrip` is 1) — a genuine risk of
+corrupting the pixel data to gain a tidier place to put text. Not worth it.
+
+**Not yet audited:** no exhaustive tag dump of a real capture exists. §1.6 listed the tags the
+reader consumes, not everything present. T-3.16 starts by dumping one, because this document's
+rule is that measured beats assumed.
+
+---
+
 ## 2. Decisions
 
 | ID | Decision | Rationale | Reversal cost |
@@ -476,12 +521,40 @@ work has to be redone.
   `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CAMERA`. Rationale UI in plain language; denial is
   survivable (location denied → pointing unavailable → exposure engine falls back, and says so).
   *Accept:* cold install → grant flow → no crash on any denial combination.
-- [ ] **T-0.5** Storage layer over SAF — `ACTION_OPEN_DOCUMENT_TREE`, persisted URI permission,
+- [~] **T-0.5** Storage layer over SAF — `ACTION_OPEN_DOCUMENT_TREE`, persisted URI permission,
   a `SessionStore` interface that hides `DocumentsContract` behind create/open/write/list.
   **Do not use `DocumentFile`** for per-frame work (`findFile()` is O(n) per call and will crawl at
   150 frames). Cache child document IDs; write through `ParcelFileDescriptor`.
   *Accept:* write 200 × 25 MB files into a subtree; measure and record throughput and the cost of
   a full-root scan. Numbers go in **OI-5**.
+  **Written 2026-08-18** — `session/SafSessionStore.kt` over `DocumentsContract` with no
+  `DocumentFile` anywhere: each subdirectory's document URI is resolved once at open/create and
+  cached, so writing a frame is `createDocument` + `openFileDescriptor` and enumerates nothing.
+  Frames go through `ParcelFileDescriptor.AutoCloseOutputStream` rather than `openOutputStream`,
+  because a provider may satisfy the latter with a **pipe** — a whole extra copy of every 24 MiB
+  sub, paid at capture cadence.
+  `session/SessionRoot.kt` holds the choice: it takes the grant persistably, **re-checks it on
+  every resolve** (a grant can be revoked from settings and an SD card can be removed; finding out
+  at frame 1 of an unattended session is finding out too late) and falls back to the app-private
+  store when it is gone. The fallback stays deliberately — someone under a clear sky who has not
+  picked a folder should still be able to press start.
+  The landing screen now **states where frames will go and whether that survives uninstall**,
+  because the app-private default is deleted on uninstall and a 2.4 GB session that vanished with
+  a sideload is not a thing to learn afterwards.
+  **Two honest gaps.** SAF has no atomic replace, so `writeAtomically` cannot be atomic the way
+  the file store's `rename` is; it is arranged so one of the two documents is always complete and
+  `readText` falls back to the temporary, which is the guarantee that actually matters. And
+  `freeBytes` is an estimate — a tree URI is not a path, so `fstatvfs` on the root is tried and
+  the primary volume is the fallback, which is wrong if the user picks an SD card. It feeds a
+  warning, not a decision.
+  **Remaining:** the measurement. `diag/StorageBenchmark.kt` is written and adb-driven
+  (`--es diag storage --ei files 200 --ei sizeMb 25`); it has never run, so **OI-5 is still open**
+  and the box stays `[~]` per §0. Also untested on hardware: whether this provider preserves a
+  display name whose extension matches the MIME type — if it rewrites one, the name in
+  `session.json` and the name on disk diverge and the log loses the frame.
+  **Out of scope, and it will bite at Phase 3:** `DngReader` reads through `RandomAccessFile` and
+  therefore cannot open a frame in a SAF tree at all. Readback needs a seekable source over a
+  `ParcelFileDescriptor` before stacking can consume a SAF-rooted session (T-5.x).
 - [ ] **T-0.6** Diagnostics: rolling file log with crash handler, plus an in-app log viewer with
   share. Unattended 45-minute sessions fail at 2 a.m.; without this you get nothing back.
   *Accept:* force a crash mid-session, recover the log from the device.
@@ -889,6 +962,33 @@ Goal: FR-13/M3 — *press start, walk away, come back to a folder of good subs.*
 - [ ] **T-3.14** Live downsampled preview stack (FR-7.4) — translation-only running average until
   Phase 2 supplies real transforms. Depth per **OI-13**.
 - [~] **T-3.15** Completion screen (FR-9.4): result summary, full session path, open/share.
+- [ ] **T-3.16** **Make the DNGs self-describing** (§1.12). A frame separated from its
+  `session.json` currently cannot say which session it belongs to, whether it is a light or a
+  dark, or what the sensor temperature was.
+  1. **Dump a real frame first** — `exiftool` over a capture from `lights/`, recorded in §1.6 as
+     a full tag list. Everything below is written against what is actually in the file, not
+     against what `DngCreator` is assumed to write.
+  2. **`setDescription`** with a compact `key=value` record: session id, frame index, frame kind,
+     applied ISO and exposure, battery temperature, thermal headroom, focus dioptres, sky
+     background ADU, HFR, star count, median eccentricity, and the gate verdict with its reason.
+     One line, stable key order, so it diffs and greps.
+  3. **`setOrientation`** — plumb the existing `writeDng` parameter through `CaptureEngine`
+     instead of leaving it null.
+  4. **`setLocation`** when a fix exists. The same fix the trailing limit wants (`PointingFix`),
+     and the one a desktop plate-solve will ask for. Absent on the 2026-08-18 session, so this
+     must stay optional and silent when there is no fix rather than blocking the write.
+  5. **Do not write custom TIFF tags.** §1.12: growing IFD0 shifts all 3072 `StripOffsets`, and
+     the reward is cosmetic.
+  *Accept:* `exiftool` on any frame from a completed session prints the session id, the frame
+  kind and the frame's own measured numbers; a `darks/` frame is distinguishable from a `lights/`
+  frame **by its metadata alone**, with the file moved out of its directory. `DngReader` still
+  parses every frame — the description must not disturb the strip layout — and the per-frame write
+  budget is unchanged within noise.
+  *Deferred:* `setThumbnail` would make sessions browsable in a file manager and in Lightroom,
+  where they currently show as blank. It needs a downsampled image at write time, and the binned
+  analysis plane does not exist yet at that point in the ordering (it is computed after the bytes
+  are down, deliberately — §6). The secondary YUV stream is the candidate source. Worth doing,
+  not worth reordering the write path for.
 
 **Checkpoint 1C — the one that matters:**
 > A 45-minute unattended session on a tripod completes with the screen off, without thermal

@@ -15,7 +15,8 @@ import android.util.Log
 import com.starstacker.MainActivity
 import com.starstacker.camera.CameraAccess
 import com.starstacker.exposure.ExposureSolver
-import com.starstacker.session.FileSessionStore
+import com.starstacker.session.SessionRoot
+import com.starstacker.session.SessionStore
 import com.starstacker.session.SessionInfo
 import com.starstacker.session.SessionLayout
 import com.starstacker.session.SessionLog
@@ -92,8 +93,9 @@ class CaptureService : Service() {
     private fun begin(request: CaptureEngine.Request, label: String, resumeFolder: String?) {
         if (job?.isActive == true) return
 
-        val root = File(getExternalFilesDir(null) ?: filesDir, "sessions").apply { mkdirs() }
-        val store = FileSessionStore(root)
+        // T-0.5: the user's chosen folder when there is one, app-private storage otherwise. The
+        // engine never learns which — that is the point of SessionStore.
+        val store = SessionRoot.store(this)
 
         // T-3.13: resuming fills the *same* folder from the frame after the last one logged, and
         // does not re-derive the exposure or re-run focus — the value of resuming is that those
@@ -126,7 +128,7 @@ class CaptureService : Service() {
     }
 
     private fun newSession(
-        store: FileSessionStore,
+        store: SessionStore,
         request: CaptureEngine.Request,
         label: String,
     ): SessionWriter {
