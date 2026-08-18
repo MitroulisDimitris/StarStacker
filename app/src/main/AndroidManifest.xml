@@ -27,6 +27,7 @@
     <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false" />
 
     <application
+        android:name=".StarStackerApp"
         android:allowBackup="false"
         android:icon="@android:drawable/ic_menu_camera"
         android:label="@string/app_name"

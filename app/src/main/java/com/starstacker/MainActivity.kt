@@ -30,6 +30,7 @@ import com.starstacker.device.DeviceProfile
 import com.starstacker.device.ProfileJson
 import com.starstacker.device.Qualification
 import com.starstacker.diag.FieldDiagnostics
+import com.starstacker.diag.FieldLog
 import com.starstacker.diag.StorageBenchmark
 import com.starstacker.dng.DngReader
 import com.starstacker.focus.FocusSweep
@@ -101,11 +102,16 @@ class MainActivity : ComponentActivity() {
     ) { uri ->
         if (uri != null && SessionRoot.remember(this, uri)) {
             sessionRootLabel = SessionRoot.describe(this)
+        logSize = FieldLog.sizeBytes()
         }
     }
 
     /** Surfaced on the landing screen so the storage in use is stated, not assumed. */
     private var sessionRootLabel by mutableStateOf("")
+
+    /** T-0.6 — pulled on demand rather than polled; the file is the source of truth. */
+    private var logTail by mutableStateOf<List<String>>(emptyList())
+    private var logSize by mutableStateOf(0L)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -151,6 +157,12 @@ class MainActivity : ComponentActivity() {
         // T-0.5's acceptance / OI-5. Needs no camera, so it sits ahead of the capture diagnostics:
         //   adb shell am start -n com.starstacker/.MainActivity --es diag storage \
         //       --ei files 200 --ei sizeMb 25
+        // T-0.6's acceptance: force a crash and recover the log from the device.
+        //   adb shell am start -n com.starstacker/.MainActivity --es diag crash
+        // Deliberately on a background thread — the uncaught-exception handler has to work for
+        // the capture thread, which is where a session actually dies, not just the main one.
+        if (intent?.getStringExtra("diag") == "crash") crashForDiagnostics()
+
         if (intent?.getStringExtra("diag") == "storage") {
             val files = intent.getIntExtra("files", 200)
             val sizeMb = intent.getIntExtra("sizeMb", 24)
@@ -284,6 +296,13 @@ class MainActivity : ComponentActivity() {
                         onOpenFraming = { screen = Screen.FRAMING },
                         sessionRoot = sessionRootLabel,
                         onPickSessionRoot = { pickSessionRoot.launch(SessionRoot.current(this@MainActivity)) },
+                        logTail = logTail,
+                        logSizeBytes = logSize,
+                        onRefreshLog = {
+                            logTail = FieldLog.tail()
+                            logSize = FieldLog.sizeBytes()
+                        },
+                        onShareLog = { shareFieldLog() },
                         resumable = resumable.takeIf { !CaptureService.running },
                         onResumeSession = {
                             val session = resumable ?: return@ProbeScreen
@@ -575,6 +594,36 @@ class MainActivity : ComponentActivity() {
         fieldRotationArcsecPerSec = getStringExtra("fieldRot")?.toDoubleOrNull(),
         compassAccuracy = getStringExtra("compass"),
     ).takeIf { !it.isEmpty }
+
+    /**
+     * The crash diagnostic has to be reachable while a session is *already running*, which is the
+     * only state T-0.6's acceptance cares about — and by then the Activity exists, so a second
+     * `am start` never re-enters `onCreate`.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.getStringExtra("diag") == "crash") crashForDiagnostics()
+    }
+
+    private fun crashForDiagnostics() {
+        FieldLog.write("W", TAG, "diag crash requested - about to throw on a worker thread")
+        lifecycleScope.launch(Dispatchers.IO) {
+            error("deliberate T-0.6 crash from the capture-side thread")
+        }
+    }
+
+    /** T-0.6's other half: a log nobody can send is a log nobody reads. */
+    private fun shareFieldLog() {
+        val file = FieldLog.currentFile() ?: return
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        val share = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, "StarStacker field log")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(share, "Share field log"))
+    }
 
     private fun hasCameraPermission() =
         ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==

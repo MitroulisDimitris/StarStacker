@@ -76,7 +76,7 @@ Two consequences to accept deliberately:
 
 | Phase | Tasks | Done | Status |
 |---|---|---|---|
-| 0 | 9 | 1 | in progress — skeleton builds and installs; shared components extracted (T-0.2 part); SAF storage written but unmeasured (T-0.5, OI-5) |
+| 0 | 9 | 1 | in progress — skeleton builds and installs; shared components extracted (T-0.2 part); SAF storage written but unmeasured (T-0.5, OI-5); field log and crash handler demonstrated (T-0.6) |
 | 1A | 6 | 6 | **complete** — probe, qualification, camera lifecycle, first light, DNG reader |
 | 1B | 7 | 2 | **hardware-verified except what needs darkness** — see §5 and §1.7 |
 | 1C | 16 | 1 | **field-ready** — framing → setup → solve → start → live → darks → complete, with resume offered on launch and focus settable by hand. Outstanding: T-3.14 preview stack, T-3.16 DNG metadata, and T-0.5's benchmark (OI-5) |
@@ -661,9 +661,29 @@ work has to be redone.
   **Out of scope, and it will bite at Phase 3:** `DngReader` reads through `RandomAccessFile` and
   therefore cannot open a frame in a SAF tree at all. Readback needs a seekable source over a
   `ParcelFileDescriptor` before stacking can consume a SAF-rooted session (T-5.x).
-- [ ] **T-0.6** Diagnostics: rolling file log with crash handler, plus an in-app log viewer with
+- [~] **T-0.6** Diagnostics: rolling file log with crash handler, plus an in-app log viewer with
   share. Unattended 45-minute sessions fail at 2 a.m.; without this you get nothing back.
   *Accept:* force a crash mid-session, recover the log from the device.
+  **Done 2026-08-18, acceptance demonstrated.** A session was crashed at **frame 21** on a worker
+  thread; the process died and the log was recovered from the device carrying both the stack trace
+  and the frames leading up to it, rotation measurements included.
+  **`diag/FieldLog.kt` writes from three sources, because each misses what the others catch.** A
+  `logcat` tee filtered to this process picks up every existing `Log.i/w/e` call with no call site
+  touched — and the runtime's own `FATAL EXCEPTION`, which the framework writes and which passes
+  through no handler of ours. `write()` covers deliberate entries. An uncaught-exception handler
+  writes the trace *directly and flushed* before delegating, because the tee is a pipe between
+  processes and a crash can outrun it. Reading one's own logs needs no permission; an app has been
+  able to read exactly its own process since Android 4.1.
+  Two files of 1 MiB. Measured ~6 KB/min with a session running, so a 45-minute run lands near
+  270 KB and the rolled file survives a crash that restarts the app.
+  **The Application class exists solely for this.** Starting the log from an Activity would leave
+  the window between process start and `onCreate` uncovered — which is exactly where a startup
+  crash happens, and a crash log blind to startup crashes is missing the case it can least
+  reproduce afterwards.
+  **Remaining:** the viewer and its share button compile and are wired to the landing screen, but
+  no human has tapped them; only the file half is demonstrated. Worth knowing for the field: the
+  `--es diag crash` trigger needs `--activity-single-top`, since `am start` on a task-root
+  activity otherwise just brings the task forward without delivering the intent.
 - [ ] **T-0.7** `AppContainer`, dispatchers, and a `Clock`/`SensorSource`/`CameraSource` seam so
   logic is testable without hardware.
 - [~] **T-0.8** Device profile store: JSON in app-private storage, versioned schema, export via
@@ -1146,6 +1166,12 @@ Goal: FR-13/M3 — *press start, walk away, come back to a folder of good subs.*
   **Remaining:** the producer. Nothing has yet confirmed that a fix taken from the *real* compass
   on the setup screen arrives non-null — every session so far predates this, and `PointingFix`
   yields a null declination unless magnetic declination, latitude and azimuth are all present.
+
+> **The export half of Checkpoint 1C is met (owner-verified, 2026-08-18): the frames stack
+> correctly in DSS.** That closes the largest open question under everything above — the DNGs this
+> app writes are consumable by desktop tooling as they are, so nothing built on top of them is
+> resting on an unverified format assumption. What the checkpoint still wants is the *session*:
+> 45 minutes unattended, with darks, screen off.
 
 **Checkpoint 1C — the one that matters:**
 > A 45-minute unattended session on a tripod completes with the screen off, without thermal

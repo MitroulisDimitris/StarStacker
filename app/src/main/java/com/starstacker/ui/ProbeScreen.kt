@@ -25,6 +25,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -73,6 +76,11 @@ fun ProbeScreen(
     /** Where sessions are written, and whether that survives uninstall (T-0.5). */
     sessionRoot: String = "",
     onPickSessionRoot: () -> Unit = {},
+    /** T-0.6 — the last lines of the field log, newest first, and a way to send them. */
+    logTail: List<String> = emptyList(),
+    logSizeBytes: Long = 0L,
+    onShareLog: () -> Unit = {},
+    onRefreshLog: () -> Unit = {},
 ) {
     LazyColumn(
         modifier = Modifier
@@ -105,6 +113,8 @@ fun ProbeScreen(
         if (sessionRoot.isNotBlank()) {
             item { SessionRootCard(sessionRoot, onPickSessionRoot) }
         }
+
+        item { DiagnosticsLogCard(logTail, logSizeBytes, onShareLog, onRefreshLog) }
 
         item { Eyebrow("Cameras") }
 
@@ -205,6 +215,66 @@ private fun SessionRootCard(sessionRoot: String, onPick: () -> Unit) {
         )
         Spacer(Modifier.height(9.dp))
         QuietButton(if (atRisk) "Choose a folder" else "Change folder", onClick = onPick)
+    }
+}
+
+/**
+ * T-0.6's viewer. Deliberately on the landing screen rather than behind a settings page: it is
+ * read the morning after a session that went wrong, by someone who does not yet know what to look
+ * for, and a diagnostic nobody can find is a diagnostic nobody uses.
+ */
+@Composable
+private fun DiagnosticsLogCard(
+    tail: List<String>,
+    sizeBytes: Long,
+    onShare: () -> Unit,
+    onRefresh: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Card {
+        Eyebrow("Field log - T-0.6")
+        Text(
+            if (sizeBytes > 0) {
+                "%.1f KB on disk - survives the session, the app being killed, and a crash"
+                    .format(sizeBytes / 1024.0)
+            } else {
+                "empty"
+            },
+            fontFamily = NumFamily,
+            fontSize = 11.sp,
+            color = Night.Txt3,
+        )
+        if (expanded && tail.isNotEmpty()) {
+            Spacer(Modifier.height(9.dp))
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 240.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                tail.forEach { line ->
+                    Text(
+                        line,
+                        fontFamily = NumFamily,
+                        fontSize = 9.sp,
+                        lineHeight = 12.sp,
+                        color = if (line.contains(" E/") || line.contains("CRASH")) {
+                            Night.Warn
+                        } else {
+                            Night.Txt3
+                        },
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(9.dp))
+        ButtonRow {
+            QuietButton(if (expanded) "Hide" else "Show recent") {
+                if (!expanded) onRefresh()
+                expanded = !expanded
+            }
+            QuietButton("Share log", onClick = onShare)
+        }
     }
 }
 
