@@ -20,6 +20,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -161,7 +165,13 @@ private fun TopBar(onOpenSettings: () -> Unit) {
     }
 }
 
-/** T-3.21's first half — the same affordance appears in Settings and on the sessions list. */
+/**
+ * T-3.21's first half — the same affordance appears in Settings and on the sessions list.
+ *
+ * **Drawn, not a glyph.** The first version used `U+1F5C0`, which this device's font does not
+ * carry: it rendered as a sliver of vertical tofu. A shape drawn from two rectangles cannot fail
+ * that way and needs no icon dependency, which this app does not have.
+ */
 @Composable
 private fun FolderButton(onClick: () -> Unit) {
     Box(
@@ -171,7 +181,24 @@ private fun FolderButton(onClick: () -> Unit) {
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text("🗀", fontSize = 14.sp, color = Night.Txt2)
+        Canvas(Modifier.size(16.dp)) {
+            val w = size.width
+            val h = size.height
+            val stroke = Stroke(width = w * 0.09f)
+            // The tab, then the body — the two strokes a folder is legible from.
+            drawLine(
+                color = Night.Txt2,
+                start = Offset(w * 0.08f, h * 0.24f),
+                end = Offset(w * 0.44f, h * 0.24f),
+                strokeWidth = w * 0.11f,
+            )
+            drawRect(
+                color = Night.Txt2,
+                topLeft = Offset(w * 0.08f, h * 0.32f),
+                size = Size(w * 0.84f, h * 0.46f),
+                style = stroke,
+            )
+        }
     }
 }
 

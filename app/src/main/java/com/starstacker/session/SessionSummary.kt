@@ -55,6 +55,7 @@ data class SessionSummary(
 
     companion object {
         private val DATE = SimpleDateFormat("d MMM", Locale.getDefault())
+        private val TIME = SimpleDateFormat("HH:mm", Locale.getDefault())
 
         fun formatDuration(seconds: Double): String {
             val total = seconds.toLong()
@@ -70,9 +71,14 @@ data class SessionSummary(
 
         fun of(folderName: String, log: SessionLog): SessionSummary = SessionSummary(
             folderName = folderName,
-            // The folder is `<date>_<time>_<label>`; the label is the only name a session has
-            // until targets become a feature of their own.
-            label = folderName.substringAfterLast('_').replaceFirstChar { it.uppercase() },
+            // The folder is `<date>_<time>_<label>`, and the label is "session" for every real
+            // one — measured on device, where two rows both read "Session" and named nothing.
+            // Until targets are a feature, the start time is the only thing that distinguishes
+            // two nights' work, so it is what the row is called.
+            label = folderName.substringAfterLast('_')
+                .takeIf { it.isNotBlank() && !it.equals("session", ignoreCase = true) }
+                ?.replaceFirstChar { it.uppercase() }
+                ?: TIME.format(Date(log.info.startedAtEpochMs)),
             startedAtEpochMs = log.info.startedAtEpochMs,
             lights = log.lights.size,
             accepted = log.accepted.size,

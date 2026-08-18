@@ -10,6 +10,9 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.ui.Modifier
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -395,6 +398,10 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                // Android draws edge-to-edge, so without this every screen's first row sits under
+                // the clock and battery. Applied once here rather than per screen — measured on
+                // device: the main screen's title and the settings gear were both occluded.
+                Box(Modifier.systemBarsPadding()) {
                 when (screen) {
                     Screen.MAIN -> MainScreen(
                         readiness = buildString {
@@ -607,6 +614,7 @@ class MainActivity : ComponentActivity() {
                         exportedPath = exportedPath,
                         onBack = { nav = nav.pop() },
                     )
+                }
                 }
             }
         }

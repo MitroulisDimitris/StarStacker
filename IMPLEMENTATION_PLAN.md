@@ -81,7 +81,7 @@ Two consequences to accept deliberately:
 | 1A | 6 | 6 | **complete** — probe, qualification, camera lifecycle, first light, DNG reader |
 | 1B | 7 | 2 | **hardware-verified except what needs darkness** — see §5 and §1.7 |
 | 1C | 16 | 1 | **field-ready** — framing → setup → solve → start → live → darks → complete, with resume offered on launch and focus settable by hand. Outstanding: T-3.14 preview stack, T-3.16 DNG metadata, and T-0.5's benchmark (OI-5) |
-| 1D | 9 | 0 | planned 2026-08-18 from the walkthrough (§1.15); T-3.18/19/20 built and T-3.21 mostly, none yet seen on a device |
+| 1D | 9 | 0 | planned 2026-08-18 from the walkthrough (§1.15); T-3.18/19/20 built and photographed, T-3.21 mostly |
 | 2+ | outlined | 0 | not started |
 
 > **Phase 1B has now met every acceptance that does not require a night sky** (2026-08-17). The
@@ -1366,15 +1366,24 @@ the same app surface as Phase 1C, but they sit behind their own checkpoint: 1C i
   badge states where a session got to (`Captured`, `Unfinished`) rather than the prototype's
   `Stack now`, which is an *action* and cannot be one until T-5.x. A badge that does nothing would
   be the same mistake as the folder button in T-3.21.
-  **Remaining:** never seen on a device — the phone was disconnected when it was finished, so this
-  is compiled and unit-tested but unphotographed. `All sessions · N` currently opens the folder;
-  the real list is T-6.1 in Phase 4.
+  **Seen on device 2026-08-18, and it found three defects a build cannot.** The top bar drew
+  *under* the system clock and battery — Android is edge-to-edge and nothing had ever applied an
+  inset, so **every screen** was affected; the fix is one `systemBarsPadding()` at the
+  `when (screen)` rather than per screen. The folder icon used `U+1F5C0`, which this font does not
+  carry, and rendered as a sliver of vertical tofu — it is now **drawn from two strokes**, which
+  cannot fail that way. And both session rows read `Session`, because the folder suffix is
+  `_session` for every real one; rows are now named by start time (`01:23`, `00:50`), the only
+  thing distinguishing two nights until targets are a feature.
+  **Remaining:** `All sessions · N` opens the folder as a stopgap; the real list is T-6.1.
+  **The glyph lesson is now twice-learned** — the settings row's button widths in T-0.9, the folder
+  icon here. Anything not laid out or drawn explicitly should be assumed wrong until photographed.
 
 - [~] **T-3.19** **Settings icon top-right**, on the main screen's status bar, per the prototype.
   The capability probe lands behind it alongside the field log and the permission list.
   **Done 2026-08-18** — a gear in the main screen's top bar, and the only way in. A glyph in the
   app's own mono face rather than a vector asset: the icon set is not a dependency this app has.
-  **Remaining:** unphotographed, as T-3.18.
+  **Verified on device 2026-08-18** once the status-bar inset was applied — the gear was
+  occluded by the battery icon before it.
 
 - [~] **T-3.20** **Cut the explaining from Settings** (§1.15's rule). Delete the night-mode
   justification and the camera-permission rationale outright. Keep only consequence the user
