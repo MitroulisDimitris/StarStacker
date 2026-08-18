@@ -107,6 +107,16 @@ class CaptureEngine(
         val preview: IntArray? = null,
         val previewDepth: Int = 0,
         /**
+         * T-3.22 — when the frame now in flight began waiting, on the monotonic clock, and how
+         * long its exposure is.
+         *
+         * The engine publishes the *start* and lets Compose animate; ticking a progress value from
+         * the capture thread would burn a coroutine on a number nobody is looking at with the
+         * screen off. Null between frames and while paused.
+         */
+        val frameStartedElapsedNs: Long? = null,
+        val frameExposureNs: Long = 0L,
+        /**
          * The log as it stands. Carried here rather than fetched separately so the screen sees a
          * frame count and the frames it names from the same instant — [SessionLog] is immutable,
          * so this is a reference copy and costs nothing.
@@ -338,6 +348,13 @@ class CaptureEngine(
         index: Int,
         minGeneration: Int = 0,
     ) {
+        // Published before the wait, not after: this is the only moment the UI can learn that an
+        // exposure is running rather than finished.
+        _progress.value = _progress.value.copy(
+            frameStartedElapsedNs = android.os.SystemClock.elapsedRealtimeNanos(),
+            frameExposureNs = request.exposureNs,
+        )
+
         val frame = session.nextVerifiedFrame(
             timeoutFor(request.exposureNs), request.exposureNs, minGeneration,
         )

@@ -28,6 +28,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import com.starstacker.stars.PreviewStack
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
+import kotlinx.coroutines.delay
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.starstacker.capture.CaptureEngine
@@ -199,60 +209,139 @@ fun CaptureScreen(
 @Composable
 private fun ProgressRing(progress: CaptureEngine.Progress) {
     val target = progress.target.coerceAtLeast(1)
+    val lights = progress.log?.lights.orEmpty()
     val done = when (progress.state) {
         SessionState.DARKS -> progress.darksCaptured
         else -> progress.framesCaptured
     }
-    val fraction = (done.toFloat() / target).coerceIn(0f, 1f)
+
+    // T-3.22's inner ring. The engine publishes when the exposure began and how long it runs;
+    // everything animated happens here, so nothing ticks while the screen is off.
+    val exposureFraction = inFlightFraction(progress)
 
     Box(
         Modifier
             .fillMaxWidth()
-            .aspectRatio(1.6f),
+            .aspectRatio(1.35f),
         contentAlignment = Alignment.Center,
     ) {
         Canvas(Modifier.fillMaxSize()) {
-            val stroke = 10.dp.toPx()
-            val diameter = minOf(size.width, size.height) - stroke
-            val topLeft = androidx.compose.ui.geometry.Offset(
-                (size.width - diameter) / 2f,
-                (size.height - diameter) / 2f,
-            )
+            val outer = minOf(size.width, size.height) / 2f - 6.dp.toPx()
+            val tickInner = outer - 14.dp.toPx()
+            val centre = Offset(size.width / 2f, size.height / 2f)
+
+            // One tick per frame, so the ring shows *where* the rejections fell rather than only
+            // how many there were — the prototype's shape, and the reason it is not an arc.
+            for (i in 0 until target) {
+                val angle = (i.toFloat() / target) * 2f * PI.toFloat() - PI.toFloat() / 2f
+                val shot = lights.getOrNull(i)
+                val colour = when {
+                    i >= done -> Night.Ghost
+                    shot == null -> Night.Red
+                    shot.accepted -> Night.Red
+                    else -> Night.Warn
+                }
+                drawLine(
+                    color = colour,
+                    start = centre + Offset(cos(angle) * tickInner, sin(angle) * tickInner),
+                    end = centre + Offset(cos(angle) * outer, sin(angle) * outer),
+                    strokeWidth = if (colour == Night.Ghost) 2.dp.toPx() else 2.6.dp.toPx(),
+                    cap = StrokeCap.Round,
+                )
+            }
+
+            // Leading edge: the frame being worked on right now.
+            if (done in 1 until target) {
+                val angle = (done.toFloat() / target) * 2f * PI.toFloat() - PI.toFloat() / 2f
+                val r = (tickInner + outer) / 2f
+                drawCircle(
+                    color = Night.Hot,
+                    radius = 4.dp.toPx(),
+                    center = centre + Offset(cos(angle) * r, sin(angle) * r),
+                )
+            }
+
+            // The inner ring: this exposure, 0 to 1.
+            val innerRadius = tickInner - 12.dp.toPx()
+            val innerStroke = 4.dp.toPx()
             drawArc(
-                color = Night.Ghost,
+                color = Night.LineSoft,
                 startAngle = -90f,
                 sweepAngle = 360f,
                 useCenter = false,
-                topLeft = topLeft,
-                size = Size(diameter, diameter),
-                style = Stroke(width = stroke),
+                topLeft = centre - Offset(innerRadius, innerRadius),
+                size = Size(innerRadius * 2, innerRadius * 2),
+                style = Stroke(width = innerStroke),
             )
-            drawArc(
-                color = Night.Hot,
-                startAngle = -90f,
-                sweepAngle = 360f * fraction,
-                useCenter = false,
-                topLeft = topLeft,
-                size = Size(diameter, diameter),
-                style = Stroke(width = stroke),
-            )
+            if (exposureFraction != null) {
+                drawArc(
+                    color = Night.Hot,
+                    startAngle = -90f,
+                    sweepAngle = 360f * exposureFraction,
+                    useCenter = false,
+                    topLeft = centre - Offset(innerRadius, innerRadius),
+                    size = Size(innerRadius * 2, innerRadius * 2),
+                    style = Stroke(width = innerStroke, cap = StrokeCap.Round),
+                )
+            }
         }
+
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
                 "$done",
                 fontFamily = NumFamily,
-                fontSize = 44.sp,
-                fontWeight = FontWeight.Medium,
+                fontSize = 46.sp,
                 color = Night.Txt,
             )
-            Mono("of $target", color = Night.Txt3, size = 11.sp)
-            if (progress.cooling) {
-                Spacer(Modifier.height(4.dp))
-                Mono("cooling", color = Night.Warn, size = 10.sp)
-            }
+            Mono("of $target", color = Night.Txt3, size = 12.sp)
+            Spacer(Modifier.height(6.dp))
+            Mono(inFlightLabel(progress, exposureFraction), color = Night.Dim, size = 10.sp)
         }
     }
 }
+
+/**
+ * How far through the current exposure we are, or null when nothing is exposing.
+ *
+ * Recomposes on a timer only while a frame is actually in flight — a session spends a third of
+ * every cycle in readout and write (§1.14), and animating through that would be a lie as well as
+ * a waste.
+ */
+@Composable
+private fun inFlightFraction(progress: CaptureEngine.Progress): Float? {
+    val started = progress.frameStartedElapsedNs ?: return null
+    val exposure = progress.frameExposureNs
+    if (exposure <= 0L) return null
+    if (progress.state != SessionState.CAPTURING && progress.state != SessionState.DARKS) return null
+
+    var fraction by remember(started) { mutableStateOf(0f) }
+    LaunchedEffect(started) {
+        while (true) {
+            val elapsed = android.os.SystemClock.elapsedRealtimeNanos() - started
+            fraction = (elapsed.toFloat() / exposure).coerceIn(0f, 1f)
+            if (fraction >= 1f) break
+            delay(FRAME_TICK_MS)
+        }
+    }
+    return fraction
+}
+
+/**
+ * The second state the ring needs.
+ *
+ * §1.14 measured ~3.4 s of readout and DNG write after a 7.4 s sub. A ring that only knows about
+ * exposure would sit full and apparently stuck for a third of every cycle, which reads as a hang.
+ */
+private fun inFlightLabel(progress: CaptureEngine.Progress, fraction: Float?): String = when {
+    progress.state == SessionState.PAUSED -> "paused"
+    progress.state == SessionState.AWAITING_DARKS -> "cover the lens"
+    fraction == null -> ""
+    fraction >= 1f -> "reading out"
+    else -> "exposing ${"%.0f".format(progress.frameExposureNs / 1e9 * (1f - fraction))}s left"
+}
+
+/** Fast enough to look continuous, slow enough to be invisible against a multi-second sub. */
+private const val FRAME_TICK_MS = 120L
 
 @Composable
 private fun FrameRow(frame: FrameRecord) {

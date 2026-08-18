@@ -24,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.layout.width
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.starstacker.device.CameraOption
@@ -90,7 +91,7 @@ fun FramingScreen(
         }
 
         item { Eyebrow("Night preview") }
-        item { PreviewPanel(controller) }
+        item { PreviewPanel(controller, pointing?.altitudeDeg) }
 
         item {
             HotButton(
@@ -222,7 +223,7 @@ private fun CameraRow(option: CameraOption, selected: Boolean, onClick: () -> Un
 }
 
 @Composable
-private fun PreviewPanel(controller: FramingController) {
+private fun PreviewPanel(controller: FramingController, altitudeDeg: Double?) {
     Column {
         Box(
             Modifier
@@ -248,6 +249,8 @@ private fun PreviewPanel(controller: FramingController) {
                 )
             }
         }
+        Spacer(Modifier.height(8.dp))
+        FocusBar(controller, altitudeDeg)
         Spacer(Modifier.height(6.dp))
         // At ~1 fps an unlabelled preview reads as a frozen app, so the rate is stated.
         Mono(
@@ -401,40 +404,8 @@ private fun PointingCard(
 private fun FocusCard(controller: FramingController, altitudeDeg: Double?) {
     val stored = controller.storedFocus
     Card {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    when {
-                        stored == null -> "No stored focus"
-                        stored.fixedFocus -> "Fixed focus"
-                        else -> "Stored at %.3f dioptres".format(stored.diopters)
-                    },
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Night.Txt,
-                )
-                Mono(
-                    when {
-                        stored == null -> "run a sweep once the preview is showing stars"
-                        stored.fixedFocus -> "nothing to calibrate, nothing to drift"
-                        else -> "HFR %.2f px · %d stars%s".format(
-                            stored.hfr,
-                            stored.starCount,
-                            stored.altitudeDeg?.let { " · at %.0f° elevation".format(it) }.orEmpty(),
-                        )
-                    },
-                    color = Night.Txt3,
-                )
-            }
-            Badge(
-                controller.focusStatus.name,
-                when (controller.focusStatus) {
-                    FocusStatus.LOCKED -> Night.Red
-                    FocusStatus.DRIFTING, FocusStatus.LOST -> Night.Warn
-                    FocusStatus.UNKNOWN -> Night.Dim
-                },
-            )
-        }
+        // The state headline moved to the preview (T-3.24); repeating it here gave the screen two
+        // answers to the same question, in two different wordings, a scroll apart.
 
         // The fallback when the sweep will not converge. Stepping by hand against the live HFR
         // is worse than a bracketed curve and enormously better than no focus at all — and a
@@ -480,23 +451,14 @@ private fun FocusCard(controller: FramingController, altitudeDeg: Double?) {
             )
         }
 
+        // `Find focus` is on the preview now (T-3.24), where the thing it needs to be judged
+        // against actually is. What is left here is re-checking a focus already stored.
         Spacer(Modifier.height(10.dp))
-        ButtonRow {
-            Box(Modifier.weight(1f)) {
-                QuietButton(
-                    text = "Sweep focus",
-                    enabled = controller.running && controller.busy == null,
-                    onClick = { controller.sweepFocus(altitudeDeg) },
-                )
-            }
-            Box(Modifier.weight(1f)) {
-                QuietButton(
-                    text = "Verify",
-                    enabled = controller.running && controller.busy == null && stored != null,
-                    onClick = { controller.verifyFocus(altitudeDeg) },
-                )
-            }
-        }
+        QuietButton(
+            text = "Verify stored focus",
+            enabled = controller.running && controller.busy == null && stored != null,
+            onClick = { controller.verifyFocus(altitudeDeg) },
+        )
 
         controller.sweepProgress?.let {
             Spacer(Modifier.height(8.dp))
@@ -556,6 +518,67 @@ private fun HfrCurve(controller: FramingController) {
                 hfr?.let { "%.2f".format(it) } ?: "—",
                 color = if (isBest) Night.Txt else Night.Txt3,
                 size = 9.5.sp,
+            )
+        }
+    }
+}
+
+/**
+ * T-3.24 — focus, stated and started where the user is already looking.
+ *
+ * **Both halves were wrong before.** `Find focus` lived in a card far below the preview, so the
+ * one action that needs the preview to judge it was the one furthest from it. And the stored state
+ * was a word in a badge — `UNKNOWN` — which reads much like `LOCKED` at 3 a.m. and does not say
+ * what to do about it.
+ *
+ * The distinction matters more than it looks: with no stored focus the capture request passes 0.0
+ * dioptres, which this HAL answers with the hyperfocal position (§1.11). That is **soft but not
+ * ruined**, so a whole session can be shot slightly out of focus without anything appearing to be
+ * wrong until the morning.
+ */
+@Composable
+private fun FocusBar(controller: FramingController, altitudeDeg: Double?) {
+    val stored = controller.storedFocus
+    val ready = stored != null
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                when {
+                    stored == null -> "Focus not set"
+                    stored.fixedFocus -> "Fixed focus"
+                    controller.focusStatus == FocusStatus.DRIFTING -> "Focus drifting"
+                    controller.focusStatus == FocusStatus.LOST -> "Focus lost"
+                    else -> "Focus set"
+                },
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = when {
+                    !ready -> Night.Warn
+                    controller.focusStatus == FocusStatus.DRIFTING ||
+                        controller.focusStatus == FocusStatus.LOST -> Night.Warn
+                    else -> Night.Txt
+                },
+            )
+            Mono(
+                when {
+                    stored == null -> "the session will shoot at hyperfocal — soft, not ruined"
+                    stored.fixedFocus -> "nothing to calibrate on this lens"
+                    else -> "%.3f dioptres · HFR %.2f px".format(stored.diopters, stored.hfr)
+                },
+                color = Night.Txt3,
+                size = 10.sp,
+            )
+        }
+        Box(Modifier.width(132.dp)) {
+            QuietButton(
+                text = when {
+                    controller.sweepProgress != null -> "Finding…"
+                    ready -> "Refocus"
+                    else -> "Find focus"
+                },
+                enabled = controller.running && controller.sweepProgress == null,
+                selected = !ready,
+                onClick = { controller.sweepFocus(altitudeDeg) },
             )
         }
     }

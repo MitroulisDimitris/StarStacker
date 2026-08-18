@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -19,11 +21,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.Canvas
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import com.starstacker.exposure.PredictedHistogram
 import com.starstacker.exposure.ExposureSolver
 import com.starstacker.exposure.SessionPlanner
 import com.starstacker.pointing.Astro
 import com.starstacker.pointing.PointingFix
 import com.starstacker.ui.theme.Night
+import com.starstacker.ui.theme.NumFamily
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -151,18 +159,19 @@ private fun PointingSummary(pointing: PointingFix?) {
 private fun ExposureCard(controller: SetupController) {
     val solution = controller.solution
     Card {
+        // T-3.25: solving is what this screen is *for*, so it does not wait to be asked. The
+        // retry stays for the case where it failed, which is the only case a button helps.
+        LaunchedEffect(controller.camera?.id) {
+            if (controller.camera != null && controller.solution == null && controller.busy == null) {
+                controller.measureAndSolve()
+            }
+        }
         if (solution == null) {
-            Mono(
-                controller.busy ?: "the sky has not been measured yet",
-                Night.Txt3,
-                size = 11.5.sp,
-            )
-            Spacer(Modifier.height(10.dp))
-            QuietButton(
-                text = if (controller.busy != null) "Measuring…" else "Measure the sky",
-                enabled = controller.busy == null && controller.camera != null,
-                onClick = { controller.measureAndSolve() },
-            )
+            Mono(controller.busy ?: "measuring the sky…", Night.Txt3, size = 11.5.sp)
+            if (controller.busy == null && controller.error != null) {
+                Spacer(Modifier.height(10.dp))
+                QuietButton(text = "Try again", onClick = { controller.measureAndSolve() })
+            }
             return@Card
         }
 
@@ -183,6 +192,13 @@ private fun ExposureCard(controller: SetupController) {
             color = Night.Txt3,
             size = 10.5.sp,
         )
+        controller.histogram?.let { prediction ->
+            Spacer(Modifier.height(12.dp))
+            HistogramCard(prediction)
+            Spacer(Modifier.height(10.dp))
+            ExposureCompensation(controller)
+        }
+
         Spacer(Modifier.height(8.dp))
         Text(
             if (controller.showWork) "Hide work ▴" else "Show work ▾",
@@ -302,19 +318,134 @@ private fun PlanCard(controller: SetupController) {
 
         Spacer(Modifier.height(12.dp))
         Eyebrow("Session length")
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(15, 30, 60, 120).forEach { minutes ->
-                Box(Modifier.weight(1f)) {
-                    QuietButton(
-                        text = "${minutes}m",
-                        selected = controller.sessionMinutes == minutes,
-                        onClick = { controller.chooseSessionMinutes(minutes) },
-                    )
-                }
-            }
+        // T-3.26: a continuous drag in *frames*. Presets made four arbitrary answers look like
+        // the only ones; the quantum is the frame, and the time follows from it.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "${plan.lightCount} frames",
+                fontFamily = NumFamily,
+                fontSize = 15.sp,
+                color = Night.Txt,
+                modifier = Modifier.weight(1f),
+            )
+            // The headline above states *integration* — light only. This is wall clock, darks
+            // included, and the two differ by minutes. Saying which is which is the difference
+            // between a plan and two contradictory plans.
+            Text(
+                "${ExposureSolver.formatSeconds(plan.totalSeconds)} total",
+                fontFamily = NumFamily,
+                fontSize = 15.sp,
+                color = Night.Txt2,
+            )
         }
+        Slider(
+            value = controller.frameCount.toFloat(),
+            onValueChange = { controller.chooseFrameCount(it.toInt()) },
+            valueRange = 1f..controller.maxFrames.toFloat(),
+            colors = SliderDefaults.colors(
+                thumbColor = Night.Hot,
+                activeTrackColor = Night.Red,
+                inactiveTrackColor = Night.LineSoft,
+            ),
+        )
+        Mono(
+            "1 frame to ${ExposureSolver.formatSeconds(controller.maxFrames * plan.subSeconds)} " +
+                "· ${plan.darkCount} darks are inside the total, not added to it",
+            color = Night.Txt3,
+            size = 10.sp,
+        )
     }
 }
 
 private fun clockOf(epochMs: Long): String =
     SimpleDateFormat("HH:mm", Locale.US).format(Date(epochMs))
+
+/**
+ * T-3.25 — the predicted histogram.
+ *
+ * Read left to right: the hump is the sky, and where it sits is the whole answer. Hard against the
+ * left wall means read-noise limited — the sensor's own noise is louder than the sky. Hard against
+ * the right means clipped. A little way in, with room to spare, is what "sky-limited" looks like.
+ */
+@Composable
+private fun HistogramCard(prediction: PredictedHistogram.Prediction) {
+    Column {
+        Canvas(
+            Modifier
+                .fillMaxWidth()
+                .height(64.dp),
+        ) {
+            val binWidth = size.width / prediction.bins.size
+            prediction.bins.forEachIndexed { i, height ->
+                val h = (height * size.height).toFloat().coerceAtLeast(1f)
+                drawRect(
+                    color = if (prediction.clipped) Night.Warn else Night.Red,
+                    topLeft = Offset(i * binWidth, size.height - h),
+                    size = Size(binWidth * 0.85f, h),
+                )
+            }
+            // The right wall. Everything past it is clipped and unrecoverable.
+            drawLine(
+                color = Night.Warn,
+                start = Offset(size.width - 1f, 0f),
+                end = Offset(size.width - 1f, size.height),
+                strokeWidth = 2f,
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Mono(
+            when {
+                prediction.clipped -> "clipped — the sky is off the right of the frame"
+                prediction.readNoiseLimited ->
+                    "read-noise limited · %.1f stops of headroom".format(prediction.headroomStops)
+                else -> "sky-limited · %.1f stops of headroom".format(prediction.headroomStops)
+            },
+            color = if (prediction.clipped || prediction.readNoiseLimited) Night.Warn else Night.Txt3,
+            size = 10.5.sp,
+        )
+    }
+}
+
+/**
+ * T-3.25's veto. The solve is the recommendation; this is the disagreement, with its cost shown
+ * rather than described — the histogram above moves as the value does.
+ */
+@Composable
+private fun ExposureCompensation(controller: SetupController) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Mono("Exposure", color = Night.Txt3, size = 10.5.sp, modifier = Modifier.weight(1f))
+        Mono(
+            if (controller.exposureStops == 0.0) {
+                "as solved"
+            } else {
+                "%+.2f stops · %s".format(
+                    controller.exposureStops,
+                    ExposureSolver.formatSeconds(controller.effectiveSubSeconds ?: 0.0),
+                )
+            },
+            color = if (controller.exposureStops == 0.0) Night.Txt3 else Night.Txt,
+            size = 10.5.sp,
+        )
+    }
+    Slider(
+        value = controller.exposureStops.toFloat(),
+        onValueChange = { controller.compensate(it.toDouble()) },
+        valueRange = -SetupController.MAX_STOPS.toFloat()..SetupController.MAX_STOPS.toFloat(),
+        steps = 11,
+        colors = SliderDefaults.colors(
+            thumbColor = Night.Hot,
+            activeTrackColor = Night.Red,
+            inactiveTrackColor = Night.LineSoft,
+        ),
+    )
+    controller.compensatedTrailPx?.takeIf { it > controller.solution!!.trailing.tolerancePx * 1.05 }
+        ?.let {
+            Mono(
+                "stars will trail about %.1f px — the budget is %.1f".format(
+                    it, controller.solution!!.trailing.tolerancePx,
+                ),
+                color = Night.Warn,
+                size = 10.sp,
+            )
+        }
+}

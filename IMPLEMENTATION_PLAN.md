@@ -81,7 +81,7 @@ Two consequences to accept deliberately:
 | 1A | 6 | 6 | **complete** — probe, qualification, camera lifecycle, first light, DNG reader |
 | 1B | 7 | 2 | **hardware-verified except what needs darkness** — see §5 and §1.7 |
 | 1C | 16 | 1 | **field-ready** — framing → setup → solve → start → live → darks → complete, with resume offered on launch and focus settable by hand. Outstanding: T-3.14 preview stack, T-3.16 DNG metadata, and T-0.5's benchmark (OI-5) |
-| 1D | 9 | 0 | planned 2026-08-18 from the walkthrough (§1.15); T-3.18/19/20 built and photographed, T-3.21 mostly |
+| 1D | 9 | 0 | planned and largely built 2026-08-18 (§1.15). All photographed except T-3.23, which is not started |
 | 2+ | outlined | 0 | not started |
 
 > **Phase 1B has now met every acceptance that does not require a night sky** (2026-08-17). The
@@ -1412,26 +1412,30 @@ the same app surface as Phase 1C, but they sit behind their own checkpoint: 1C i
   **Remaining:** the all-sessions list does not exist (T-6.1), so `All sessions · N` opens the
   folder as a stopgap. And none of it has been exercised on a device.
 
-- [ ] **T-3.22** **Inner ring: the exposure in flight.** The outer ring becomes the prototype's
+- [~] **T-3.22** **Inner ring: the exposure in flight.** The outer ring becomes the prototype's
   per-frame ticks (kept / rejected / remaining, leading-edge dot); a new inner ring sweeps 0→1 over
   the current sub.
   *Do not tick it from the capture thread.* Publish the exposure's start and duration on
   `Progress` and let Compose animate locally — the engine is busy and the screen is usually off.
-  **The gap is not optional detail:** §1.14 measured ~3.4 s of readout and DNG write after a 7.4 s
-  sub, so an inner ring that only knows about exposure sits full and apparently stuck for a third
-  of every cycle. It needs a distinct second state (writing / analysing) or it will read as a hang.
+  **The gap is not optional detail:** §1.14 measured ~3.4 s between a frame's exposure ending and
+  its analysis finishing, so an inner ring that only knows about exposure needs a second state or
+  it sits full and apparently stuck. It reads `exposing Ns left`, then `reading out`.
+  **Done 2026-08-18, photographed mid-session.** The outer ring is one tick per frame with a
+  leading-edge dot; the engine publishes the exposure's start on the monotonic clock and Compose
+  animates it, so nothing ticks from the capture thread and nothing animates with the screen off.
+  Verified on a 30-frame run at 4 s: ticks, dot, inner sweep and `exposing 3s left` all correct.
 
 - [ ] **T-3.23** **Drop the camera-openability tests from the UI.** They answered OI-18 in
   §1 — all five cameras open — and a resolved question does not need a permanent button. The code
   stays as an adb diagnostic; only the panel goes.
 
-- [ ] **T-3.24** **Focus, from the preview and unambiguous.** `Find focus` becomes an action on the
+- [~] **T-3.24** **Focus, from the preview and unambiguous.** `Find focus` becomes an action on the
   preview itself rather than a separate card below it. Focus state gets three visibly distinct
   answers — **stored**, **not stored**, **stale** — because "no focus" currently looks much like
   "focus fine" and the fallback (hyperfocal at 0.0 dioptres, §1.11) is *soft but not ruined*, which
   is exactly the failure a user will not notice until morning.
 
-- [ ] **T-3.25** **Setup: solve on its own, and show what the frames will look like.**
+- [~] **T-3.25** **Setup: solve on its own, and show what the frames will look like.**
   Remove the `Solve for an exposure` button — measuring the sky is the screen's purpose, so it
   should not need asking twice.
   Add a **predicted histogram** of the frames the current settings will produce. It is derivable
@@ -1441,15 +1445,32 @@ the same app surface as Phase 1C, but they sit behind their own checkpoint: 1C i
   Add **exposure compensation**: a ± offset from the solved answer, with the histogram moving under
   it and the cost named (`skyToReadVariance` falling, or headroom shrinking). The solver keeps
   deciding; the user keeps the veto.
+  **Done 2026-08-18, photographed.** The screen solves on arrival; the retry button survives only
+  for the case where it failed, which is the only case a button helps. `PredictedHistogram` derives
+  the frame from measurements already taken — sky electrons per second scaled by the exposure, read
+  noise and gain from the noise model — so the hump's position is the signal and its width is the
+  noise, with the clipping wall drawn. Live on device: *sky-limited · 5.1 stops of headroom*.
+  Compensation is ±2 stops, and past that the solve is not being adjusted, it is being ignored; the
+  trailing cost in pixels appears once the compensated sub passes the budget.
 
-- [ ] **T-3.26** **Session length as a continuous drag, not presets.**
+- [~] **T-3.26** **Session length as a continuous drag, not presets.**
   Remove the 15 / 30 minute buttons. One slider: **leftmost is a single frame**, rightmost about
   two hours, and the label tracks frames *and* wall-clock time as it moves.
   The quantum is the frame, not the minute, so the slider's value is a frame count and the time is
-  derived — the reverse rounds to something that cannot be shot. Use the **measured cadence**, not
-  the exposure: §1.14 puts ~3.4 s of readout and write on top of every sub, so a 7.4 s sub costs
-  ~10.8 s of wall clock and a "30 minute" session built from exposure alone would run 45.
+  derived — the reverse rounds to something that cannot be shot.
+  **A correction to this entry, made while implementing it.** It originally said to use a measured
+  cadence of exposure + ~3.4 s. That is wrong: §1.14's 3.4 s is the delay from *exposure end* to
+  *analysis complete*, and the next exposure runs throughout it. Consecutive `SENSOR_TIMESTAMP`s in
+  session `0123` sit **7.3993 s** apart for a 7.4 s sub, so the cadence *is* the exposure — the DNG
+  write hides behind the next frame exactly as §1.9 claimed, and `MEASURED_OVERHEAD_SECONDS` stays
+  at 0.01 s.
   Darks are charged inside the budget as they already are (15% clamped to [10, 30]).
+  **Done 2026-08-18, photographed.** `SessionPlanner.Goal.Frames` is the slider's goal; the label
+  reads `120 frames` and `17 min total`, spanning one frame to 2.5 hours of wall clock — a bound
+  derived from the sub length, so the right-hand end is always the same amount of *night*.
+  **The screenshot found an ambiguity worth fixing:** the headline says `15 min` (integration) and
+  the slider said `17 min` (wall clock, darks included). Two times for one plan reads as a bug, so
+  the slider now says `17 min total` and the caption states darks are inside it, not added to it.
 
 **Checkpoint 1D:**
 > Someone who has never seen the app can open it, understand what to press, and start a session

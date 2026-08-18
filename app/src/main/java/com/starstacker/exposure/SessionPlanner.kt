@@ -51,6 +51,14 @@ object SessionPlanner {
 
         /** "I want this much integration." Total time falls out of it. */
         data class TargetIntegration(val seconds: Double) : Goal
+
+        /**
+         * T-3.26 — a straight frame count.
+         *
+         * The slider counts frames because **the frame is the quantum**: asking for 30 minutes
+         * rounds to a number of frames anyway, and rounding twice is how a session runs long.
+         */
+        data class Frames(val count: Int) : Goal
     }
 
     enum class Severity { OK, WARN, BLOCK }
@@ -121,6 +129,7 @@ object SessionPlanner {
         val lightCount = when (goal) {
             is Goal.TargetIntegration -> ceil(goal.seconds / subSeconds).toInt().coerceAtLeast(1)
             is Goal.TotalTime -> lightsThatFitIn(goal.seconds, perFrame)
+            is Goal.Frames -> goal.count
         }.coerceAtLeast(1)
 
         val darkCount = if (includeDarks) darkCountFor(lightCount) else 0

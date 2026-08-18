@@ -9,6 +9,7 @@ import androidx.compose.runtime.setValue
 import com.starstacker.camera.CameraAccess
 import com.starstacker.device.CameraProfile
 import com.starstacker.exposure.ExposureSolver
+import com.starstacker.exposure.PredictedHistogram
 import com.starstacker.exposure.SessionPlanner
 import com.starstacker.exposure.SkyProbe
 import com.starstacker.exposure.TrailingLimit
@@ -60,10 +61,25 @@ class SetupController(
     var pinnedIso: Int? by mutableStateOf(null)
         private set
     var showWork by mutableStateOf(false)
+
+    /**
+     * T-3.25 — the user's override of the solved exposure, in stops.
+     *
+     * The solver keeps deciding and the user keeps the veto. Zero is "take the answer"; the
+     * histogram moves under the control so the cost of disagreeing is visible rather than
+     * described.
+     */
+    var exposureStops by mutableStateOf(0.0)
         private set
 
-    /** FR-5.4's input: the user says how long they have. */
-    var sessionMinutes by mutableStateOf(DEFAULT_SESSION_MINUTES)
+    /**
+     * T-3.26 — how many light frames to shoot. The slider's value, and the planner's goal.
+     *
+     * Frames rather than minutes because the frame is the quantum: a request for "30 minutes"
+     * is rounded to a frame count regardless, and carrying the minutes as well means rounding
+     * twice.
+     */
+    var frameCount by mutableStateOf(DEFAULT_FRAMES)
         private set
 
     var tolerancePx by mutableStateOf(TrailingLimit.DEFAULT_TOLERANCE_PX)
@@ -89,8 +105,18 @@ class SetupController(
         if (changed && measurement != null) resolve()
     }
 
-    fun chooseSessionMinutes(minutes: Int) {
-        sessionMinutes = minutes.coerceIn(MIN_SESSION_MINUTES, MAX_SESSION_MINUTES)
+    /**
+     * The most frames the slider offers: whatever fills [MAX_SESSION_HOURS] at this sub length,
+     * so the right-hand end is always the same amount of *night* rather than the same number.
+     */
+    val maxFrames: Int
+        get() {
+            val perFrame = (solution?.chosen?.exposureSeconds ?: 10.0) + MEASURED_OVERHEAD_SECONDS
+            return ((MAX_SESSION_HOURS * 3600.0) / perFrame).toInt().coerceAtLeast(2)
+        }
+
+    fun chooseFrameCount(frames: Int) {
+        frameCount = frames.coerceIn(1, maxFrames)
         replan()
     }
 
@@ -100,6 +126,36 @@ class SetupController(
     }
 
     fun toggleWork() { showWork = !showWork }
+
+    fun compensate(stops: Double) {
+        exposureStops = stops.coerceIn(-MAX_STOPS, MAX_STOPS)
+        replan()
+    }
+
+    /** The sub actually planned: the solved answer shifted by [exposureStops]. */
+    val effectiveSubSeconds: Double?
+        get() = solution?.chosen?.exposureSeconds?.let { it * Math.pow(2.0, exposureStops) }
+
+    /** How far past the trailing budget the compensated sub goes, in pixels of elongation. */
+    val compensatedTrailPx: Double?
+        get() {
+            val sub = effectiveSubSeconds ?: return null
+            val trailing = solution?.trailing ?: return null
+            if (trailing.maxExposureSeconds <= 0.0 || !trailing.maxExposureSeconds.isFinite()) {
+                return null
+            }
+            return trailing.tolerancePx * (sub / trailing.maxExposureSeconds)
+        }
+
+    /** T-3.25's histogram, re-derived whenever the compensation moves. */
+    val histogram: PredictedHistogram.Prediction?
+        get() {
+            val measured = measurement ?: return null
+            val chosen = solution?.chosen ?: return null
+            val sub = effectiveSubSeconds ?: return null
+            val noise = measured.model.at(chosen.iso) ?: return null
+            return runCatching { PredictedHistogram.of(measured.sky, noise, sub) }.getOrNull()
+        }
 
     /** FR-5.3 — pin a value and re-solve around it. Tapping the pinned ISO again releases it. */
     fun pinIso(iso: Int?) {
@@ -176,9 +232,9 @@ class SetupController(
         val raw = profile.maxRawSize
 
         plan = SessionPlanner.plan(
-            goal = SessionPlanner.Goal.TotalTime(sessionMinutes * 60.0),
+            goal = SessionPlanner.Goal.Frames(frameCount),
             iso = chosen.iso,
-            subSeconds = chosen.exposureSeconds,
+            subSeconds = effectiveSubSeconds ?: chosen.exposureSeconds,
             frameAspectWidth = raw?.width ?: 4,
             frameAspectHeight = raw?.height ?: 3,
             freeBytes = freeBytes(),
@@ -238,11 +294,18 @@ class SetupController(
         access.close()
     }
 
-    private companion object {
+    companion object {
         const val TAG = "SetupController"
-        const val DEFAULT_SESSION_MINUTES = 30
-        const val MIN_SESSION_MINUTES = 5
-        const val MAX_SESSION_MINUTES = 240
+        const val DEFAULT_FRAMES = 120
+
+        /** Two stops either way. Past that the solve is not being adjusted, it is being ignored. */
+        const val MAX_STOPS = 2.0
+
+        /**
+         * The slider's right-hand end, in wall-clock hours. The frame count it corresponds to is
+         * derived from the sub length, so a 30 s sub and a 2 s sub both reach the same place.
+         */
+        const val MAX_SESSION_HOURS = 2.5
         const val MEASURED_OVERHEAD_SECONDS = 0.01
     }
 }
