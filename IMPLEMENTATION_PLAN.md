@@ -75,15 +75,20 @@ Two consequences to accept deliberately:
 
 ### Progress
 
-| Phase | Tasks | Done | Status |
+| Phase | Tasks | Ticked | Status |
 |---|---|---|---|
-| 0 | 9 | 1 | in progress — skeleton builds and installs; shared components extracted (T-0.2 part); SAF storage written but unmeasured (T-0.5, OI-5); field log and crash handler demonstrated (T-0.6) |
-| 1A | 6 | 6 | **complete** — probe, qualification, camera lifecycle, first light, DNG reader |
-| 1B | 7 | 2 | **hardware-verified except what needs darkness** — see §5 and §1.7 |
-| 1C | 16 | 1 | **field-ready** — framing → setup → solve → start → live → darks → complete, with resume offered on launch and focus settable by hand. Outstanding: T-3.14 preview stack, T-3.16 DNG metadata, and T-0.5's benchmark (OI-5) |
-| 1D | 9 | 0 | **all nine built 2026-08-18** (§1.15) and verified on device; T-3.21 waits on T-6.1's list screen |
+| 0 | 9 | 1 | **8 built and demonstrated**, ticked only where §0's bar is met. SAF throughput still unmeasured (T-0.5 / OI-5) |
+| 1A | 6 | 5 | probe, qualification, camera lifecycle, first light, DNG reader. T-1.3's 50× leak loop is the one thing left |
+| 1B | 7 | 1 | **hardware-verified except what needs darkness** — see §5 and §1.7 |
+| 1C | 17 | 1 | **every task built.** Blocked on the field, not on code: darks have never once executed, and no 45-minute session has been shot |
+| 1D | 9 | 0 | **all nine built and photographed 2026-08-18** (§1.15). T-3.21's last piece waits on T-6.1's session list |
 | 2+ | outlined | 0 | not started |
 
+> **The `Ticked` column counts `[x]` only.** §0 ties that to an acceptance demonstrated on a real
+> device, and most of what is built is demonstrated in part — the count understates the app
+> considerably and is meant to. What it measures is how much has been *proven*, not how much
+> exists.
+>
 > **Phase 1B has now met every acceptance that does not require a night sky** (2026-08-17). The
 > camera half is demonstrated: the device confirms the two-stream configuration by name, the
 > repeating one-second RAW loop delivers at a metronomic 1000 ms, and the focus sweep steps the
@@ -1640,7 +1645,7 @@ when the number comes back.
 | **OI-7** | Sensor temperature rarely exposed | **D-16:** log every available signal; use battery temperature as the dark-matching key. Darks are captured at the end of the same session along a monotonic warming curve, so proximity in time substitutes for an absolute reading | 2026-08-16 |
 | **OI-10** | Are bias frames needed? | **D-14:** no. §4.2.2 makes bias conditional on implementing dark scaling; v1 doesn't, and per-session darks matched on ISO/exposure/temperature already contain the bias signal | 2026-08-16 |
 | **OI-12** | Light-pollution input: Bortle picker vs GPS lookup | **D-17:** neither. The sky background is measured directly in T-3.1; a manual estimate is a worse input to the same calculation | 2026-08-16 |
-| **OI-13** | Live preview stack depth | **D-18:** capped running mean of aligned binned frames, autostretched, no rejection logic | 2026-08-16 |
+| **OI-13** | Live preview stack depth | **D-18:** capped running mean of aligned binned frames, autostretched, no rejection logic | **closed 2026-08-18** — built as T-3.14 and rendering on device; the capped mean and the vote both behave as D-18 assumed |
 | **OI-14** | Reference frame: first, or best quality? | **D-15:** both — first accepted frame for live registration, best-quality frame chosen at stack time. Decoupled stacking makes the selection pass free, since the frame log already holds the quality metrics | 2026-08-16 |
 | **OI-6** | Does the Nothing Phone (3a) Pro clear the FR-3.1 envelope? | **Yes, comfortably.** LEVEL_3, RAW, full manual control, and a **49.6 s** maximum exposure on the main camera. Measured, not assumed — see §1.5 | 2026-08-16 |
 | **OI-17** | Quad-Bayer RAW output form | **Binned, as hoped.** `SENSOR_INFO_BINNING_FACTOR = [2,2]`; 50 MP array delivered as a 12.6 MP `GRBG` Bayer frame at **2.00 µm** effective pitch. The platform reports the binned array directly, so the naive and effective pitch calculations agree here — but they are still reported separately, because that agreement is a property of this device, not of the maths | 2026-08-16 |
@@ -1657,10 +1662,17 @@ when the number comes back.
 | **Field** | The phase checkpoints — a tripod, a dark sky, and a completed session | Manual, logged in the changelog |
 | **External** | DNGs open in Siril/RawTherapee (T-1.5); on-device master compared to Siril/DSS on identical subs (T-5.7) | Desktop |
 
-**184 JVM tests as of Phase 1C** — qualification 21, star detection 14, session planner 14,
-session log 12, pointing 11, focus sweep 11, exposure solver 11, frame gate 11, DNG reader 10,
-camera picker 10, trailing limit 9, JSON 8, noise model 8, stream planning 8, session recovery 7,
-autostretch 7, focus monitor 7, image rotation 5.
+**234 JVM tests as of Phase 1D** — qualification 21, star detection 14, session planner 14,
+frame gate 14, session log 12, preview stack 11, permissions 11, focus sweep 11, exposure solver
+11, astro 11, DNG reader 10, camera picker 10, trailing limit 9, stream planning 8, noise model 8,
+JSON 8, session recovery 7, navigation 7, focus monitor 7, autostretch 7, predicted histogram 6,
+image rotation 5, frame description 5, session pointing 4, clock 3.
+
+The 50 added on 2026-08-18 are worth naming, because three of them exist to stop a defect coming
+back rather than to describe a feature: the frame gate's *undersampled stars are not judged on
+their shape*, navigation's *entering capture leaves only the landing screen behind it*, and the
+permission list's inverted *no permission justifies itself* — which used to assert the opposite
+(D-25).
 
 Phase 1C added 72 of those, and the split is worth noting: the exposure engine and the session
 log are **entirely Android-free**, so the sky-limited solver, the trailing limit, the noise
@@ -1700,6 +1712,11 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-08-18 | **Phase 1D — the interface brought back to the prototype (§1.15).** The walkthrough found that **the main screen had never been built**: the capability probe sat there from Phase 1A, when the only question was whether the device worked, and was never replaced. Nine tasks. The main screen is now `Start a session` as the one bright element, warnings *below* it so they cannot read as a gate, recent sessions and a free/temperature/moon strip; the probe moved behind a settings gear. The capture ring became one tick per frame with an inner ring for the exposure in flight, which needs a second state because a frame is judged ~3.4 s after its exposure ends. Focus moved onto the preview and states the consequence — *"the session will shoot at hyperfocal — soft, not ruined"* — rather than a status word. Setup solves on arrival and draws a **predicted histogram** derived from the measured sky rate, read noise and gain, which is the one picture that makes "sky-limited" checkable. Session length became a drag in frames, 1 to 2.5 hours. **D-25** was written after the settings screen shipped with paragraphs justifying dark mode, the camera permission and the storage location — none of them a decision anyone makes. |
+| 2026-08-18 | **The frame gate was rejecting everything, for two unrelated reasons, and both had passing unit tests (§1.13, §1.14).** A session accepted **0 of 105 frames**. The bump detector read the accelerometer, which cannot separate rotation from translation — and only rotation moves stars. On a tripod extension arm it flagged the *sharpest* frames in the session: one was called 7.85°, which at 74.2 arcsec/px would be a 382-pixel streak, while carrying 208 stars at HFR 0.925. Separately, eccentricity was measured on a 4× binned plane where a star is about one pixel across, so second moments are degenerate: the real 0.375 px trail predicts e ≈ 0.13 against a measured 0.855. The gyro replaced the accelerometer and the shape check now skips undersampled stars. Re-measured on sky: **42 of 49 accepted**, zero false `TRAILED`, and the seven `BUMPED` are the phone being touched at the start and picked up at the end. |
+| 2026-08-18 | **Three device facts that each failed silently.** Scoping the bump check to the exposure needed them and every one was wrong in a way nothing surfaced. `SENSOR_DELAY_GAME` delivers at ~400 Hz, not the ~50 Hz its name implies, so the sample buffer spanned under ten seconds. **`SENSOR_TIMESTAMP` is the end of exposure on this device, not the start the documentation promises** — frames are analysed a stable 3.35–3.38 s after their own timestamp while the exposure is 7.4 s. With the sign backwards the window sat in the future, no query could be answered, and the check was **silently off**. And the zero-rate estimate was seeded from a single sample taken as the service starts — exactly when the phone is not still — which integrated **110°** of phantom rotation on the first frame. Still phone, 7.4 s subs, after all of it: 0.013–0.021°. |
+| 2026-08-18 | **Phase 0 finished off.** SAF session storage over `DocumentsContract` with no `DocumentFile` anywhere (T-0.5); a **field log that survives the night** (T-0.6), demonstrated by crashing a session at frame 21 and recovering the trace *and* the frames leading to it; a permission flow that states what refusal costs — **`POST_NOTIFICATIONS` was never requested, and the darks prompt is delivered only as a notification**, so refusing it silently cost the session its darks (T-0.4); a settings screen (T-0.9); a **back stack** (T-0.3), whose absence meant the system back gesture left the app from any screen, mid-session included; and one place that owns construction, plus a clock seam (T-0.7). |
+| 2026-08-18 | **The frames became self-describing, and the log stopped omitting the pointing.** `DngCreator` writes 54 tags and every one is the sensor's account of itself; nothing said which session a frame belonged to. `ImageDescription` turned out **present and empty** rather than absent, and `Orientation` read **9**, which TIFF does not define. Dumping a real frame also found three things §1.6 had wrong: `BlackLevel` is 64.25 not 64, `DefaultCropOrigin/Size` asks readers to trim 8 px, and `OpcodeList2` carries a 3908-byte lens-shading gain map — so a stacker honouring it has already flat-fielded the frame, which Phase 6's flats must not repeat. Separately, `SessionInfo` had declared six pointing fields since the schema was written and **nothing ever set them** (T-3.17). **The owner confirmed the DNGs stack correctly in DSS**, closing the export half of Checkpoint 1C. |
 | 2026-08-17 | **Field guide written** (`docs/field-guide.html` → `StarStacker-Field-Guide.pdf`, 15 pages). Every screen, what each number means and its units, the order to press things in, and what to do when focus will not lock. Dark palette from the app's own tokens and a 100×190 mm page, so it reads at native size on a phone without zooming — which is where it will be read. It uses this device's measured figures rather than generic advice (black level 64, clipping at 1023 ADU, read noise 5.6 → 2.0 e⁻, the 0.0374-dioptre motor step, the hyperfocal quirk at 0.0, 25 MB per frame) and states plainly which four acceptances are still untested, so it cannot imply more confidence than the app has earned. |
 | 2026-08-17 | **Three defects found by asking whether the app was ready to take out — §1.11.** None was a wrong answer; each was a missing question, which is why no test caught them. (1) **Nothing prompted the user to cover the lens** before darks, so an unattended session would have filled `darks/` with light frames — undetectable downstream and quietly fatal to every master built from it. (2) **Resume was unreachable from the UI**, wired only to the `adb` diagnostic, so a session dying at 03:40 was unrecoverable without a laptop — the one situation the feature exists for. (3) **The dark-sky branch chose the quietest ISO** instead of the ISO-invariance point: on this sensor read noise is flat above ISO 3200, so it picked ISO 6400 at 387 e⁻ of well, clipping every star to save 0.04 e⁻. Also added a **manual focus fallback** (§1.11), because the sweep correctly failing under thin cloud was an honest failure and a dead end. 184 JVM tests. |
 | 2026-08-17 | **T-3.12's prompt — the first of §1.11's three.** The sequence rolled straight from lights into darks with nothing telling anyone to cover the lens, so an unattended session would have filled `darks/` with light frames — and nothing downstream can tell a light frame in a darks folder from a dark. Now a real state (`AWAITING_DARKS`) rather than a UI flag, because the session can be killed while waiting and has to come back knowing it owes darks and not lights. The sensor is stopped during the wait, the prompt is on screen and in the notification, darks are skippable with the cost stated (FR-4.2.1), and after 15 minutes with no answer the session finishes cleanly and records *why* there are no darks — waiting forever holds the camera open all night for someone who has gone to bed. `SequenceSession` now tags generations off `CaptureRequest.tag` like `FramingSession` does, so a frame exposed before the lens went on cannot be filed as a dark. |
