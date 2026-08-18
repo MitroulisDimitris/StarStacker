@@ -623,10 +623,27 @@ work has to be redone.
 - [ ] **T-0.3** Navigation skeleton: Main → Session setup → Live → Session detail → Settings.
   Screens are stubs with the prototype's static content.
   *Accept:* all five reachable, back stack correct, screen rotation locked to portrait.
-- [ ] **T-0.4** Permission flow: `CAMERA`, `ACCESS_FINE_LOCATION`, `POST_NOTIFICATIONS`,
+- [~] **T-0.4** Permission flow: `CAMERA`, `ACCESS_FINE_LOCATION`, `POST_NOTIFICATIONS`,
   `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CAMERA`. Rationale UI in plain language; denial is
   survivable (location denied → pointing unavailable → exposure engine falls back, and says so).
   *Accept:* cold install → grant flow → no crash on any denial combination.
+  **Done 2026-08-18, acceptance demonstrated across all eight combinations** of camera /
+  notifications / location: no `FATAL EXCEPTION` and no ANR in any of them, and with everything
+  denied the app still renders its landing screen and states what it cannot do.
+  **`POST_NOTIFICATIONS` was never requested at all**, which was not cosmetic: the prompt to cover
+  the lens for darks is delivered *only* as a notification, and the wait behind it times out after
+  15 minutes. Refusing notifications silently cost the session its darks. That consequence is now
+  what the permission screen says, in those words.
+  `ui/Permissions.kt` holds the wording as pure data, so it is unit-tested — including that no
+  optional permission is allowed to hide behind "reduced functionality". The consequence is shown
+  whether or not the permission is granted: someone deciding needs to know what they are giving
+  up, and finding that out should not require revoking something to make a warning appear.
+  **Notifications are asked for on the way into framing**, not at cold start. A prompt fired at
+  launch is answered before the user knows what the app does, and asked once only — Android
+  silently ignores the request after two refusals, so re-firing it would turn a decision into a
+  loop. The screen offers a route to the system page for exactly that reason.
+  **Remaining:** the Allow / App settings row has not been seen rendered since permissions were
+  restored on the test device, so its layout fix is compiled and conventional but unphotographed.
 - [~] **T-0.5** Storage layer over SAF — `ACTION_OPEN_DOCUMENT_TREE`, persisted URI permission,
   a `SessionStore` interface that hides `DocumentsContract` behind create/open/write/list.
   **Do not use `DocumentFile`** for per-frame work (`findFile()` is O(n) per call and will crawl at
@@ -692,8 +709,23 @@ work has to be redone.
   `schemaVersion: 1`, export to `getExternalFilesDir` + FileProvider share.
   **Remaining:** persistence and reload across launches — the probe currently re-runs each start,
   which is fine while it *is* the app.
-- [ ] **T-0.9** Settings screen shell: session root, night-mode brightness note, calibration status
+- [~] **T-0.9** Settings screen shell: session root, night-mode brightness note, calibration status
   entry point (stub until Phase 6), device profile export.
+  **Done 2026-08-18, rendering on hardware.** Also the home for T-0.4's permissions and T-0.6's
+  field log.
+  **This was tidying with a deadline.** The session-root card arrived on the landing screen with
+  T-0.5 and the field-log card with T-0.6, each because it needed somewhere to live and there was
+  nowhere. Two more and the capability probe becomes a junk drawer, which is how a screen read in
+  the dark stops being readable. The probe keeps a one-line notice of where sessions go — the
+  app-private default is deleted on uninstall and that is worth stating where it is seen — but the
+  control now lives here.
+  **The night-mode entry is a note, not a setting**, and deliberately: every screen is already
+  dark, which leaves system brightness, and that belongs to the system. A control that dimmed only
+  this app's pixels while the notification shade stayed at full blast would be worse than saying so.
+  **Found while building it:** `QuietButton` calls `fillMaxWidth()` unconditionally, so two of them
+  in a `ButtonRow` leave the second rendering one character per line down the screen edge. The
+  existing convention — wrapping each in `Box(Modifier.weight(1f))` — is undocumented and easy to
+  miss; worth folding into the component itself if a third caller hits it.
 
 **Checkpoint 0:** app installs, looks like the prototype, has a session root, survives a crash with
 a readable log.

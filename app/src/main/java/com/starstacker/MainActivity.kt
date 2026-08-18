@@ -3,6 +3,7 @@ package com.starstacker
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -48,6 +49,8 @@ import com.starstacker.ui.FramingController
 import com.starstacker.ui.CaptureScreen
 import com.starstacker.ui.FramingScreen
 import com.starstacker.ui.SetupController
+import com.starstacker.ui.Permissions
+import com.starstacker.ui.SettingsScreen
 import com.starstacker.ui.SetupScreen
 import com.starstacker.ui.ProbeScreen
 import com.starstacker.ui.theme.StarStackerTheme
@@ -72,11 +75,20 @@ import java.util.Locale
  */
 class MainActivity : ComponentActivity() {
 
-    private enum class Screen { PROBE, FRAMING, SETUP, CAPTURE }
+    private enum class Screen { PROBE, FRAMING, SETUP, CAPTURE, SETTINGS }
 
     private var profile by mutableStateOf<DeviceProfile?>(null)
     private var diagnostics by mutableStateOf(DiagnosticsState())
     private var locationGranted by mutableStateOf(false)
+
+    /**
+     * T-0.4 — every runtime permission currently held. A set rather than a flag each, so the
+     * settings screen is a pure function of it and a new permission needs no new plumbing.
+     */
+    private var granted by mutableStateOf<Set<String>>(emptySet())
+
+    /** See [askForNotificationsOnce] — a refused prompt must not become a loop. */
+    private var notificationsAsked = false
 
     /** T-3.13: scanned once at launch, so the offer is there before anything else is touched. */
     private var resumable by mutableStateOf<SessionRecovery.Resumable?>(null)
@@ -91,7 +103,55 @@ class MainActivity : ComponentActivity() {
 
     private val requestLocation = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
-    ) { granted -> locationGranted = granted }
+    ) { allowed -> locationGranted = allowed; refreshPermissions() }
+
+    /** T-0.4 — used by the settings screen, which asks for them by name. */
+    private val requestPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { refreshPermissions() }
+
+    private fun refreshPermissions() {
+        granted = Permissions.all
+            .filter { ContextCompat.checkSelfPermission(this, it.id) == PackageManager.PERMISSION_GRANTED }
+            .map { it.id }
+            .toSet()
+        locationGranted = Permissions.FINE_LOCATION in granted
+    }
+
+    /**
+     * Android stops showing the system prompt after two refusals, and from then on the only route
+     * is the app's own settings page. Without this the Allow button would silently do nothing,
+     * which reads as a bug in this app rather than a decision already made.
+     */
+    /**
+     * T-0.4 — asked here, on the way into framing, rather than at first launch.
+     *
+     * A prompt fired at cold start is answered before the user knows what the app does, and
+     * "Allow notifications?" out of context is refused by reflex. By this point they have opened
+     * the camera to point it at something, which is the moment "this runs with the screen off and
+     * will ask you to cover the lens" becomes a true and relevant sentence.
+     *
+     * Only ever once per launch: Android silently ignores the request after two refusals, and
+     * re-firing it would turn a decision into a loop. The settings screen carries the full
+     * rationale and a route to the system page for anyone who wants to change their mind.
+     */
+    private fun askForNotificationsOnce() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (notificationsAsked || Permissions.NOTIFICATIONS in granted) return
+        notificationsAsked = true
+        requestPermission.launch(Permissions.NOTIFICATIONS)
+    }
+
+    private fun openSystemAppSettings() {
+        runCatching {
+            startActivity(
+                Intent(
+                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    android.net.Uri.fromParts("package", packageName, null),
+                ),
+            )
+        }.onFailure { Log.w(TAG, "could not open app settings", it) }
+    }
 
     /**
      * T-0.5 — the session root picker. `OpenDocumentTree` returns null when the user backs out,
@@ -103,6 +163,7 @@ class MainActivity : ComponentActivity() {
         if (uri != null && SessionRoot.remember(this, uri)) {
             sessionRootLabel = SessionRoot.describe(this)
         logSize = FieldLog.sizeBytes()
+        refreshPermissions()
         }
     }
 
@@ -286,23 +347,17 @@ class MainActivity : ComponentActivity() {
                     Screen.PROBE -> ProbeScreen(
                         profile = current,
                         qualification = qualification,
-                        exportedPath = exportedPath,
-                        onExport = { exportedPath = exportAndShare(current) },
                         diagnostics = diagnostics.copy(
                             cameraPermissionGranted = hasCameraPermission(),
                         ),
                         onOpenabilityTest = { scope.launch { runOpenabilityTest(current) } },
                         onCaptureRaw = { exposureNs -> scope.launch { runCapture(exposureNs) } },
-                        onOpenFraming = { screen = Screen.FRAMING },
-                        sessionRoot = sessionRootLabel,
-                        onPickSessionRoot = { pickSessionRoot.launch(SessionRoot.current(this@MainActivity)) },
-                        logTail = logTail,
-                        logSizeBytes = logSize,
-                        onRefreshLog = {
-                            logTail = FieldLog.tail()
-                            logSize = FieldLog.sizeBytes()
+                        onOpenFraming = {
+                            askForNotificationsOnce()
+                            screen = Screen.FRAMING
                         },
-                        onShareLog = { shareFieldLog() },
+                        sessionRoot = sessionRootLabel,
+                        onOpenSettings = { screen = Screen.SETTINGS },
                         resumable = resumable.takeIf { !CaptureService.running },
                         onResumeSession = {
                             val session = resumable ?: return@ProbeScreen
@@ -404,6 +459,26 @@ class MainActivity : ComponentActivity() {
                             CaptureService.send(this@MainActivity, CaptureService.ACTION_SKIP_DARKS)
                         },
                         onDone = { screen = Screen.PROBE },
+                    )
+
+                    Screen.SETTINGS -> SettingsScreen(
+                        sessionRoot = sessionRootLabel,
+                        onPickSessionRoot = {
+                            pickSessionRoot.launch(SessionRoot.current(this@MainActivity))
+                        },
+                        grantedPermissions = granted,
+                        onRequestPermission = { requestPermission.launch(it) },
+                        onOpenSystemSettings = { openSystemAppSettings() },
+                        logTail = logTail,
+                        logSizeBytes = logSize,
+                        onRefreshLog = {
+                            logTail = FieldLog.tail()
+                            logSize = FieldLog.sizeBytes()
+                        },
+                        onShareLog = { shareFieldLog() },
+                        onExportProfile = { exportedPath = exportAndShare(current) },
+                        exportedPath = exportedPath,
+                        onBack = { screen = Screen.PROBE },
                     )
                 }
             }
@@ -600,6 +675,13 @@ class MainActivity : ComponentActivity() {
      * only state T-0.6's acceptance cares about — and by then the Activity exists, so a second
      * `am start` never re-enters `onCreate`.
      */
+    override fun onResume() {
+        super.onResume()
+        // Permissions can change outside the app — the system settings page is one tap away from
+        // the settings screen, so the state has to be re-read rather than remembered.
+        refreshPermissions()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (intent.getStringExtra("diag") == "crash") crashForDiagnostics()

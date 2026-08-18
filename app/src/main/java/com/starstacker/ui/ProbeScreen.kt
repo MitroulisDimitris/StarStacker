@@ -63,8 +63,6 @@ data class DiagnosticsState(
 fun ProbeScreen(
     profile: DeviceProfile,
     qualification: DeviceQualification,
-    onExport: () -> Unit,
-    exportedPath: String?,
     diagnostics: DiagnosticsState,
     onOpenabilityTest: () -> Unit,
     onCaptureRaw: (Long) -> Unit,
@@ -73,14 +71,12 @@ fun ProbeScreen(
     resumable: SessionRecovery.Resumable? = null,
     onResumeSession: () -> Unit = {},
     onDiscardResumable: () -> Unit = {},
-    /** Where sessions are written, and whether that survives uninstall (T-0.5). */
+    /**
+     * One line about storage, because the app-private default is deleted on uninstall and that
+     * is worth stating where it is seen rather than only where it is changed (T-0.5).
+     */
     sessionRoot: String = "",
-    onPickSessionRoot: () -> Unit = {},
-    /** T-0.6 — the last lines of the field log, newest first, and a way to send them. */
-    logTail: List<String> = emptyList(),
-    logSizeBytes: Long = 0L,
-    onShareLog: () -> Unit = {},
-    onRefreshLog: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
 ) {
     LazyColumn(
         modifier = Modifier
@@ -111,10 +107,8 @@ fun ProbeScreen(
         item { VerdictCard(qualification) }
 
         if (sessionRoot.isNotBlank()) {
-            item { SessionRootCard(sessionRoot, onPickSessionRoot) }
+            item { SessionRootCard(sessionRoot, onOpenSettings) }
         }
-
-        item { DiagnosticsLogCard(logTail, logSizeBytes, onShareLog, onRefreshLog) }
 
         item { Eyebrow("Cameras") }
 
@@ -180,15 +174,7 @@ fun ProbeScreen(
         item { Eyebrow("Camera checks") }
         item { DiagnosticsPanel(diagnostics, onOpenabilityTest, onCaptureRaw) }
 
-        item {
-            Column {
-                QuietButton(text = "Export device profile (JSON)", onClick = onExport)
-                if (exportedPath != null) {
-                    Spacer(Modifier.height(8.dp))
-                    Mono("Written to $exportedPath", color = Night.Txt3, size = 10.sp)
-                }
-            }
-        }
+        item { QuietButton(text = "Settings, permissions & diagnostics", onClick = onOpenSettings) }
 
         item { Spacer(Modifier.height(40.dp)) }
     }
@@ -199,11 +185,13 @@ fun ProbeScreen(
  *
  * It says so unprompted because the app-private default is *deleted when the app is uninstalled*,
  * and a 2.4 GB session that vanished with a sideload is not a thing to discover afterwards. The
- * wording carries the consequence rather than the path alone: "app-private storage" tells the
- * user nothing they can act on, and neither does a `content://` URI.
+ * wording carries the consequence rather than the path alone: "app-private storage" tells the user
+ * nothing they can act on, and neither does a `content://` URI.
+ *
+ * Changing it happens in Settings (T-0.9); this is the notice, not the control.
  */
 @Composable
-private fun SessionRootCard(sessionRoot: String, onPick: () -> Unit) {
+private fun SessionRootCard(sessionRoot: String, onOpenSettings: () -> Unit) {
     val atRisk = sessionRoot.contains("uninstall")
     Card {
         Eyebrow("Session folder · FR-9.1")
@@ -214,67 +202,7 @@ private fun SessionRootCard(sessionRoot: String, onPick: () -> Unit) {
             color = if (atRisk) Night.Warn else Night.Txt2,
         )
         Spacer(Modifier.height(9.dp))
-        QuietButton(if (atRisk) "Choose a folder" else "Change folder", onClick = onPick)
-    }
-}
-
-/**
- * T-0.6's viewer. Deliberately on the landing screen rather than behind a settings page: it is
- * read the morning after a session that went wrong, by someone who does not yet know what to look
- * for, and a diagnostic nobody can find is a diagnostic nobody uses.
- */
-@Composable
-private fun DiagnosticsLogCard(
-    tail: List<String>,
-    sizeBytes: Long,
-    onShare: () -> Unit,
-    onRefresh: () -> Unit,
-) {
-    var expanded by remember { mutableStateOf(false) }
-    Card {
-        Eyebrow("Field log - T-0.6")
-        Text(
-            if (sizeBytes > 0) {
-                "%.1f KB on disk - survives the session, the app being killed, and a crash"
-                    .format(sizeBytes / 1024.0)
-            } else {
-                "empty"
-            },
-            fontFamily = NumFamily,
-            fontSize = 11.sp,
-            color = Night.Txt3,
-        )
-        if (expanded && tail.isNotEmpty()) {
-            Spacer(Modifier.height(9.dp))
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 240.dp)
-                    .verticalScroll(rememberScrollState()),
-            ) {
-                tail.forEach { line ->
-                    Text(
-                        line,
-                        fontFamily = NumFamily,
-                        fontSize = 9.sp,
-                        lineHeight = 12.sp,
-                        color = if (line.contains(" E/") || line.contains("CRASH")) {
-                            Night.Warn
-                        } else {
-                            Night.Txt3
-                        },
-                    )
-                }
-            }
-        }
-        Spacer(Modifier.height(9.dp))
-        ButtonRow {
-            QuietButton(if (expanded) "Hide" else "Show recent") {
-                if (!expanded) onRefresh()
-                expanded = !expanded
-            }
-            QuietButton("Share log", onClick = onShare)
-        }
+        QuietButton(if (atRisk) "Choose a folder" else "Settings", onClick = onOpenSettings)
     }
 }
 
