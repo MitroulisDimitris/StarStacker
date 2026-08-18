@@ -54,12 +54,13 @@ class CaptureEngine(
         fun reading(): ThermalPolicy.Reading
 
         /**
-         * Peak rotation since the last call, **degrees**. Null when it could not be measured —
-         * no gyroscope, or its zero-rate estimate has not settled — in which case [FrameGate]
+         * Peak rotation across exactly `[startNs, endNs]`, **degrees**, on the clock the camera's
+         * `SENSOR_TIMESTAMP` uses. Null when it could not be measured, in which case [FrameGate]
          * skips the check rather than guessing. See [DeviceEnvironment] for why this reads the
-         * gyroscope and not the accelerometer.
+         * gyroscope rather than the accelerometer, and why it is bounded by the exposure rather
+         * than by the last call.
          */
-        fun consumePeakTiltDeg(): Double?
+        fun peakRotationDegDuring(startNs: Long, endNs: Long): Double?
 
         fun nowEpochMs(): Long
     }
@@ -317,6 +318,20 @@ class CaptureEngine(
         val pixels = buffer ?: ShortArray(frame.width * frame.height).also { buffer = it }
         val appliedIso = frame.appliedIso ?: request.iso
         val appliedExposure = frame.appliedExposureNs ?: request.exposureNs
+        /*
+         * The exposure window, and the sign of it is measured rather than read from the docs.
+         *
+         * `SENSOR_TIMESTAMP` is documented as the start of exposure of the first row. On this
+         * device it is not. Measured 2026-08-18 with 7.4 s subs: frames are analysed a stable
+         * **3.35-3.38 s after** their own timestamp, which is impossible if the exposure had only
+         * started then, and consecutive timestamps sit exactly one exposure apart. Both facts fit
+         * a timestamp taken at the *end* of exposure and nothing else.
+         *
+         * Getting this backwards put the window entirely in the future, where the gyro record
+         * cannot reach, so every query returned "unmeasured" and the bump check was silently off.
+         */
+        val exposureEndNs = frame.timestampNs
+        val exposureStartNs = exposureEndNs - appliedExposure
 
         val record = frame.use { captured ->
             val stored = writer.writeFrame(
@@ -381,8 +396,21 @@ class CaptureEngine(
             medianEccentricity = stars?.medianEccentricity,
             saturated = stars?.saturatedFrame ?: false,
             medianHfr = stars?.medianHfr,
-            peakTiltDeg = environment.consumePeakTiltDeg(),
+            // Bounded by the exposure itself, so motion during the readout or the DNG write
+            // cannot condemn a frame whose pixels are clean — see [DeviceEnvironment].
+            peakTiltDeg = environment.peakRotationDegDuring(
+                startNs = exposureStartNs,
+                endNs = exposureEndNs,
+            ),
         )
+        // The rotation is worth a line even when the frame passes: "unmeasured" and "did not
+        // move" are the same verdict and very different facts, and only this distinguishes them.
+        Log.d(
+            TAG,
+            "frame $index rotation=" +
+                (metrics.peakTiltDeg?.let { "%.3f deg".format(it) } ?: "unmeasured"),
+        )
+
         // A dark is not judged on its stars — it is supposed to have none. Running the gate over
         // darks would reject every one of them as cloud.
         val verdict = if (kind == FrameKind.DARK) FrameGate.Verdict(true) else gate.accept(metrics)

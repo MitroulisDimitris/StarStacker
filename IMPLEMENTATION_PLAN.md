@@ -515,6 +515,56 @@ accelerometer it replaced flagged the *sharpest* frames in the session.
 
 ---
 
+## 1.14 SENSOR_TIMESTAMP is not what the documentation says — 2026-08-18
+
+Scoping the bump check to the exposure (§1.13's residual) needed the exposure's start and end on
+the gyro's clock. Two device facts had to be measured before that was possible, and one of them
+contradicts the API documentation outright.
+
+**The gyro's delivery rate is not the constant you name.** `SENSOR_DELAY_GAME` delivered at about
+**400 Hz**, not the ~50 Hz the name suggests, so a 4096-sample ring buffer spanned under ten
+seconds. Every query for a 7.4 s sub — asked after the readout and the 25 MB write — fell off the
+back of the record. The listener now registers an explicit sampling period.
+
+**`SENSOR_TIMESTAMP` is the end of exposure on this device, not the start.** The documentation
+says "time at start of exposure of first row". Measured with 7.4 s subs:
+
+| | Measured |
+|---|---|
+| Analysis, relative to the frame's own timestamp | **+3.35 s, +3.36 s, +3.38 s** — stable |
+| Exposure length | 7.40 s |
+| Gap between consecutive timestamps | 7.399 s — exactly one exposure |
+
+A frame cannot be analysed 3.36 s after its exposure *started* when the exposure lasts 7.4 s. Both
+figures fit a timestamp taken at the end of exposure and nothing else, so the window is
+`[timestamp - exposure, timestamp]`.
+
+**Why this mattered more than it should have.** With the sign wrong the window sat entirely in the
+future, the gyro record could not reach it, and every query returned "unmeasured" — which
+[FrameGate] correctly treats as "skip the check". The bump detector was **silently off**, and an
+accepted frame looks identical whether the check passed or never ran. It now logs the rotation per
+frame, because "unmeasured" and "did not move" are the same verdict and very different facts, and
+`DeviceEnvironment` warns with both intervals when a window falls outside the record.
+
+### What the detector is actually worth, now that it measures the right interval
+
+A phone lying still, 7.4 s subs: **0.013°, 0.020°, 0.021°, 0.017°**. That is the noise floor of the
+whole chain — sensor, zero-rate estimate and integration — over a real sub.
+
+Two consequences. The 0.5° threshold has **25× margin** over it, so false rejections are not a
+risk that needs managing. And the floor sits just under the 1.5 px trailing budget of 0.031°,
+which means a threshold at the trailing tolerance itself is *almost* but not quite supportable —
+worth revisiting with a warm phone and a longer sub before tightening, since 0.5° currently passes
+24 px of real rotation.
+
+> **The bias estimate is the mean of the settling window, not the first sample.** Seeding from one
+> sample assumes the phone is still at the instant the service starts, which is exactly when it is
+> not — the user has just pressed Start. Measured that way, a stationary phone integrated **110°**
+> on its first frame and decayed 13° → 7.5° → 6.7° → 6.5° as the estimate crawled toward the truth
+> with a 30 s time constant. Every degree of it was phantom.
+
+---
+
 ## 2. Decisions
 
 | ID | Decision | Rationale | Reversal cost |
@@ -986,6 +1036,10 @@ Goal: FR-13/M3 — *press start, walk away, come back to a folder of good subs.*
 - [~] **T-3.10** Cheap live quality gating (the subset that needs no registration): eccentricity →
   trailing, star-count collapse → cloud, accelerometer spike → bump. Rejected frames kept on disk
   and flagged (D-10). Registration-residual gating and the common-area indicator arrive in Phase 2.
+  **Bump check scoped to the exposure 2026-08-18** (§1.14): the peak is now queried over
+  `[timestamp - exposure, timestamp]` rather than accumulated between reads, so motion during the
+  readout or the DNG write no longer condemns a frame whose pixels are clean. Noise floor on a
+  still phone over a 7.4 s sub is 0.013-0.021°, against a 0.5° threshold.
   **Verified on sky 2026-08-18** (§1.13): 42 of 49 accepted, zero false `TRAILED`, and the
   seven `BUMPED` are the phone being touched at the start and picked up at the end. The two
   detectors it shipped with were both wrong — see §1.10 for the accelerometer and §1.13 for the
