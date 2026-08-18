@@ -63,6 +63,7 @@ Two consequences to accept deliberately:
 | **1B** | Framing & focus | FR-6.3, §4.1.4 | Point the phone at the sky in the dark and see stars; focus locks |
 | **1C** | Unattended session | M3, §5, §6, §9 | **Press start, walk away, come back to a folder of good subs** |
 | **1D** | The interface | §1.15, prototype | Someone who has never seen it can start a session without reading a paragraph |
+| **1E** | The second walkthrough | §1.17, prototype | Sessions can be found, named and deleted in the app; nothing fires the camera unasked |
 | **2** | Registration & live gating | M4 (reg), M5 | Live per-frame accept/reject with real transforms; common-area readout |
 | **3** | Stacking | M4 | Linear master out, comparable to Siril on the same subs |
 | **4** | Session management | M5.5 | Capture and stacking fully decoupled; restack, multi-night |
@@ -82,6 +83,7 @@ Two consequences to accept deliberately:
 | 1B | 7 | 1 | **hardware-verified except what needs darkness** — see §5 and §1.7 |
 | 1C | 17 | 1 | **every task built.** Blocked on the field, not on code: darks have never once executed, and no 45-minute session has been shot |
 | 1D | 9 | 0 | **all nine built and photographed 2026-08-18** (§1.15). T-3.21's last piece waits on T-6.1's session list |
+| 1E | 10 | 0 | **planned 2026-08-18** (§1.17), not started. T-3.27 pulls T-6.1/T-6.3 forward out of Phase 4; T-3.29's stack action waits on Phase 3 |
 | 2+ | outlined | 0 | not started |
 
 > **The `Ticked` column counts `[x]` only.** §0 ties that to an acceptance demonstrated on a real
@@ -700,6 +702,44 @@ twelve seconds after the camera has been busy.
 
 ---
 
+## 1.17 The second walkthrough — 2026-08-18
+
+Phase 1D put the three main screens back on the prototype. Walking the result found a different
+class of problem: not screens built to the wrong shape, but controls that are in the wrong place,
+answer a question nobody asked, or quietly do something expensive on their own. Ten tasks, Phase
+1E, and two decisions that reverse things written earlier in this document.
+
+**Two reversals, both because the earlier reasoning was about the app rather than the person.**
+
+- **T-3.25 solved on arrival** because "solving is what this screen is *for*, so it does not wait to
+  be asked". That is true of the *screen* and false of the *cost*: the measurement fires the camera
+  and spends frames the moment the screen appears, so a mistaken tap costs a sky measurement and
+  the user cannot tell what the app is doing or why the phone got warm. **D-27** generalises the
+  correction rather than patching the one screen.
+- **`MAX_STOPS = 2.0`** was justified as "past that the solve is not being adjusted, it is being
+  ignored". The premise was that a large override is a mistake. But the histogram sits directly
+  above the control and shows the consequence — clipped, or read-noise limited — so the range can
+  be as wide as a camera's is and the picture does the arguing. ±4 stops, marked in whole stops
+  like every exposure-compensation dial ever made.
+
+**One decision genuinely changes.** D-10 says nothing is ever deleted by the app, which was written
+about *the app's own judgement*: a frame the gate rejected stays on disk, because the app does not
+get to decide someone's data is worthless. A person deleting their own session is not that, and a
+phone that fills up with 3.6 GB sessions and offers no way to clear them is not honouring D-10, it
+is hiding behind it. **D-26** states the distinction.
+
+**The rest is placement.** `All sessions` opened a file manager, which is where the folders are but
+not where the *sessions* are. Focus by hand was a permanent card scrolled far from the preview it
+has to be judged against — so it is open when it is not needed, and out of sight at the one moment
+it is (a sweep that just failed). Nothing said what continuing without focus costs, though the app
+walks to setup perfectly happily without it. The histogram had no title, so the one picture that
+makes "sky-limited" checkable was unlabelled. And the exposure readout said `as solved` where the
+useful thing to say is the number itself, and then both numbers when it changes.
+
+---
+
+---
+
 ## 2. Decisions
 
 | ID | Decision | Rationale | Reversal cost |
@@ -713,7 +753,7 @@ twelve seconds after the camera has been busy.
 | **D-7** | OpenCV added as a dependency **at Phase 3**, not before | Keeps the Phase-1 APK small and the build fast while shooting is the only feature. Star detection (§12.1) is Kotlin anyway. | Low |
 | **D-8** | `arm64-v8a` only, minSdk 30, targetSdk current | FR-3.1 | — |
 | **D-9** | Live analysis reads the **RAW buffer directly** (green channel, 4×4 binned to ~1 MP), not a separate YUV stream | One less stream to configure, no OEM ISP in the analysis path, and the numbers then describe the data actually being stacked. Confirmed viable by OI-3: the YUV path remains available as a guaranteed fallback, so this is a free choice rather than a bet. | Medium |
-| **D-10** | Rejected frames are written to `lights/` like any other frame and flagged in `session.json`. Nothing is ever deleted by the app | FR-7.5, FR-10.6.3 | — |
+| **D-10** | Rejected frames are written to `lights/` like any other frame and flagged in `session.json`. **The app never deletes anything of its own accord** — amended 2026-08-18 to say *of its own accord*, since **D-26** now lets the user delete a session outright | FR-7.5, FR-10.6.3 | — |
 | **D-11** | Fonts bundled, not fetched (Space Grotesk + IBM Plex Mono, both OFL) | Offline in a field with no signal is the normal case. | — |
 | **D-12** | **Two separate foreground services.** Capture = `camera` type (no time limit). Stacking = `mediaProcessing` on API 35+, `dataSync` on API 34 — both carry a 6 h / 24 h budget, both must implement `onTimeout()` → `stopSelf()` | Resolves OI-2. Capture must be able to run for hours; only the `camera` type allows that. Stacking is minutes, so the 6 h budget is ample, but the callback is mandatory or the system throws `RemoteServiceException`. | Medium |
 | **D-13** | **DNG readback via a minimal TIFF/DNG reader written in Kotlin**: header → IFD0, tags `StripOffsets`/`StripByteCounts`/`RowsPerStrip`/`BitsPerSample`/`Compression`/`CFAPattern`/`BlackLevel`/`WhiteLevel`, strips copied into a `ShortArray` | Resolves OI-1. **Confirmed against a real capture 2026-08-16** — see §1.6. No SubIFD walk is needed: `DngCreator` puts the CFA data in IFD0 itself. | Medium |
@@ -728,6 +768,9 @@ twelve seconds after the camera has been busy.
 | **D-23** | The second stream demanded by **D-20** is a **drained YUV `ImageReader`**, not an unconsumed `SurfaceTexture` | A `SurfaceTexture(0)` with no EGL context cannot be drained — `updateTexImage()` needs a bound GL texture — so its buffer queue fills and stalls a *repeating* request. It survived T-1.4 only because that stopped after one frame. A YUV reader drains with `acquireLatestImage().close()`, and `YUV(PREVIEW) + RAW(MAXIMUM)` is on the device's own guaranteed list. Free side effect: OI-3's YUV analysis fallback is now always configured. | Low |
 | **D-24** | **A minimal JSON reader is owned in-tree** (`json/Json.kt`), extending the writer that already existed | D-5 makes `session.json` the source of truth, so the app must *read* what it wrote — including folders copied back from a PC (FR-10.6.4). `org.json` is a stub in JVM unit tests, which would push every session-log test onto a device; a serialization library is an annotation processor on the build for a handful of flat records. | Low |
 | **D-25** | **The UI explains only what the user must decide.** Reasoning lives in KDoc and this document, never on screen. Consequence the user cannot deduce is not reasoning and stays | §1.15. Written after the settings screen shipped with paragraphs justifying dark mode, the camera permission and the storage location — none of them a decision anyone makes. The author's thinking in front of someone in a field at 2 a.m. is a cost with no reader | Low |
+
+| **D-26** | **The app deletes nothing on its own; the user may delete a session outright.** Deletion is explicit, confirmed, and names what is being lost | Amends **D-10**, which is about the app's own *judgement* — a rejected frame stays on disk because the app does not get to decide someone's data is worthless. A person clearing their own 3.6 GB session is not that, and a capture app with no way to free space is not honouring D-10 but hiding behind it | Low |
+| **D-27** | **Nothing that costs frames or opens the camera starts because a screen appeared.** Measurements are begun by a control, and the screen says what one will cost before it is pressed | Reverses T-3.25's auto-solve. Arriving somewhere is not consent to spend the sensor: the frames are real, the phone warms, and an unexplained camera indicator on a screen the user is only passing through reads as the app misbehaving. The rule generalises, because every future screen with a measurement behind it meets the same temptation | Low |
 
 ---
 
@@ -1582,6 +1625,127 @@ the same app surface as Phase 1C, but they sit behind their own checkpoint: 1C i
 > Someone who has never seen the app can open it, understand what to press, and start a session
 > without reading a paragraph. The three screens look like the prototype they were designed from.
 
+## 6.6 Phase 1E — The second walkthrough
+
+Ten changes from the owner's second pass (§1.17). Same `T-3.x` prefix and the same app surface as
+1C and 1D, behind their own checkpoint: none of this changes whether a session works, and all of it
+changes whether someone can run one without being surprised.
+
+- [ ] **T-3.27** **`All sessions` opens the sessions, not the folder.** The control currently calls
+  `openSessionFolder()` — the same file-manager route as the folder icon beside it, so the app has
+  two buttons doing one thing and no screen for the thing they are named after. It becomes a pane
+  listing every session found by scanning the root (**D-5**, FR-10.6.4), with size on disk and
+  state alongside what the main screen's rows already carry, and a tap opening that session's
+  detail: frame log, derivation, pointing, path. The folder icon stays — a file manager is a
+  different job, and T-3.21 put it there for the case where the answer really is "give me the
+  files".
+  This is **T-6.1 and T-6.3 arriving early**, out of Phase 4, because the button that needs them
+  already exists and currently lies about what it does.
+  *Accept:* `All sessions · N` lands on a list of all N, and tapping one shows its frame log. With
+  no sessions it says so rather than presenting an empty box.
+  *Watch:* this is the first screen that reads *every* `session.json` in the root, which is exactly
+  the cost **OI-5** exists to measure. Time the scan on a root of ~12 sessions before building
+  D-5's cached index — the index is only worth its second source of truth if the scan is slow.
+
+- [ ] **T-3.28** **Delete a session — and nothing else, ever.** Offered on a row and in the detail,
+  with the frame count and the size on disk stated in the confirmation, deleting the folder and
+  everything under it. Multi-select (T-3.29) makes it a batch.
+  **D-26** amends **D-10**, which is otherwise contradicted by this task existing.
+  *Accept:* delete a session and its folder is gone from the root and from the list; no deletion
+  ever happens without a confirmation that names what is about to be lost.
+
+- [ ] **T-3.29** **Select sessions.** Multi-select in the pane, with the count stated and the
+  selection surviving a scroll and a rotation.
+  It serves **delete now and stack later**: `Stack selected` is Phase 3 (T-5.x) for one session and
+  T-6.8 for several, so the action appears when there is something behind it. A visible button that
+  silently does nothing is worse than no button — the same rule that keeps the prototype's
+  `Stack now` badge off the main screen until it can act.
+  *Accept:* several sessions can be selected, the count is shown, and the selection drives a batch
+  delete. No stack control is drawn before it works.
+
+- [ ] **T-3.30** **The session is named at the start.** Every session from the UI is currently
+  labelled `"session"` — the literal string — so twelve nights of shooting produce twelve folders
+  distinguished only by their timestamps. Start now prompts for a name.
+  **Cancelled or left blank, the session is named for the day**, and the second that day is
+  distinguished from the first (`2026-08-18`, `2026-08-18-2`, …). The number is decided by
+  **scanning the root**, per D-5: a counter in preferences is wrong the moment a folder is copied
+  in from a PC or deleted, which are both things FR-10.6.4 promises will work.
+  The folder must not carry the date twice. `SessionLayout.folderName` already prefixes
+  `yyyy-MM-dd_HHmm`, so a named session is `2026-08-18_2115_Orion` and a default-named one is
+  `2026-08-18_2115` with no label suffix, while `session.json` keeps the full label either way.
+  *Accept:* name a session `Orion` and the folder and log both say so; cancel the prompt and it is
+  named for the day; start a second the same night and the two are told apart without reading the
+  clock.
+  *Note:* the name reaches the frames — T-3.16 writes session identity into every DNG's
+  `ImageDescription` — so it is chosen before the first exposure and there is no rename to
+  propagate afterwards.
+
+- [ ] **T-3.31** **Focus by hand becomes a disclosure under `Find focus`.** It is a permanent card
+  today, several scrolls below the preview: open when it is not wanted, and out of sight at the one
+  moment it is — a sweep that has just failed. It becomes a section under the `Find focus` control
+  on the preview, opening **when the sweep fails** and when it is asked for. `Verify stored focus`
+  moves into the same disclosure, for the same reason: it is a thing you do occasionally, not a
+  thing you read every time.
+  *Accept:* with focus unset the section is closed; a failed sweep leaves it open with the failure
+  stated; tapping the disclosure opens it by hand. Both controls act against the live preview.
+  *Unchanged:* the stepping itself — ±1 motor step of 0.0374 dioptres against the live HFR (§1.7).
+  If the complaint is the control rather than its placement, that is a separate task and wants a
+  number: which step, and judged against what.
+
+- [ ] **T-3.32** **Say what continuing without focus costs.** `Continue to session setup` is enabled
+  on nothing but a camera being selected, so the app walks to setup with no stored focus and says
+  nothing about it there. A line under the button when nothing is stored, in **the wording already
+  used on the preview** — one sentence, authored once, per the trap T-3.24 records of a screen
+  giving two answers to one question in two wordings.
+  Deliberately **not a gate**: FR-3.1.1's Functional tier shoots without calibration, and a
+  beginner stopped at 1 a.m. by a sweep that will not converge under thin cloud has nowhere to go.
+  D-25: the consequence stays, the justification does not.
+  *Accept:* with no focus stored the line appears and Continue still works; with focus stored there
+  is no line.
+
+- [ ] **T-3.33** **The sky is measured when asked.** Arriving at setup currently fires
+  `measureAndSolve()` from a `LaunchedEffect` — the camera opens and frames are spent because a
+  screen appeared. A `Measure the sky` button starts it instead, and the screen says what it will
+  cost before it is pressed.
+  **D-27** states the general rule, since the next screen with a measurement behind it will face
+  the same temptation.
+  *Accept:* arriving at setup takes no frames and leaves the camera closed; the solve appears after
+  the button, and a failure offers the retry it already has.
+
+- [ ] **T-3.34** **Title the histogram.** T-3.25's prediction is the one picture that makes
+  "sky-limited" checkable and it is drawn with no title and no labelled axis, so it reads as
+  decoration. It gets a title that says it is *predicted*, a labelled clipping wall, and enough of
+  an axis that the reader can say what the horizontal direction means without being told.
+  *Accept:* someone who has not read §5 can say what the picture is of.
+
+- [ ] **T-3.35** **Exposure compensation as a photographer's control.** Today: an unlabelled slider
+  over ±2 stops in thirds, titled `Exposure`, reading `as solved`. It becomes a **±4 stop** scale
+  marked at whole stops (−4 −3 −2 −1 0 +1 +2 +3 +4), moving in **sixths of a stop**, under a title
+  that says what it compensates.
+  Two things fall out of the wider range and both are acceptance criteria, not notes:
+  - the compensated sub must **clamp to the sensor's maximum exposure** — 49.64 s here (§1.5) —
+    rather than asking for one the HAL will silently refuse or truncate (D-21's whole family);
+  - `SetupController.maxFrames` derives the session-length slider's upper bound from
+    `solution.chosen.exposureSeconds`, the **uncompensated** sub, so the 2.5-hour bound is already
+    wrong by up to 4× at ±2 stops and would be wrong by 16× at ±4.
+  *Accept:* the scale reads −4 to +4 with the stops marked, moves in sixths, never asks for an
+  exposure the sensor cannot take, and the length slider's range follows the compensated sub.
+
+- [ ] **T-3.36** **Say what the exposure is, and what it becomes.** `as solved` is replaced by the
+  solved sub as a time, and moving the control shows the change rather than the destination:
+  `3.2 s → 4.5 s per frame`. The number is what the user is deciding about; "as solved" is the
+  app's own bookkeeping.
+  *Accept:* at zero compensation the solved sub is shown as a time; moved, both times are shown
+  with the direction between them.
+
+**Checkpoint 1E:**
+> Sessions can be found, named, opened and deleted from inside the app; focus states its cost
+> rather than hiding it; and nothing takes a frame that was not asked for.
+
+---
+
+---
+
 ## 7. Phase 2 — Registration & live gating
 
 - [ ] **T-4.0** **Synthetic sky generator** (test infrastructure, build this first): renders
@@ -1801,6 +1965,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-08-18 | **Phase 1E planned — the second walkthrough (§1.17).** Ten tasks, and two of them reverse things this document argued for earlier. **The sky will be measured when asked** rather than on arrival (**D-27**): T-3.25's "solving is what this screen is for" was true of the screen and false of the cost, since the measurement opens the camera and spends frames the moment the screen appears. **Exposure compensation goes to ±4 stops** in sixths, marked like a camera's dial, because the predicted histogram sits directly above it and shows the consequence — the picture can do the arguing that `MAX_STOPS = 2.0` was doing by fiat. **D-26** amends **D-10** so a person can delete their own session, which D-10 never meant to forbid. The rest is placement: `All sessions` opened a file manager rather than the sessions (T-3.27, pulling T-6.1/T-6.3 forward), sessions were all labelled with the literal string `"session"` (T-3.30), focus by hand sat permanently open and scrolls away from the preview it must be judged against (T-3.31), nothing said what continuing without focus costs though the app allows it (T-3.32), and the histogram had no title (T-3.34). Two defects found while planning: the session-length slider's upper bound is computed from the **uncompensated** sub, already wrong by up to 4× and 16× at the new range, and the compensated sub is not clamped to the sensor's 49.64 s maximum (T-3.35). |
 | 2026-08-18 | **T-1.3 closed — the camera lifecycle, run fifty times over (§1.16).** The last unticked box in Phase 1A, and the wrapper itself turned out to be fine: descriptors and threads flat across 50 open/close cycles, 30 configured sessions, 25 exception paths and 36 cancellations, with the camera service confirming the camera free again after **all 141 opens**. What needed fixing was the check. **Warm-up is shaped exactly like a leak** — a clean loop costs 132 → 173 descriptors over its first eight cycles and nothing after — so the first two versions of the rule convicted a clean run, twice, with confidence; it now needs twenty settled cycles before it will judge, and judges on the warm tail's rate and the median per-cycle step together. Two further traps: **re-opening the camera proves nothing**, since the framework hands a device between clients of one process without complaint, so a leak cannot be found by carrying on; and **`resolveActivity` answers with the chooser**, so the handoff spent 25 s waiting for a dialog to open a camera. The acceptance's second clause is in the camera service's own log — `DISCONNECT device 0 … com.starstacker` at 18:27:48, `CONNECT device 4 … com.nothing.camera` at 18:27:49, this process still alive. Two `resume` sites in `CameraAccess` that could drop a device on cancellation are now `resume(value) { release }`. 247 JVM tests. New **OI-22**: one configured session in 78 delivered no frames at all. |
 | 2026-08-18 | **Phase 1D — the interface brought back to the prototype (§1.15).** The walkthrough found that **the main screen had never been built**: the capability probe sat there from Phase 1A, when the only question was whether the device worked, and was never replaced. Nine tasks. The main screen is now `Start a session` as the one bright element, warnings *below* it so they cannot read as a gate, recent sessions and a free/temperature/moon strip; the probe moved behind a settings gear. The capture ring became one tick per frame with an inner ring for the exposure in flight, which needs a second state because a frame is judged ~3.4 s after its exposure ends. Focus moved onto the preview and states the consequence — *"the session will shoot at hyperfocal — soft, not ruined"* — rather than a status word. Setup solves on arrival and draws a **predicted histogram** derived from the measured sky rate, read noise and gain, which is the one picture that makes "sky-limited" checkable. Session length became a drag in frames, 1 to 2.5 hours. **D-25** was written after the settings screen shipped with paragraphs justifying dark mode, the camera permission and the storage location — none of them a decision anyone makes. |
 | 2026-08-18 | **The frame gate was rejecting everything, for two unrelated reasons, and both had passing unit tests (§1.13, §1.14).** A session accepted **0 of 105 frames**. The bump detector read the accelerometer, which cannot separate rotation from translation — and only rotation moves stars. On a tripod extension arm it flagged the *sharpest* frames in the session: one was called 7.85°, which at 74.2 arcsec/px would be a 382-pixel streak, while carrying 208 stars at HFR 0.925. Separately, eccentricity was measured on a 4× binned plane where a star is about one pixel across, so second moments are degenerate: the real 0.375 px trail predicts e ≈ 0.13 against a measured 0.855. The gyro replaced the accelerometer and the shape check now skips undersampled stars. Re-measured on sky: **42 of 49 accepted**, zero false `TRAILED`, and the seven `BUMPED` are the phone being touched at the start and picked up at the end. |
