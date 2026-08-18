@@ -3,10 +3,13 @@ package com.starstacker.ui
 /**
  * T-0.3 — the screens, and the stack that orders them.
  *
- * `Session detail` in the task's original list is Phase 4 (T-6.3) and does not exist yet; the
- * five here are the five that do.
+ * `Session detail` in the task's original list is Phase 4 (T-6.3) and does not exist yet.
+ *
+ * [MAIN] became the root in T-3.18. [PROBE] was the root until then, which was the bug §1.15
+ * describes: the capability probe is a diagnostic and it had been the front door since Phase 1A.
+ * It is still reachable, from Settings, where diagnostics live.
  */
-enum class Screen { PROBE, FRAMING, SETUP, CAPTURE, SETTINGS }
+enum class Screen { MAIN, FRAMING, SETUP, CAPTURE, SETTINGS, PROBE }
 
 /**
  * T-0.3's back stack, as plain data so the rules can be tested rather than clicked.
@@ -20,7 +23,7 @@ enum class Screen { PROBE, FRAMING, SETUP, CAPTURE, SETTINGS }
  * dependencies reluctantly (D-7, D-11), and the rules worth having are the two below — neither of
  * which a library would have got right for us anyway.
  */
-data class BackStack(val entries: List<Screen> = listOf(Screen.PROBE)) {
+data class BackStack(val entries: List<Screen> = listOf(Screen.MAIN)) {
 
     init {
         require(entries.isNotEmpty()) { "a back stack always has a root" }
@@ -50,10 +53,10 @@ data class BackStack(val entries: List<Screen> = listOf(Screen.PROBE)) {
      * The session belongs to the service and survives the screen (D-6), so leaving the capture
      * screen is safe — it just must not lead back into the flow that began it.
      */
-    fun enterCapture(): BackStack = BackStack(listOf(Screen.PROBE, Screen.CAPTURE))
+    fun enterCapture(): BackStack = BackStack(listOf(Screen.MAIN, Screen.CAPTURE))
 
     /** Back to the root, for the completion screen's Done. */
-    fun toRoot(): BackStack = BackStack(listOf(Screen.PROBE))
+    fun toRoot(): BackStack = BackStack(listOf(Screen.MAIN))
 
     companion object {
         /**

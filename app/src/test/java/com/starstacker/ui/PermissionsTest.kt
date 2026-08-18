@@ -49,18 +49,18 @@ class PermissionsTest {
     @Test
     fun `the summary leads with capability once the camera is granted`() {
         val summary = Permissions.summary(setOf(Permissions.CAMERA))
-        assertTrue(summary.startsWith("Ready to capture"), summary)
+        assertTrue(summary.startsWith("Ready"), summary)
     }
 
     @Test
     fun `without the camera the summary says so first`() {
-        assertTrue(Permissions.summary(emptySet()).contains("required"))
-        assertFalse(Permissions.summary(emptySet()).contains("Ready to capture"))
+        assertTrue(Permissions.summary(emptySet()).contains("Camera"))
+        assertFalse(Permissions.summary(emptySet()).startsWith("Ready"))
     }
 
     @Test
     fun `granting everything is stated plainly rather than left blank`() {
-        assertEquals("Everything the app asks for has been granted.", Permissions.summary(everything))
+        assertEquals("All granted.", Permissions.summary(everything))
     }
 
     /**
@@ -93,12 +93,20 @@ class PermissionsTest {
         assertTrue(location.ifDenied.contains("equator"), location.ifDenied)
     }
 
+    /**
+     * **D-25 inverted this test.** It used to require every permission to carry a justification.
+     * The settings screen is not where the app explains itself — a camera app needing the camera
+     * is not a fact anyone has to be told. What must survive is the *consequence*, and only where
+     * the user can act on it.
+     */
     @Test
-    fun `every permission has a reason and a consequence`() {
+    fun `no permission justifies itself, and every refusable one names its consequence`() {
         Permissions.all.forEach {
-            assertTrue(it.why.isNotBlank(), "${it.label} has no reason")
-            assertTrue(it.ifDenied.isNotBlank(), "${it.label} has no consequence")
+            assertTrue(it.why.isBlank(), "${it.label} explains itself on screen")
             assertTrue(it.label.isNotBlank())
+        }
+        Permissions.runtime.forEach {
+            assertTrue(it.ifDenied.isNotBlank(), "${it.label} does not say what refusing costs")
         }
     }
 }

@@ -40,15 +40,14 @@ object Permissions {
         PermissionNeed(
             id = CAMERA,
             label = "Camera",
-            why = "Every frame comes from the camera in full RAW.",
-            ifDenied = "Nothing can be captured. This is the one the app cannot work without.",
+            why = "",
+            ifDenied = "Nothing can be captured.",
             required = true,
         ),
         PermissionNeed(
             id = NOTIFICATIONS,
             label = "Notifications",
-            why = "A session runs for hours with the screen off. The notification is how it " +
-                "reports progress, and how it asks you to cover the lens for dark frames.",
+            why = "",
             // Measured consequence, not a guess: the darks prompt is delivered only as a
             // notification, and the wait behind it times out after 15 minutes.
             ifDenied = "The prompt to cover the lens never appears, so the session waits 15 " +
@@ -58,28 +57,24 @@ object Permissions {
         PermissionNeed(
             id = FINE_LOCATION,
             label = "Location",
-            why = "Latitude and longitude turn the compass into a declination, which is what " +
-                "sets how long a sub can run before the stars trail.",
-            ifDenied = "The trailing limit assumes the celestial equator — the shortest limit " +
-                "any pointing could need. Frames stay correct, they are just shorter than a " +
-                "field near the pole would have allowed. Location is also written into each " +
-                "DNG for plate solving.",
+            why = "",
+            ifDenied = "Subs are limited as if pointed at the celestial equator, so shorter " +
+                "than a field near the pole allows. No GPS tags in the DNGs.",
             required = false,
         ),
         PermissionNeed(
             id = FOREGROUND_SERVICE,
             label = "Foreground service",
-            why = "Keeps the session alive once the screen goes off.",
-            ifDenied = "Granted at install; it cannot be refused.",
+            why = "",
+            ifDenied = "",
             required = false,
             installTime = true,
         ),
         PermissionNeed(
             id = FOREGROUND_SERVICE_CAMERA,
             label = "Camera foreground service",
-            why = "The camera service type is the only one with no time limit, so a session can " +
-                "run all night.",
-            ifDenied = "Granted at install; it cannot be refused.",
+            why = "",
+            ifDenied = "",
             required = false,
             installTime = true,
         ),
@@ -97,19 +92,15 @@ object Permissions {
         all.filter { it.required }.all { it.id in granted }
 
     /**
-     * One line for the top of the screen: what this combination of answers means in practice.
+     * One line for the top of the screen. **D-25:** a state, not an explanation.
      *
-     * Deliberately says what *works*, not what is missing, whenever anything works at all — the
-     * app being usable is the more important fact, and a screen that leads with a complaint about
-     * an optional permission reads as broken rather than degraded.
+     * Leads with what works whenever anything does — a screen that opens by complaining about an
+     * optional permission reads as broken rather than degraded.
      */
     fun summary(granted: Set<String>): String {
-        if (!canCapture(granted)) {
-            return "Camera access is required before anything can be captured."
-        }
+        if (!canCapture(granted)) return "Camera access needed."
         val missing = outstanding(granted)
-        if (missing.isEmpty()) return "Everything the app asks for has been granted."
-        return "Ready to capture. Without ${missing.joinToString(" and ") { it.label.lowercase() }}: " +
-            missing.joinToString(" ") { it.ifDenied }
+        if (missing.isEmpty()) return "All granted."
+        return "Ready. Missing: ${missing.joinToString(", ") { it.label.lowercase() }}."
     }
 }

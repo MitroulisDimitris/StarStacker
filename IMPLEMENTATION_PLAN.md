@@ -81,7 +81,7 @@ Two consequences to accept deliberately:
 | 1A | 6 | 6 | **complete** — probe, qualification, camera lifecycle, first light, DNG reader |
 | 1B | 7 | 2 | **hardware-verified except what needs darkness** — see §5 and §1.7 |
 | 1C | 16 | 1 | **field-ready** — framing → setup → solve → start → live → darks → complete, with resume offered on launch and focus settable by hand. Outstanding: T-3.14 preview stack, T-3.16 DNG metadata, and T-0.5's benchmark (OI-5) |
-| 1D | 9 | 0 | **planned 2026-08-18** from the owner's walkthrough against the prototype (§1.15) |
+| 1D | 9 | 0 | planned 2026-08-18 from the walkthrough (§1.15); T-3.18/19/20 built and T-3.21 mostly, none yet seen on a device |
 | 2+ | outlined | 0 | not started |
 
 > **Phase 1B has now met every acceptance that does not require a night sky** (2026-08-17). The
@@ -1341,7 +1341,7 @@ Nine changes from the owner's walkthrough (§1.15). They keep the `T-3.x` prefix
 the same app surface as Phase 1C, but they sit behind their own checkpoint: 1C is about a session
 *working*, and none of this changes whether it does.
 
-- [ ] **T-3.18** **Main screen rebuilt to the prototype.** `Start a session` as the single
+- [~] **T-3.18** **Main screen rebuilt to the prototype.** `Start a session` as the single
   full-intensity element, calibration banner below it, recent sessions, bottom strip of free space
   / device temperature / moon phase.
   The capability probe **moves to Settings** — it is a diagnostic and stops being the front door.
@@ -1351,16 +1351,44 @@ the same app surface as Phase 1C, but they sit behind their own checkpoint: 1C i
   Moon phase is pure arithmetic and belongs beside `Astro.kt`; free space is
   `SessionStore.freeBytes()`; device temperature is already on every frame record.
   *Accept:* the main screen answers "what do I do now" and "what did I shoot" without scrolling.
+  **Built 2026-08-18.** `ui/MainScreen.kt`: `Start a session` as the only full-intensity element,
+  warning banner *below* it, recent sessions, `All sessions · N`, and the free / device / moon
+  strip. `Screen.MAIN` is now the back stack's root and **`PROBE` moved behind Settings** — §1.15's
+  actual fix, since the capability probe had been the front door since Phase 1A.
+  `session/SessionSummary.kt` reads the list. It parses a whole `session.json` per row and keeps
+  five, which is honest at this size and will not be: **D-5's cached index is the real answer** and
+  OI-5 still wants the scan measured. Loading happens off the launch path.
+  Moon phase went into `Astro.kt` as mean-elongation arithmetic — a couple of percent of error,
+  invisible at the precision shown, against an ephemeris this app has no other use for.
+  Device temperature is read straight from the battery broadcast rather than through
+  `DeviceEnvironment`, which would start a gyro listener to answer a question asked once.
+  **Two honest placeholders.** The thumbnail says `NO STACK` because stacking is Phase 3, and the
+  badge states where a session got to (`Captured`, `Unfinished`) rather than the prototype's
+  `Stack now`, which is an *action* and cannot be one until T-5.x. A badge that does nothing would
+  be the same mistake as the folder button in T-3.21.
+  **Remaining:** never seen on a device — the phone was disconnected when it was finished, so this
+  is compiled and unit-tested but unphotographed. `All sessions · N` currently opens the folder;
+  the real list is T-6.1 in Phase 4.
 
-- [ ] **T-3.19** **Settings icon top-right**, on the main screen's status bar, per the prototype.
+- [~] **T-3.19** **Settings icon top-right**, on the main screen's status bar, per the prototype.
   The capability probe lands behind it alongside the field log and the permission list.
+  **Done 2026-08-18** — a gear in the main screen's top bar, and the only way in. A glyph in the
+  app's own mono face rather than a vector asset: the icon set is not a dependency this app has.
+  **Remaining:** unphotographed, as T-3.18.
 
-- [ ] **T-3.20** **Cut the explaining from Settings** (§1.15's rule). Delete the night-mode
+- [~] **T-3.20** **Cut the explaining from Settings** (§1.15's rule). Delete the night-mode
   justification and the camera-permission rationale outright. Keep only consequence the user
   cannot deduce: the darks prompt lost with notifications, the equator fallback lost with location.
   Storage becomes a path plus a change control, with no essay about uninstall.
+  **Done 2026-08-18.** The night-mode paragraph is deleted outright, `PermissionNeed.why` is empty
+  for every permission, the calibration stub is one line, and storage is a path with `Open` and
+  `Change`. What survives is consequence the user cannot deduce: the darks prompt lost with
+  notifications, the equator fallback lost with location.
+  **A test had to be inverted, which is the clearest sign the rule was needed.**
+  `every permission has a reason and a consequence` asserted exactly what D-25 forbids; it is now
+  `no permission justifies itself, and every refusable one names its consequence`.
 
-- [ ] **T-3.21** **Open the session folder from an icon**, on both the main screen and Settings,
+- [~] **T-3.21** **Open the session folder from an icon**, on both the main screen and Settings,
   and from the all-sessions list.
   **The obstacle is real and shapes the design:** `Android/data/...` is unbrowsable on Android 11+,
   so an app-private default *cannot* be opened by any file manager (§ "Where your images are",
@@ -1368,6 +1396,12 @@ the same app surface as Phase 1C, but they sit behind their own checkpoint: 1C i
   exists, open it through `DocumentsUI`; when it does not, the icon offers to pick one — which is
   the moment the choice is actually motivated, and turns the constraint into the feature. Storage
   stays app-private by default and silent about it (T-3.20).
+  **Mostly done 2026-08-18 as a consequence of T-3.18/T-3.20**: `openSessionFolder()` opens a SAF
+  root through `ACTION_VIEW`, falls back to the picker rooted at the same folder when no documents
+  app answers, and opens the picker outright when no root is chosen. Wired to the main screen's
+  folder icon and to Settings' `Open`.
+  **Remaining:** the all-sessions list does not exist (T-6.1), so `All sessions · N` opens the
+  folder as a stopgap. And none of it has been exercised on a device.
 
 - [ ] **T-3.22** **Inner ring: the exposure in flight.** The outer ring becomes the prototype's
   per-frame ticks (kept / rejected / remaining, leading-edge dot); a new inner ring sweeps 0→1 over

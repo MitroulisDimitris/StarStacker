@@ -45,6 +45,8 @@ import com.starstacker.ui.theme.NumFamily
 fun SettingsScreen(
     sessionRoot: String,
     onPickSessionRoot: () -> Unit,
+    onOpenSessionFolder: () -> Unit,
+    onOpenProbe: () -> Unit,
     grantedPermissions: Set<String>,
     onRequestPermission: (String) -> Unit,
     onOpenSystemSettings: () -> Unit,
@@ -91,10 +93,7 @@ fun SettingsScreen(
         }
 
         item { Eyebrow("Session folder · FR-9.1") }
-        item { SessionRootSetting(sessionRoot, onPickSessionRoot) }
-
-        item { Eyebrow("Reading this in the dark") }
-        item { NightModeNote() }
+        item { SessionRootSetting(sessionRoot, onPickSessionRoot, onOpenSessionFolder) }
 
         item { Eyebrow("Calibration") }
         item { CalibrationStub() }
@@ -113,6 +112,9 @@ fun SettingsScreen(
                 }
             }
         }
+
+        item { Eyebrow("Device") }
+        item { QuietButton(text = "Capability probe", onClick = onOpenProbe) }
 
         item { QuietButton(text = "Back", onClick = onBack) }
         item { Spacer(Modifier.height(40.dp)) }
@@ -152,12 +154,9 @@ private fun PermissionCard(
                 },
             )
         }
-        Spacer(Modifier.height(6.dp))
-        Mono(need.why, color = Night.Txt2, size = 10.5.sp)
-
-        if (!granted && !need.installTime) {
+        if (!granted && !need.installTime && need.ifDenied.isNotBlank()) {
             Spacer(Modifier.height(6.dp))
-            Mono("Without it: ${need.ifDenied}", color = Night.Warn, size = 10.5.sp)
+            Mono(need.ifDenied, color = Night.Warn, size = 10.5.sp)
             Spacer(Modifier.height(10.dp))
             ButtonRow {
                 Box(Modifier.weight(1f)) {
@@ -175,51 +174,21 @@ private fun PermissionCard(
 }
 
 @Composable
-private fun SessionRootSetting(sessionRoot: String, onPick: () -> Unit) {
-    val atRisk = sessionRoot.contains("uninstall")
+private fun SessionRootSetting(sessionRoot: String, onPick: () -> Unit, onOpen: () -> Unit) {
     Card {
-        Mono(sessionRoot, color = if (atRisk) Night.Warn else Night.Txt2, size = 11.sp)
+        Mono(sessionRoot, color = Night.Txt2, size = 11.sp)
         Spacer(Modifier.height(9.dp))
-        QuietButton(if (atRisk) "Choose a folder" else "Change folder", onClick = onPick)
-    }
-}
-
-/**
- * Not a setting, deliberately: a note.
- *
- * Dark adaptation takes about 25 minutes and one white screen ends it. The app is already dark
- * everywhere, which leaves screen brightness — and that belongs to the system, so the honest thing
- * is to say so rather than to offer a control that only dims the app's own pixels.
- */
-@Composable
-private fun NightModeNote() {
-    Card {
-        Mono(
-            "Every screen is dark by design. Dark adaptation takes about 25 minutes and a " +
-                "single bright screen ends it, so turn the system brightness down before you " +
-                "start rather than after your eyes have adjusted. The app deliberately has no " +
-                "brightness control of its own — it would only dim its own pixels and leave the " +
-                "notification shade and the system UI at full blast.",
-            color = Night.Txt2,
-            size = 10.5.sp,
-        )
+        ButtonRow {
+            Box(Modifier.weight(1f)) { QuietButton(text = "Open", onClick = onOpen) }
+            Box(Modifier.weight(1f)) { QuietButton(text = "Change", onClick = onPick) }
+        }
     }
 }
 
 /** Phase 6 fills this in. Stated as absent rather than hidden — see T-8.7. */
 @Composable
 private fun CalibrationStub() {
-    Card {
-        Mono("No calibration library yet — Phase 6.", color = Night.Txt2, size = 11.sp)
-        Spacer(Modifier.height(6.dp))
-        Mono(
-            "Darks are captured per session at matched ISO, exposure and temperature (D-14), " +
-                "so a session is self-sufficient without one. Flats, a hot-pixel map and a " +
-                "measured noise model are what a library would add.",
-            color = Night.Txt3,
-            size = 10.sp,
-        )
-    }
+    Card { Mono("None — Phase 6.", color = Night.Txt3, size = 11.sp) }
 }
 
 @Composable

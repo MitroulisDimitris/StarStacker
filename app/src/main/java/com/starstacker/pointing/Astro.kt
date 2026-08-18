@@ -153,4 +153,30 @@ object Astro {
         val index = Math.round(normaliseDegrees(azimuthDeg) / 22.5).toInt() % 16
         return points[index]
     }
+
+    /**
+     * Illuminated fraction of the moon, 0 to 1 — the main screen's third number (T-3.18).
+     *
+     * It earns its place: the moon is the one sky condition a user cannot see from indoors and
+     * which decides whether tonight is worth going out for at all. A 90% moon washes out
+     * everything a phone can reach.
+     *
+     * Computed from the mean phase angle rather than a full lunar theory. The error is under a
+     * couple of percent, which is invisible against a number displayed to the nearest percent, and
+     * the alternative is an ephemeris this app has no other use for.
+     */
+    fun moonIlluminatedFraction(epochMillis: Long): Double {
+        // Mean elongation of the moon from the sun, degrees, from the standard mean-element
+        // series truncated to the terms that matter at this precision.
+        val d = julianDate(epochMillis) - 2451545.0
+        val meanElongation = normaliseDegrees(297.8501921 + 12.19074912 * d)
+        val phaseAngle = 180.0 - meanElongation
+        return (1.0 + cos(phaseAngle * DEG)) / 2.0
+    }
+
+    /** Waxing when the elongation is climbing towards full — decides which way to draw it. */
+    fun moonWaxing(epochMillis: Long): Boolean {
+        val d = julianDate(epochMillis) - 2451545.0
+        return normaliseDegrees(297.8501921 + 12.19074912 * d) < 180.0
+    }
 }

@@ -71,11 +71,7 @@ fun ProbeScreen(
     resumable: SessionRecovery.Resumable? = null,
     onResumeSession: () -> Unit = {},
     onDiscardResumable: () -> Unit = {},
-    /**
-     * One line about storage, because the app-private default is deleted on uninstall and that
-     * is worth stating where it is seen rather than only where it is changed (T-0.5).
-     */
-    sessionRoot: String = "",
+    /** T-3.18: the probe is a diagnostic now, reached from Settings, and this goes back there. */
     onOpenSettings: () -> Unit = {},
 ) {
     LazyColumn(
@@ -105,10 +101,6 @@ fun ProbeScreen(
         }
 
         item { VerdictCard(qualification) }
-
-        if (sessionRoot.isNotBlank()) {
-            item { SessionRootCard(sessionRoot, onOpenSettings) }
-        }
 
         item { Eyebrow("Cameras") }
 
@@ -174,35 +166,9 @@ fun ProbeScreen(
         item { Eyebrow("Camera checks") }
         item { DiagnosticsPanel(diagnostics, onOpenabilityTest, onCaptureRaw) }
 
-        item { QuietButton(text = "Settings, permissions & diagnostics", onClick = onOpenSettings) }
+        item { QuietButton(text = "Back", onClick = onOpenSettings) }
 
         item { Spacer(Modifier.height(40.dp)) }
-    }
-}
-
-/**
- * T-0.5 — where sessions land, stated on the landing screen.
- *
- * It says so unprompted because the app-private default is *deleted when the app is uninstalled*,
- * and a 2.4 GB session that vanished with a sideload is not a thing to discover afterwards. The
- * wording carries the consequence rather than the path alone: "app-private storage" tells the user
- * nothing they can act on, and neither does a `content://` URI.
- *
- * Changing it happens in Settings (T-0.9); this is the notice, not the control.
- */
-@Composable
-private fun SessionRootCard(sessionRoot: String, onOpenSettings: () -> Unit) {
-    val atRisk = sessionRoot.contains("uninstall")
-    Card {
-        Eyebrow("Session folder · FR-9.1")
-        Text(
-            sessionRoot,
-            fontFamily = NumFamily,
-            fontSize = 11.5.sp,
-            color = if (atRisk) Night.Warn else Night.Txt2,
-        )
-        Spacer(Modifier.height(9.dp))
-        QuietButton(if (atRisk) "Choose a folder" else "Settings", onClick = onOpenSettings)
     }
 }
 

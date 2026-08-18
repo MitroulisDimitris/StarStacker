@@ -12,10 +12,10 @@ import org.junit.jupiter.api.Test
 class NavigationTest {
 
     @Test
-    fun `the root is the landing screen and back belongs to the system there`() {
+    fun `the root is the main screen and back belongs to the system there`() {
         val stack = BackStack()
 
-        assertEquals(Screen.PROBE, stack.current)
+        assertEquals(Screen.MAIN, stack.current)
         assertFalse(stack.canGoBack)
         assertEquals(stack, stack.pop(), "popping the root changed the stack")
     }
@@ -27,7 +27,7 @@ class NavigationTest {
         assertEquals(Screen.SETUP, stack.current)
         assertTrue(stack.canGoBack)
         assertEquals(Screen.FRAMING, stack.pop().current)
-        assertEquals(Screen.PROBE, stack.pop().pop().current)
+        assertEquals(Screen.MAIN, stack.pop().pop().current)
     }
 
     /**
@@ -53,8 +53,8 @@ class NavigationTest {
 
         val capturing = deep.enterCapture()
 
-        assertEquals(listOf(Screen.PROBE, Screen.CAPTURE), capturing.entries)
-        assertEquals(Screen.PROBE, capturing.pop().current, "back from capture re-entered setup")
+        assertEquals(listOf(Screen.MAIN, Screen.CAPTURE), capturing.entries)
+        assertEquals(Screen.MAIN, capturing.pop().current, "back from capture re-entered setup")
     }
 
     @Test
@@ -65,6 +65,7 @@ class NavigationTest {
             BackStack().push(Screen.FRAMING).push(Screen.SETUP).current,
             BackStack().enterCapture().current,
             BackStack().push(Screen.SETTINGS).current,
+            BackStack().push(Screen.SETTINGS).push(Screen.PROBE).current,
         )
 
         assertEquals(Screen.entries.toSet(), reached)
@@ -74,7 +75,7 @@ class NavigationTest {
     fun `done returns to the root from anywhere`() {
         val stack = BackStack().push(Screen.FRAMING).push(Screen.SETUP).enterCapture()
 
-        assertEquals(listOf(Screen.PROBE), stack.toRoot().entries)
+        assertEquals(listOf(Screen.MAIN), stack.toRoot().entries)
         assertFalse(stack.toRoot().canGoBack)
     }
 

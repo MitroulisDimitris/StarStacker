@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -36,6 +37,8 @@ import com.starstacker.diag.FieldLog
 import com.starstacker.diag.StorageBenchmark
 import com.starstacker.dng.DngReader
 import com.starstacker.focus.FocusSweep
+import com.starstacker.device.Tier
+import com.starstacker.pointing.Astro
 import com.starstacker.pointing.PointingFix
 import com.starstacker.session.SessionPointing
 import com.starstacker.session.SessionRoot
@@ -53,6 +56,10 @@ import com.starstacker.ui.Screen
 import com.starstacker.ui.CaptureScreen
 import com.starstacker.ui.FramingScreen
 import com.starstacker.ui.SetupController
+import com.starstacker.session.SessionCatalogue
+import com.starstacker.session.SessionSummary
+import com.starstacker.ui.MainScreen
+import com.starstacker.ui.MainWarning
 import com.starstacker.ui.Permissions
 import com.starstacker.ui.SettingsScreen
 import com.starstacker.ui.SetupScreen
@@ -144,6 +151,33 @@ class MainActivity : ComponentActivity() {
         requestPermission.launch(Permissions.NOTIFICATIONS)
     }
 
+    /**
+     * T-3.21 — open the folder sessions are written to.
+     *
+     * **It cannot work for the default.** `Android/data/...` is unbrowsable on Android 11+, so an
+     * app-private root opens in no file manager at all. Rather than a button that silently does
+     * nothing, the absence of a chosen root is treated as the question it really is: this is the
+     * first moment picking one is actually motivated, so the picker is what opens.
+     */
+    private fun openSessionFolder() {
+        val tree = SessionRoot.current(this)?.takeIf { SessionRoot.isUsable(this) }
+        if (tree == null) {
+            pickSessionRoot.launch(null)
+            return
+        }
+        val opened = runCatching {
+            startActivity(
+                Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(tree, DocumentsContract.Document.MIME_TYPE_DIR)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                },
+            )
+        }.isSuccess
+        // Not every device ships a documents app that answers ACTION_VIEW on a tree; the picker
+        // rooted at the same folder is the fallback that always exists.
+        if (!opened) runCatching { pickSessionRoot.launch(tree) }
+    }
+
     private fun openSystemAppSettings() {
         runCatching {
             startActivity(
@@ -166,11 +200,19 @@ class MainActivity : ComponentActivity() {
             sessionRootLabel = SessionRoot.describe(this)
         logSize = FieldLog.sizeBytes()
         refreshPermissions()
+        refreshMain()
         }
     }
 
     /** Surfaced on the landing screen so the storage in use is stated, not assumed. */
     private var sessionRootLabel by mutableStateOf("")
+
+    /** T-3.18 — the main screen's session list, loaded off the launch path. */
+    private var sessions by mutableStateOf<List<SessionSummary>>(emptyList())
+    private var sessionCount by mutableStateOf(0)
+    private var freeBytes by mutableStateOf(0L)
+    private var deviceTempC by mutableStateOf<Double?>(null)
+    private var warningDismissed by mutableStateOf(false)
 
     /** T-0.6 — pulled on demand rather than polled; the file is the source of truth. */
     private var logTail by mutableStateOf<List<String>>(emptyList())
@@ -354,6 +396,80 @@ class MainActivity : ComponentActivity() {
                 }
 
                 when (screen) {
+                    Screen.MAIN -> MainScreen(
+                        readiness = buildString {
+                            append(current.cameras.firstOrNull { it.id == selectedCameraId }
+                                ?.let { cam ->
+                                    cam.focalLengthsMm.firstOrNull()
+                                        ?.let { "Camera ${cam.id} · %.1fmm".format(it) }
+                                        ?: "Camera ${cam.id}"
+                                }
+                                ?: "No camera selected")
+                            append(" · ")
+                            append(
+                                when {
+                                    framing.storedFocus == null -> "focus not stored"
+                                    framing.storedFocus?.fixedFocus == true -> "fixed focus"
+                                    else -> "focus stored"
+                                },
+                            )
+                        },
+                        // Below Start, never above it, and only when there is something true to
+                        // say. Calibration warnings arrive with Phase 6.
+                        warning = when {
+                            warningDismissed -> null
+                            qualification.bestTier == Tier.UNSUPPORTED -> MainWarning(
+                                "This device cannot capture",
+                                qualification.headline,
+                                null,
+                            )
+                            !hasCameraPermission() -> MainWarning(
+                                "Camera access not granted",
+                                "Nothing can be captured until it is.",
+                                "Settings",
+                            )
+                            else -> null
+                        },
+                        sessions = sessions,
+                        totalSessions = sessionCount,
+                        freeBytes = freeBytes,
+                        deviceTempC = deviceTempC,
+                        moonPercent = (Astro.moonIlluminatedFraction(System.currentTimeMillis()) * 100).toInt(),
+                        canStart = hasCameraPermission() && qualification.bestTier != Tier.UNSUPPORTED,
+                        onStart = {
+                            askForNotificationsOnce()
+                            nav = nav.push(Screen.FRAMING)
+                        },
+                        onOpenSettings = { nav = nav.push(Screen.SETTINGS) },
+                        onOpenSessionFolder = { openSessionFolder() },
+                        onAllSessions = { openSessionFolder() },
+                        onDismissWarning = { warningDismissed = true },
+                        resumable = resumable.takeIf { !CaptureService.running }?.describe(),
+                        onResume = {
+                            val session = resumable ?: return@MainScreen
+                            CaptureService.start(
+                                context = this@MainActivity,
+                                request = CaptureEngine.Request(
+                                    cameraId = session.log.info.cameraId,
+                                    iso = session.log.info.plannedIso,
+                                    exposureNs = session.log.info.plannedExposureNs,
+                                    focusDiopters = session.log.info.focusDiopters,
+                                    lightCount = session.log.info.plannedLightCount,
+                                    darkCount = session.log.info.plannedDarkCount,
+                                ),
+                                label = "resumed",
+                                resumeFolder = session.folderName,
+                            )
+                            resumable = null
+                            nav = nav.enterCapture()
+                        },
+                        onDiscardResumable = {
+                            val session = resumable ?: return@MainScreen
+                            SessionRecovery.abandon(sessionStore(), session.folderName)
+                            resumable = null
+                        },
+                    )
+
                     Screen.PROBE -> ProbeScreen(
                         profile = current,
                         qualification = qualification,
@@ -366,8 +482,7 @@ class MainActivity : ComponentActivity() {
                             askForNotificationsOnce()
                             nav = nav.push(Screen.FRAMING)
                         },
-                        sessionRoot = sessionRootLabel,
-                        onOpenSettings = { nav = nav.push(Screen.SETTINGS) },
+                        onOpenSettings = { nav = nav.pop() },
                         resumable = resumable.takeIf { !CaptureService.running },
                         onResumeSession = {
                             val session = resumable ?: return@ProbeScreen
@@ -476,6 +591,8 @@ class MainActivity : ComponentActivity() {
                         onPickSessionRoot = {
                             pickSessionRoot.launch(SessionRoot.current(this@MainActivity))
                         },
+                        onOpenSessionFolder = { openSessionFolder() },
+                        onOpenProbe = { nav = nav.push(Screen.PROBE) },
                         grantedPermissions = granted,
                         onRequestPermission = { requestPermission.launch(it) },
                         onOpenSystemSettings = { openSystemAppSettings() },
@@ -685,8 +802,43 @@ class MainActivity : ComponentActivity() {
      * only state T-0.6's acceptance cares about — and by then the Activity exists, so a second
      * `am start` never re-enters `onCreate`.
      */
+    /**
+     * Reads the session list, free space and device temperature.
+     *
+     * Off the main thread because it parses one `session.json` per row — D-5's cached index is the
+     * eventual answer and OI-5 wants the scan measured, but five logs is tolerable meanwhile.
+     */
+    private fun refreshMain() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val store = SessionRoot.store(this@MainActivity)
+            val recent = runCatching { SessionCatalogue.recent(store) }.getOrDefault(emptyList())
+            val total = runCatching { SessionCatalogue.count(store) }.getOrDefault(0)
+            val free = runCatching { store.freeBytes() }.getOrDefault(0L)
+            val temp = batteryTemperatureC()
+            withContext(Dispatchers.Main) {
+                sessions = recent
+                sessionCount = total
+                freeBytes = free
+                deviceTempC = temp
+            }
+        }
+    }
+
+    /**
+     * Battery temperature as the device's, per D-16's chain. Read directly rather than through
+     * `DeviceEnvironment`, which would register a gyro listener to answer a question the main
+     * screen asks once.
+     */
+    private fun batteryTemperatureC(): Double? = runCatching {
+        registerReceiver(null, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            ?.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE)
+            ?.takeIf { it != Int.MIN_VALUE }
+            ?.let { it / 10.0 }
+    }.getOrNull()
+
     override fun onResume() {
         super.onResume()
+        refreshMain()
         // Permissions can change outside the app — the system settings page is one tap away from
         // the settings screen, so the state has to be re-read rather than remembered.
         refreshPermissions()
