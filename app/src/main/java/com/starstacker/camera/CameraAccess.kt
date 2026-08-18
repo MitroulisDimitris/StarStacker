@@ -15,6 +15,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import android.view.Surface
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.util.concurrent.Executor
 import kotlin.coroutines.resume
@@ -54,6 +55,7 @@ class CameraAccess(context: Context) : AutoCloseable {
      * is a reason not to.
      */
     @SuppressLint("MissingPermission")
+    @OptIn(ExperimentalCoroutinesApi::class)   // resume(value) { release } — see onOpened
     suspend fun openDevice(cameraId: String): CameraDevice =
         suspendCancellableCoroutine { cont ->
             try {
@@ -61,7 +63,13 @@ class CameraAccess(context: Context) : AutoCloseable {
                     cameraId,
                     object : CameraDevice.StateCallback() {
                         override fun onOpened(device: CameraDevice) {
-                            if (cont.isActive) cont.resume(device) else device.close()
+                            // `resume(value) { release }` rather than a bare `isActive` check:
+                            // cancellation can land in the window between the check and the
+                            // resume, and then nobody owns the device — which locks the camera
+                            // for every app on the phone until this process dies. The lambda
+                            // runs precisely when the value arrives with no coroutine left to
+                            // receive it (T-1.3's cancel phase provokes it deliberately).
+                            cont.resume(device) { device.close() }
                         }
 
                         override fun onDisconnected(device: CameraDevice) {
@@ -105,6 +113,7 @@ class CameraAccess(context: Context) : AutoCloseable {
         }
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     suspend fun createSession(
         device: CameraDevice,
         surfaces: List<Surface>,
@@ -115,7 +124,7 @@ class CameraAccess(context: Context) : AutoCloseable {
             executor,
             object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
-                    if (cont.isActive) cont.resume(session) else session.close()
+                    cont.resume(session) { session.close() }
                 }
 
                 override fun onConfigureFailed(session: CameraCaptureSession) {
@@ -146,6 +155,10 @@ class CameraAccess(context: Context) : AutoCloseable {
         session: CameraCaptureSession,
         request: CaptureRequest,
     ): TotalCaptureResult = suspendCancellableCoroutine { cont ->
+        // Cancelled between setRepeatingRequest and the first result, the request keeps running:
+        // the sensor stays hot for a caller that has gone away, and heat spent here is heat
+        // unavailable to the session that follows (FR-6.2).
+        cont.invokeOnCancellation { runCatching { session.stopRepeating() } }
         try {
             session.setRepeatingRequest(
                 request,
@@ -202,6 +215,19 @@ class CameraAccess(context: Context) : AutoCloseable {
         } catch (e: CameraAccessException) {
             cont.resumeWithException(e)
         }
+    }
+
+    /**
+     * Watches what the *camera service* thinks is available, on the camera thread.
+     *
+     * This is the only in-process way to ask the question T-1.3 actually cares about — not "did
+     * our code call close" but "would another app get the camera now". `onCameraUnavailable`
+     * fires when any client on the phone holds a camera, so it witnesses both a device this
+     * process leaked and one another app has taken.
+     */
+    fun watchAvailability(callback: CameraManager.AvailabilityCallback): AutoCloseable {
+        manager.registerAvailabilityCallback(callback, handler)
+        return AutoCloseable { manager.unregisterAvailabilityCallback(callback) }
     }
 
     override fun close() {

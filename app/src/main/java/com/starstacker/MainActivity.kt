@@ -1,11 +1,14 @@
 package com.starstacker
 
 import android.Manifest
+import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -35,6 +38,7 @@ import com.starstacker.device.CameraProbe
 import com.starstacker.device.DeviceProfile
 import com.starstacker.device.ProfileJson
 import com.starstacker.device.Qualification
+import com.starstacker.diag.CameraLifecycleCheck
 import com.starstacker.diag.FieldDiagnostics
 import com.starstacker.diag.FieldLog
 import com.starstacker.diag.StorageBenchmark
@@ -343,11 +347,21 @@ class MainActivity : ComponentActivity() {
         // "unknown diag mode" for every one of them.
         val fieldDiag = intent?.getStringExtra("diag")
             ?.takeUnless { it in setOf("capture", "storage", "crash", "openability") }
+        // T-1.3's acceptance — 50 open/close cycles, then hand the camera to another app:
+        //   adb shell am start -n com.starstacker/.MainActivity --es diag lifecycle
+        //       --ei cycles 50 --ei sessions 30 --ez handoff true
+        // Every phase has to outrun its own warm-up or it reports INCONCLUSIVE, so shortening
+        // one of these does not make the check quicker, only quieter.
         if (fieldDiag != null && hasCameraPermission()) {
             val frames = intent?.getIntExtra("frames", 12) ?: 12
             val exposureMs = intent?.getIntExtra("exposureMs", 1000) ?: 1000
             val iso = intent?.getIntExtra("iso", 3200) ?: 3200
-            lifecycleScope.launch { runFieldDiagnostics(fieldDiag, frames, iso, exposureMs) }
+            val cycles = intent?.getIntExtra("cycles", 50) ?: 50
+            val sessions = intent?.getIntExtra("sessions", 30) ?: 30
+            val handoff = intent?.getBooleanExtra("handoff", false) ?: false
+            lifecycleScope.launch {
+                runFieldDiagnostics(fieldDiag, frames, iso, exposureMs, cycles, sessions, handoff)
+            }
         }
 
         locationGranted = pointingSource.hasLocationPermission()
@@ -720,7 +734,15 @@ class MainActivity : ComponentActivity() {
      * Phase 1B's hardware acceptances, run from `adb`. Results go to a file for the same reason
      * the capture diagnosis does: CamX floods the log buffer and evicts our lines within seconds.
      */
-    private suspend fun runFieldDiagnostics(mode: String, frames: Int, iso: Int, exposureMs: Int) {
+    private suspend fun runFieldDiagnostics(
+        mode: String,
+        frames: Int,
+        iso: Int,
+        exposureMs: Int,
+        cycles: Int = 50,
+        sessions: Int = 30,
+        handoff: Boolean = false,
+    ) {
         val dir = File(getExternalFilesDir(null) ?: filesDir, "first-light").apply { mkdirs() }
         val out = File(dir, "field-diagnosis.txt")
         val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
@@ -773,7 +795,22 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
-                        else -> log("unknown diag mode '$mode' — expected framing, focus, lens or solve")
+                        "lifecycle" -> CameraLifecycleCheck.run(
+                            access = access,
+                            cameraId = MAIN_CAMERA_ID,
+                            cycles = cycles,
+                            streamCycles = sessions,
+                            framesPerStream = 2,
+                            iso = iso,
+                            // Short, because this measures the lifecycle rather than the sky:
+                            // a configured session has to deliver, not to expose well.
+                            exposureNs = 200_000_000L,
+                            handoff = if (handoff) ({ launchAnotherCameraApp() }) else null,
+                            log = log,
+                        )
+
+                        else ->
+                            log("unknown diag mode '$mode' — expected framing, focus, lens, solve or lifecycle")
                     }
                 }
             }
@@ -785,6 +822,48 @@ class MainActivity : ComponentActivity() {
             log("=== $mode complete ===")
         }
     }
+
+    /**
+     * Starts whatever the phone considers its camera app, for T-1.3's second clause.
+     *
+     * Returns the component started, or null if nothing else on the phone answers — and null for
+     * ourselves too, since this app taking its own camera back proves nothing about a leak (the
+     * framework hands a camera between clients in the same process without complaint).
+     *
+     * `resolveActivity` needs the matching `<queries>` entry in the manifest: from API 30 a
+     * package this app cannot see is a package it cannot resolve, and the failure looks exactly
+     * like "the phone has no camera app".
+     */
+    private fun launchAnotherCameraApp(): String? {
+        val intent = Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)
+        val candidates = queryCameraApps(intent).filter { it.activityInfo.packageName != packageName }
+
+        // Prefer the phone's own camera app. A system camera opens a camera on launch, which is
+        // the whole point; a third party that merely accepts the intent may want a login or a
+        // permission first and would time out looking exactly like a camera it could not get.
+        val chosen = candidates.firstOrNull {
+            it.activityInfo.applicationInfo.flags and ApplicationInfo.FLAG_SYSTEM != 0
+        } ?: candidates.firstOrNull() ?: return null
+
+        // Explicitly, by component. `resolveActivity` answers with the system chooser when more
+        // than one app matches — measured 2026-08-18, where the handoff started
+        // `ResolverActivity` and then waited 25 s for a dialog to take a camera.
+        startActivity(
+            Intent(intent).apply {
+                component = ComponentName(chosen.activityInfo.packageName, chosen.activityInfo.name)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+        )
+        return "${chosen.activityInfo.packageName}/${chosen.activityInfo.name}"
+    }
+
+    @Suppress("DEPRECATION") // The typed-flags overload is API 33; minSdk is 30.
+    private fun queryCameraApps(intent: Intent) =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            packageManager.queryIntentActivities(intent, PackageManager.ResolveInfoFlags.of(0))
+        } else {
+            packageManager.queryIntentActivities(intent, 0)
+        }
 
     /** Full stops across the sensor's range — the ISOs a solve actually has to consider. */
     private fun isoLadder(min: Int?, max: Int?): List<Int> {

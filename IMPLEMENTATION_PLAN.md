@@ -78,7 +78,7 @@ Two consequences to accept deliberately:
 | Phase | Tasks | Ticked | Status |
 |---|---|---|---|
 | 0 | 9 | 1 | **8 built and demonstrated**, ticked only where §0's bar is met. SAF throughput still unmeasured (T-0.5 / OI-5) |
-| 1A | 6 | 5 | probe, qualification, camera lifecycle, first light, DNG reader. T-1.3's 50× leak loop is the one thing left |
+| 1A | 6 | 6 | **complete 2026-08-18.** Probe, qualification, camera lifecycle, first light, DNG reader — the leak loop closed T-1.3 (§1.16) |
 | 1B | 7 | 1 | **hardware-verified except what needs darkness** — see §5 and §1.7 |
 | 1C | 17 | 1 | **every task built.** Blocked on the field, not on code: darks have never once executed, and no 45-minute session has been shot |
 | 1D | 9 | 0 | **all nine built and photographed 2026-08-18** (§1.15). T-3.21's last piece waits on T-6.1's session list |
@@ -618,6 +618,88 @@ object: it shows *where the rejections fell*, not just how many.
 
 ---
 
+## 1.16 Fifty opens and closes, and a leak check that had to be fixed first — 2026-08-18
+
+T-1.3 has claimed since 2026-08-16 that `CameraAccess` releases the camera on every path, and the
+claim was reasonable: `withDevice` closes in a `finally`. It had never been run more than a handful
+of times in a row. Running it fifty times found nothing wrong with the wrapper and three things
+wrong with the *measurement*, which is the more useful outcome — a leak check that cannot tell a
+leak from a warm-up is worse than no leak check, because it is believed.
+
+`diag/CameraLifecycleCheck.kt` runs four phases, since the path that was always going to work is
+not where a leak lives: **open/close** through `withDevice`, **configured sessions** (a whole
+`FramingSession`, two `ImageReader`s and a capture session, streamed and closed), **throw** inside
+the block, and **cancel** around the moment the device arrives. The evidence is per-cycle file
+descriptor and thread counts from `/proc/self`, plus `CameraManager.AvailabilityCallback` — the
+camera *service's* account of whether the camera is free, which is the question the acceptance asks
+and not the one our own `close()` answers.
+
+### The result
+
+| Phase | Cycles | Descriptors | Threads | Verdict |
+|---|---|---|---|---|
+| open/close | 50 | 173 → 173 across the warm 25 | 37 → 37 | none |
+| configured sessions | 30 | 173 → 173 | 44 → 45 (+0.07/cycle) | none |
+| throw inside `withDevice` | 25 | 173 → 173 | 45 → 45 | none |
+| cancelled mid-open | 36 | 173 → 173 | 45 → 45 | none |
+
+Open costs **10/16/35 ms** (min/median/max). The camera service reported the camera available again
+after **all 141 opens**, usually within a millisecond of `close()` returning and occasionally
+*before* it — the release happens inside the call, not after it.
+
+### Three ways the measurement lied before the code could
+
+**Warm-up is shaped exactly like a leak.** A clean loop climbs 132 → 173 descriptors over its first
+eight cycles — the vendor camera stack starting its own threads, once — and is then flat for the
+remaining forty-two. Measured end to end that is +0.8 descriptors per cycle, which is a confident
+report of a leak that does not exist. Dropping the first sample was not enough: at six cycles the
+session phase convicted on +1.00 threads per cycle, and a thirty-cycle run then showed that same
+count flat at 46 from cycle sixteen onwards. The rule now needs **twenty settled cycles** before it
+will judge at all, and judges on two statistics — the rate across the warm tail, and the *median*
+per-cycle step, because a leak costs its descriptor on every cycle while a warm-up is a few large
+steps among zeroes. A phase too short to outlast its own warm-up reports `INCONCLUSIVE`, which
+fails the run: the fix is more cycles, not a lower bar.
+
+**Re-opening the camera proves nothing.** A second `openCamera` for a device this process already
+holds does not fail — the framework disconnects the first client and hands the camera over. A leak
+detector built on "can we open it again" would pass a process that had leaked all fifty devices.
+Only the descriptor counts and the service's own callback can see a leak from inside the leaker.
+
+**`resolveActivity` answers with the chooser.** The handoff dutifully started
+`com.android.internal.app.ResolverActivity` and then waited 25 s for a dialog to open a camera.
+Choosing the component explicitly fixed that, and the fixed version *still* reported nothing —
+because this phone's camera app opens **camera 4**, the unpublished logical device, which is absent
+from `getCameraIdList()` and so never appears in an availability callback. The camera service's own
+client log is the authority, and it is unambiguous:
+
+```
+18:27:48 : DISCONNECT device 0 client for package com.starstacker
+18:27:49 : CONNECT    device 4 client for package com.nothing.camera
+```
+
+One second after the loop's last close, with our process still running, the phone's own camera app
+had a camera. That is the acceptance's second clause, demonstrated rather than argued.
+
+### One thing fixed in code, and one left open
+
+Two `resume` sites in `CameraAccess` checked `isActive` and then resumed, leaving a window in which
+cancellation lands between the check and the resume and **nobody owns the device** — which locks
+the camera for the whole phone until the process dies. Both are now `resume(value) { release }`,
+which the coroutine machinery resolves atomically. Thirty-six cancellations did not hit that
+window; it is microseconds wide, so this is a correctness argument rather than a measurement, and
+it is recorded as one. `warmUp` now also stops its repeating request when cancelled, which it did
+not: the sensor stayed hot for a caller that had gone away.
+
+**New OI-22.** One configured session in seventy-eight delivered nothing at all — 0 of 2 frames
+against a 12.4-second budget, immediately after the fifty-cycle open/close loop, where every other
+session configured in ~100 ms and delivered at once. The session opened, configured and closed
+cleanly; only the frames never came. In the field that is a framing preview which stays black for
+twelve seconds after the camera has been busy.
+
+---
+
+---
+
 ## 2. Decisions
 
 | ID | Decision | Rationale | Reversal cost |
@@ -882,7 +964,7 @@ as a DNG that desktop tools accept.
   covering all four disqualifiers, the LIMITED→Degraded path, the short-exposure warning, the
   OI-17 pitch derivation, and device-level qualification on rear cameras only. Note the tier
   ceiling is `FUNCTIONAL` by construction until Phase 6 exists, which is exactly FR-3.1.1.
-- [ ] **T-1.3** Camera2 lifecycle wrapper: open/close, dedicated handler thread, capture session
+- [x] **T-1.3** Camera2 lifecycle wrapper: open/close, dedicated handler thread, capture session
   creation, robust error and disconnect handling, and a hard guarantee the camera is released
   when the session ends or the process dies.
   *Accept:* open/close 50× in a loop without leaking; another app can take the camera afterwards.
@@ -890,7 +972,13 @@ as a DNG that desktop tools accept.
   callback API, `withDevice {}` closing the device on any path, and typed `CameraOpenException`.
   **OI-18 resolved, favourably: all five camera IDs open**, including the unpublished ultrawide,
   tele and logical camera (`camera/OpenabilityProbe.kt`).
-  **Remaining:** the 50× leak loop, and a check that another app can take the camera afterwards.
+  **Closed 2026-08-18 on hardware (§1.16).** 50 open/close cycles, 30 configured sessions, 25
+  exception paths and 36 cancellations: descriptors flat at 173 and threads flat across every
+  warm tail, and the camera service confirmed the camera free again after **all 141 opens**.
+  Open costs 10/16/35 ms (min/median/max). The second clause is in the service's own client log —
+  one second after the last close, with this process still alive, `com.nothing.camera` connected
+  to a camera. Driven by `diag/CameraLifecycleCheck.kt`:
+  `adb shell am start -n com.starstacker/.MainActivity --es diag lifecycle --ez handoff true`.
 - [x] **T-1.4** Single manual `RAW_SENSOR` capture → `DngCreator` → session folder.
   Explicitly: NR off, edge/sharpening off, `CONTROL_MODE_OFF`, AE/AWB/AF off, OIS off,
   fixed WB, lens shading map reported not applied (FR-6.1).
@@ -1601,7 +1689,7 @@ the same app surface as Phase 1C, but they sit behind their own checkpoint: 1C i
 ## 14. Open issues
 
 **Needed-by** is the phase that cannot finish without a resolution.
-**Status: 13 resolved · 7 open pending measurement · 2 deferred · 0 blocking.**
+**Status: 13 resolved · 8 open pending measurement · 2 deferred · 0 blocking.**
 An issue is only "open" here if it can actually change the shape of the code. Questions with an
 obvious default and a defined experiment are listed with that default already in force, so they
 never block work.
@@ -1620,6 +1708,7 @@ when the number comes back.
 |---|---|---|---|---|
 | **OI-19** | **Will the hidden cameras also *capture*, not just open?** All five IDs open, but only camera 0 has completed a real RAW capture. An ID that opens can still fail session configuration or never deliver a frame | Assume the tele and ultrawide work; verify before promising them to the user | Run the T-1.4 capture against IDs 2, 3 and 4 — cheap now the harness exists | 7 |
 | **OI-20** | **Screen-off capture needs a foreground service, not just a surface-free session.** Measured 2026-08-17: the framing loop is frozen a few seconds after the screen goes off, process still alive. D-22 dissolved the *surface* problem but not the *lifecycle* one (§1.7) | Assume the `camera`-type FGS of D-12 is sufficient — it is what the type exists for | T-3.6's own acceptance: a 45-minute sequence with the screen off and the app backgrounded, then repeated with battery optimisation left on | 1C |
+| **OI-22** | **A configured session occasionally delivers no frames at all.** Measured 2026-08-18 (§1.16): one session in 78 returned 0 of 2 frames inside a 12.4 s budget, immediately after a rapid open/close loop, while the other 77 configured in ~100 ms and delivered at once. It opens, configures and closes cleanly — only the frames never arrive, so nothing throws and nothing downstream is told anything is wrong | Accept and log. At 1 in 78 it costs a framing preview that stays black for a few seconds, not a session | Re-run `--es diag lifecycle --ei sessions 30` several times over and count. If it reproduces, the remedy is a deadline on the first frame and a re-configure, which is a shape change to `FramingSession` rather than a tuning constant | 1B |
 | **OI-4** | Framing preview exposure length | 1 s, boost to 4 s, auto-stop after 2 min idle — **now implemented as the default** (T-2.2), so the experiment is a tuning pass rather than a build | Real-sky trial: shortest exposure at which framing is workable | 1B |
 | **OI-5** | SAF write throughput and root-scan cost | **File baseline measured 2026-08-18: 200 × 24 MiB at 570 MiB/s (0.042 s/file), root scan 0.001 s.** SAF half still unmeasured — it needs a folder picked through the UI, which adb cannot do. The scan figure is from a 2-session root, not the ~12 the issue asks for, so it does not yet test D-5's premise | T-0.5: the same run against `SafSessionStore`, and a root with ~12 sessions | 0 |
 | **OI-9** | Is the OEM `SENSOR_NOISE_PROFILE` good enough to pick a sane ISO at Functional tier? | Yes — use it. **Half-answered 2026-08-17: the profile is a real per-ISO measurement, not a stub** — nine distinct read-noise values across nine ISOs, falling smoothly from 5.64 e⁻ at ISO 50 to 2.07 e⁻ at ISO 3200 (§1.8). No dual-gain step is visible; the decline is the ordinary ADC-noise-over-gain trend. What remains is whether the *absolute* figures are right, which needs the Phase 6 bias series to compare against | **Trigger:** run the T-3.3 solver twice, once on OEM data and once on read noise measured from a quick bias pair. If the chosen ISO differs by more than one stop, promote the §4.1.1 noise model out of Phase 6 into 1C | 1C |
@@ -1712,6 +1801,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-08-18 | **T-1.3 closed — the camera lifecycle, run fifty times over (§1.16).** The last unticked box in Phase 1A, and the wrapper itself turned out to be fine: descriptors and threads flat across 50 open/close cycles, 30 configured sessions, 25 exception paths and 36 cancellations, with the camera service confirming the camera free again after **all 141 opens**. What needed fixing was the check. **Warm-up is shaped exactly like a leak** — a clean loop costs 132 → 173 descriptors over its first eight cycles and nothing after — so the first two versions of the rule convicted a clean run, twice, with confidence; it now needs twenty settled cycles before it will judge, and judges on the warm tail's rate and the median per-cycle step together. Two further traps: **re-opening the camera proves nothing**, since the framework hands a device between clients of one process without complaint, so a leak cannot be found by carrying on; and **`resolveActivity` answers with the chooser**, so the handoff spent 25 s waiting for a dialog to open a camera. The acceptance's second clause is in the camera service's own log — `DISCONNECT device 0 … com.starstacker` at 18:27:48, `CONNECT device 4 … com.nothing.camera` at 18:27:49, this process still alive. Two `resume` sites in `CameraAccess` that could drop a device on cancellation are now `resume(value) { release }`. 247 JVM tests. New **OI-22**: one configured session in 78 delivered no frames at all. |
 | 2026-08-18 | **Phase 1D — the interface brought back to the prototype (§1.15).** The walkthrough found that **the main screen had never been built**: the capability probe sat there from Phase 1A, when the only question was whether the device worked, and was never replaced. Nine tasks. The main screen is now `Start a session` as the one bright element, warnings *below* it so they cannot read as a gate, recent sessions and a free/temperature/moon strip; the probe moved behind a settings gear. The capture ring became one tick per frame with an inner ring for the exposure in flight, which needs a second state because a frame is judged ~3.4 s after its exposure ends. Focus moved onto the preview and states the consequence — *"the session will shoot at hyperfocal — soft, not ruined"* — rather than a status word. Setup solves on arrival and draws a **predicted histogram** derived from the measured sky rate, read noise and gain, which is the one picture that makes "sky-limited" checkable. Session length became a drag in frames, 1 to 2.5 hours. **D-25** was written after the settings screen shipped with paragraphs justifying dark mode, the camera permission and the storage location — none of them a decision anyone makes. |
 | 2026-08-18 | **The frame gate was rejecting everything, for two unrelated reasons, and both had passing unit tests (§1.13, §1.14).** A session accepted **0 of 105 frames**. The bump detector read the accelerometer, which cannot separate rotation from translation — and only rotation moves stars. On a tripod extension arm it flagged the *sharpest* frames in the session: one was called 7.85°, which at 74.2 arcsec/px would be a 382-pixel streak, while carrying 208 stars at HFR 0.925. Separately, eccentricity was measured on a 4× binned plane where a star is about one pixel across, so second moments are degenerate: the real 0.375 px trail predicts e ≈ 0.13 against a measured 0.855. The gyro replaced the accelerometer and the shape check now skips undersampled stars. Re-measured on sky: **42 of 49 accepted**, zero false `TRAILED`, and the seven `BUMPED` are the phone being touched at the start and picked up at the end. |
 | 2026-08-18 | **Three device facts that each failed silently.** Scoping the bump check to the exposure needed them and every one was wrong in a way nothing surfaced. `SENSOR_DELAY_GAME` delivers at ~400 Hz, not the ~50 Hz its name implies, so the sample buffer spanned under ten seconds. **`SENSOR_TIMESTAMP` is the end of exposure on this device, not the start the documentation promises** — frames are analysed a stable 3.35–3.38 s after their own timestamp while the exposure is 7.4 s. With the sign backwards the window sat in the future, no query could be answered, and the check was **silently off**. And the zero-rate estimate was seeded from a single sample taken as the service starts — exactly when the phone is not still — which integrated **110°** of phantom rotation on the first frame. Still phone, 7.4 s subs, after all of it: 0.013–0.021°. |

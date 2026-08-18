@@ -26,6 +26,15 @@
     <uses-feature android:name="android.hardware.sensor.compass" android:required="false" />
     <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false" />
 
+    <!-- T-1.3's second clause: hand the camera to another app and watch it take one. Package
+         visibility is filtered from API 30, so without this the phone's own camera app cannot be
+         resolved and "nothing else answers" is indistinguishable from "nothing else exists". -->
+    <queries>
+        <intent>
+            <action android:name="android.media.action.STILL_IMAGE_CAMERA" />
+        </intent>
+    </queries>
+
     <application
         android:name=".StarStackerApp"
         android:allowBackup="false"
