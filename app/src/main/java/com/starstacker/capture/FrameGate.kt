@@ -28,6 +28,7 @@ class FrameGate(
     private val minBaselineFrames: Int = DEFAULT_MIN_BASELINE_FRAMES,
     private val bumpThresholdDeg: Double = DEFAULT_BUMP_THRESHOLD_DEG,
     private val minHfrForEccentricity: Double = DEFAULT_MIN_HFR_FOR_ECCENTRICITY,
+    private val minStars: Int = DEFAULT_MIN_STARS,
 ) {
 
     /** What the gate needs to know about a frame. Everything else about it is irrelevant here. */
@@ -127,6 +128,21 @@ class FrameGate(
             )
         }
 
+        // An absolute floor, checked before the relative one, because **the relative one does not
+        // exist yet at the start of a session** — and the start of a session is exactly when the
+        // sky may be overcast. Measured on device 2026-08-19 (§1.29): indoors, the first four
+        // frames of a session were reported as REGISTRATION failures, because the cloud check had
+        // no baseline to speak from and the registration check was the only one left with an
+        // opinion. Telling someone their tripod moved while a cloud sits overhead is the wrong
+        // advice at the worst moment.
+        if (metrics.starCount < minStars) {
+            return Verdict(
+                false, RejectReason.CLOUD,
+                "%d stars — too few to register or stack, so cloud, twilight or a lens cap"
+                    .format(metrics.starCount),
+            )
+        }
+
         val baseline = baselineStarCount
         if (baseline != null && metrics.starCount < baseline * starCollapseFraction) {
             // Deliberately does not join the baseline — see the method note.
@@ -173,6 +189,17 @@ class FrameGate(
 
         /** Half the usual star count is cloud by any reasonable reading. */
         const val DEFAULT_STAR_COLLAPSE_FRACTION = 0.5
+
+        /**
+         * Below this a frame is unusable whatever the session's history says.
+         *
+         * Registration needs three correspondences and wants far more to be trustworthy; a frame
+         * with a handful of detections cannot be placed and cannot be stacked, so the reason it
+         * is rejected should say *sky*, not *mount*. Deliberately low — this is a floor for
+         * "nothing is there", not a quality bar, and the relative check is what catches a sky
+         * that merely dimmed.
+         */
+        const val DEFAULT_MIN_STARS = 8
 
         /**
          * Below this median HFR (analysis-plane pixels) the eccentricity check is **skipped**,

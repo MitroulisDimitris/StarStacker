@@ -53,8 +53,17 @@ class LiveRegistration(
         val method: AsterismMatcher.Method,
         val verdict: ResidualMonitor.Verdict,
         val isReference: Boolean,
+        /**
+         * True when this frame had too few stars to *become* the session's reference.
+         *
+         * Distinct from [failed], and the distinction is the whole of §1.29. A frame that cannot
+         * be a reference has not failed to register — there was nothing to register against. Said
+         * the other way, the first frame of a session can never be a registration failure, and
+         * reporting one is telling the user their tripod moved when the sky is overcast.
+         */
+        val tooFewStars: Boolean = false,
     ) {
-        val failed: Boolean get() = transform == null && !isReference
+        val failed: Boolean get() = transform == null && !isReference && !tooFewStars
         val bumped: Boolean get() = verdict == ResidualMonitor.Verdict.SPIKE
 
         companion object {
@@ -75,6 +84,9 @@ class LiveRegistration(
                 verdict = ResidualMonitor.Verdict.UNKNOWN,
                 isReference = false,
             )
+
+            /** Not enough stars to be the session's reference — see [Outcome.tooFewStars]. */
+            val STARVED = FAILED.copy(tooFewStars = true)
         }
     }
 
@@ -110,7 +122,7 @@ class LiveRegistration(
 
         val existing = reference
         if (existing == null) {
-            if (detections.size < minReferenceStars) return Outcome.FAILED
+            if (detections.size < minReferenceStars) return Outcome.STARVED
             reference = detections
             centreX = (sensorWidth - 1) / 2.0
             centreY = (sensorHeight - 1) / 2.0
@@ -150,6 +162,7 @@ class LiveRegistration(
     /** One line for the frame log, so a rejection can be argued with later (**D-10**). */
     fun describe(outcome: Outcome): String = when {
         outcome.isReference -> "reference frame"
+        outcome.tooFewStars -> "too few stars to start a session on"
         outcome.failed -> "could not be registered against the reference frame"
         else -> "%s · %d stars matched · %s".format(
             outcome.method.name.lowercase(),

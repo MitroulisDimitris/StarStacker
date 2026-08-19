@@ -81,7 +81,7 @@ Two consequences to accept deliberately:
 | 0 | 9 | 1 | **8 built and demonstrated**, ticked only where §0's bar is met. SAF throughput still unmeasured (T-0.5 / OI-5) |
 | 1A | 6 | 6 | **complete 2026-08-18.** Probe, qualification, camera lifecycle, first light, DNG reader — the leak loop closed T-1.3 (§1.16) |
 | 1B | 7 | 1 | **hardware-verified except what needs darkness** — see §5 and §1.7 |
-| 1C | 17 | 1 | **every task built.** Blocked on the field, not on code: darks have never once executed, and no 45-minute session has been shot |
+| 1C | 17 | 1 | **every task built**, and one real session kept 42 of 49 lights (§1.29). Blocked on the field: **no 45-minute unattended session has been shot**. Darks *have* executed — 30 frames on disk in `2026-08-18_2039` — a claim this table carried wrongly until 2026-08-19 |
 | 1D | 9 | 0 | **all nine built and photographed 2026-08-18** (§1.15). T-3.21's last piece waits on the session pane, which is now T-3.27 rather than T-6.1 |
 | 1E | 10 | 2 | **all ten built and walked on the phone 2026-08-19** (§1.18–§1.20). **T-3.28** and **T-3.36** met their acceptances whole; T-3.33 and T-3.35's hard parts are demonstrated. Four defects fixed, two of them predating the phase: `KeyValue` crushed its label whenever a value got long (§1.19), and **the sensor's exposure ceiling was being enforced when the hardware does not enforce it** (§1.20, **D-28**). Unwalked: the naming prompt, a failing sweep |
 | 2 | 7 | 0 | **all seven built 2026-08-19** (§1.22–§1.28) — synthetic sky, drift seed, asterism matching, rigid fit with RANSAC, live registration, common area, and an aligned preview. 113 tests; end to end the chain recovers a known transform to **0.15° and 0.6 px**. Ticked nowhere, because **none of it has met a real star field** — that is the whole of Checkpoint 2 |
@@ -1351,6 +1351,64 @@ accepted light has either a transform or is the reference — but registration *
 a real sky**, and retiring a proven path in favour of an unproven one on the same day is a poor
 trade. It is reached when registration throws rather than merely fails, which the gate would
 otherwise have caught.
+
+---
+
+## 1.29 Asked whether it is ready to shoot — 2026-08-19
+
+The question was put directly, and answering it from this document alone would have been wrong,
+because Phase 2 put new code into the capture path today and none of it had run on hardware. Two
+things came out of actually looking.
+
+### A defect, found in ninety seconds on the device
+
+A six-frame session indoors reported its **first four frames as `REGISTRATION` failures**. Frame
+one *is* the reference and cannot fail to register against itself; the truth was that there were no
+stars.
+
+The cause is a gap in the gate's vocabulary rather than in registration. `FrameGate` diagnoses
+cloud **relative to a rolling baseline**, and that baseline does not exist for the first five
+frames of a session — so at the start of a session the cloud check has no opinion, and the
+registration check was the only one left with one. It gave the wrong one.
+
+**The timing is what makes it matter.** The first frames of a session are exactly when the sky may
+be overcast, the lens may still be capped, or twilight may not have faded — and the message a
+person would have read is *"could not be registered against the reference frame"*, which points at
+the mount. Wrong advice, at the worst moment, in the dark.
+
+Two changes. `LiveRegistration` distinguishes **starved** from **failed**: a frame with too few
+stars to *become* a reference has not failed to register, because there was nothing to register
+against. And `FrameGate` gained an **absolute star floor** checked before the relative one, so a
+frame with nothing in it is called cloud from the very first frame of a session, with no history
+required. On the device it now reads *"1 stars — too few to register or stack, so cloud, twilight
+or a lens cap"*.
+
+**Every existing test missed this because they all primed the gate with good frames first** — which
+is the state a session reaches *after* the moment the bug fires. A regression test now starts from
+an empty gate, which is the state every session actually starts from.
+
+### And a claim in this document that had gone stale
+
+The progress table has said since Phase 1C that **"darks have never once executed"**. They have:
+session `2026-08-18_2039` holds **30 dark frames on disk**, `dark_0001.dng` onward, recorded in its
+log. What has never happened is a *45-minute unattended session*, which is the real content of
+Checkpoint 1C and is a different claim.
+
+### The state of the whole thing, as measured rather than as planned
+
+The four real sessions on the device:
+
+| session | lights | kept | darks | rejections |
+|---|---|---|---|---|
+| `0050` | 105 | **0** | 0 | 49 bumped, 56 trailed |
+| `0123` | 49 | **42** | 0 | 7 bumped |
+| `1909` | 4 | 0 | 0 | indoor test |
+| `2039` | 14 | 0 | **30** | indoor test |
+
+`0050`'s wipeout was the phantom-integration bug §1.14 fixed — a stationary phone reads 0.013° over
+a 7.4 s sub now, and that session reported 1.3° to 6°. The session after it kept **86 %**. So the
+capture core has produced one good night's work, and the mass rejections belong to a bug that is
+gone.
 
 ---
 
@@ -2763,7 +2821,7 @@ the driver, and not one that blocks work.
 | **Field** | The phase checkpoints — a tripod, a dark sky, and a completed session | Manual, logged in the changelog |
 | **External** | DNGs open in Siril/RawTherapee (T-1.5); on-device master compared to Siril/DSS on identical subs (T-5.7) | Desktop |
 
-**417 JVM tests as of 2026-08-19** — qualification 21, session naming 17, star detection 14,
+**422 JVM tests as of 2026-08-19** — qualification 21, session naming 17, star detection 14,
 session planner 14, frame gate 14, leak analysis 13, session pane store 12, session log 12, preview
 stack 11, permissions 11, focus sweep 11, exposure solver 11, astro 11, DNG reader 10, camera picker
 10, exposure compensation 10, trailing limit 9, stream planning 8, noise model 8, JSON 8, exposure
@@ -2839,6 +2897,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-08-19 | **Asked whether it is ready to shoot, and found a defect by looking (§1.29).** Phase 2 put new code in the capture path today and none of it had run on hardware, so the question could not be answered from this document. A six-frame session indoors reported its **first four frames as `REGISTRATION` failures** — but frame one *is* the reference and cannot fail to register against itself; there were simply no stars. The cause is a gap in the gate's vocabulary: `FrameGate` diagnoses cloud **relative to a baseline that does not exist for the first five frames**, so at the start of a session the registration check was the only one with an opinion and it gave the wrong one. That is the worst possible timing — the start of a session is exactly when the sky may be overcast or the lens still capped — and the message pointed at the mount. `LiveRegistration` now distinguishes **starved** from **failed**, and `FrameGate` gained an **absolute star floor** checked before the relative one; on device it now reads *"1 stars — too few to register or stack, so cloud, twilight or a lens cap"*. **Every existing test missed it because they all primed the gate with good frames first**, which is the state a session reaches *after* the bug fires. Also corrected a stale claim: **darks have executed** — 30 DNGs on disk in `2026-08-18_2039` — where the progress table had said they never had since Phase 1C. What has genuinely never happened is a 45-minute unattended session. 422 JVM tests. |
 | 2026-08-19 | **T-4.6 — the preview finally shows what the stack will look like (§1.28), and Phase 2 is built.** The transform half landed with T-4.4; `SessionLogTest` had a round-trip test waiting for `FrameRecord.transform` since Phase 1C. The substantial half: **the preview had been aligning by translation alone**, voted between consecutive frames — correct for a tripod that only drifts, wrong for every alt-az mount, so rotation accumulated as a smear worst at the corners, invisible at the centre, and indistinguishable from soft focus. Stacking through the measured transform now gives **tighter stars and more of them** on a session rotating 0.4° a frame, because a smeared star spreads its flux below the detection threshold. **The risk was coordinates, not geometry**: preview pixels, the binned plane and sensor coordinates meet in one expression, and getting it wrong throws nothing — it just makes the preview slightly soft, which is what bad focus, bad seeing and a good stack on a mediocre night also look like. `PlaneMapping` composes them once, tested against the transform it must reproduce, with specific cases for the three traps: a sensor translation divided by the bin factor, the sub-pixel `binOffset·(a+b−1)` term a naive division drops, and rows staying rows without rotation but not with it. `StarOffset`'s path is **kept as a fallback rather than deleted**, because registration has never run under a real sky and retiring a proven path for an unproven one on the same day is a poor trade. 417 JVM tests. |
 | 2026-08-19 | **T-4.5 — common area, and a minus sign that cost eight tests (§1.27).** A stack can only use sky every frame saw, so the usable region is the exact intersection of all footprints — convex-polygon clipping rather than a pixel count, since sampling would make a 2 % change indistinguishable from noise, and clipping is incrementally cheap which is what makes the figure live. **Deliberately not the number Setup shows**: `SessionPlanner` predicts how large a centred *crop* survives the predicted rotation and ignores drift, which on an alt-az tripod is usually the larger effect. One is a plan, the other a result; a test pins the relation that must hold — an inscribed rectangle lies inside the true overlap, so the prediction is a lower bound on the measurement. **Eight of eighteen tests failed on the first run from one omission**: the segment/line intersection solved `t = +side/denominator` where the algebra gives `−`. Every crossing landed the same distance on the wrong side of the edge, the polygon self-intersected, and its area stopped meaning anything — 150 units of overlap inside two 100-unit squares, and 21 % for a drift that cost 2.5 %. **The second sign error today** after §1.23's roll angle, and the same signature both times: the magnitudes were right, which is exactly what lets a sign error survive everything except a case with an arithmetic answer. Surfaces as `Common NN%` on the capture screen, warning below 80 %. Only accepted frames narrow it. 406 JVM tests. |
 | 2026-08-19 | **T-4.4 — live registration, and the bump the accelerometer cannot see (§1.26).** The first Phase 2 task inside the running app: `CaptureEngine` registers every light against the session's reference frame, writes the transform into `FrameRecord.transform` — a field waiting since Phase 1C — and `FrameGate` gained two verdicts. **This project has now built the bump detector twice**, and the gate's own comment predicted it: tilt catches gross bumps, while a footstep on soft ground sits far below the accelerometer's noise floor and still smears a 7 s sub. Such a bump moves the field *during* the exposure, so the transform still fits and what betrays it is the inliers all missing by more than they should — the residual being the one number derived from many stars being wrong together. The rule is a **baseline, not a threshold**, since sessions at 0.2 px and 0.8 px can both be steady; with two constraints borrowed from earlier mistakes (a phase too short to judge is `UNKNOWN`, §1.16; a rejected frame does not join the baseline, `FrameGate`) and one new (an absolute floor, so a session registering at 0.05 px does not call 0.16 px a bump). **Ordering is diagnosis**: a thin unregisterable frame is called cloud rather than registration failure, because telling someone to steady their tripod while a cloud goes over is the wrong advice at 2 a.m. Registration runs **against the reference, not the previous frame** — chaining 150 transforms accumulates a drift no single measurement reveals — and the transform is converted to **sensor coordinates**, since a restack at full resolution would otherwise be wrong by exactly the bin factor. 388 JVM tests. |

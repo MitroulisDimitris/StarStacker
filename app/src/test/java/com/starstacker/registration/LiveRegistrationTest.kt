@@ -148,7 +148,10 @@ class LiveRegistrationTest {
         val outcome = live.register(stars.stars, plane, overcast.width, overcast.height)
 
         assertFalse(live.hasReference) { "cloud must not become the reference" }
-        assertTrue(outcome.failed)
+        // Starved, not failed. There was nothing to register against, so calling it a registration
+        // failure would blame the mount for the weather (§1.29).
+        assertTrue(outcome.tooFewStars)
+        assertFalse(outcome.failed)
 
         // And the session recovers the moment a real frame arrives.
         val good = register(live, sky.render(sky.field(40, seed = 43), 7.4, seed = 4))
