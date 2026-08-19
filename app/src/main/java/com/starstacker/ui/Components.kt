@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -77,8 +78,19 @@ fun Mono(
     color: Color,
     size: TextUnit = 10.5.sp,
     modifier: Modifier = Modifier,
+    textAlign: TextAlign? = null,
+    /** Set it when the text is long enough to wrap; the default leading is tight for two lines. */
+    lineHeight: TextUnit = TextUnit.Unspecified,
 ) {
-    Text(text, fontFamily = NumFamily, fontSize = size, color = color, modifier = modifier)
+    Text(
+        text,
+        fontFamily = NumFamily,
+        fontSize = size,
+        color = color,
+        textAlign = textAlign,
+        lineHeight = lineHeight,
+        modifier = modifier,
+    )
 }
 
 /** The one full-intensity control on a screen. If a screen needs two, one of them is wrong. */
@@ -130,15 +142,43 @@ fun QuietButton(
     )
 }
 
-/** A label/value pair — the prototype's `plan` grid, which every readout card is built from. */
+/**
+ * A label/value pair — the prototype's `plan` grid, which every readout card is built from.
+ *
+ * **Both sides are weighted, and that is the fix for a real defect.** The value used to be
+ * unweighted, which in a `Row` means it is measured *first*, against the full width, and the
+ * weighted label divides up whatever survives. For a short value that is invisible and correct.
+ * For a long one — `needs 5.4 GB, 2.1 GB free — this session will not fit`, which is exactly what
+ * the storage budget says when it matters most — the value ate the row and the label was measured
+ * at a few pixels, so `Storage` rendered **one letter per line, stacked vertically**. The rule the
+ * layout has to keep is that the row degrades by wrapping the value, never by crushing the label:
+ * a warning about running out of space is not the moment to become unreadable.
+ *
+ * The ratio is deliberate rather than 1:1 — labels here are short and fixed (`Storage`, `Battery`,
+ * `Frame left at end`) and values carry sentences, so the value gets the larger share and is
+ * end-aligned, which leaves short values sitting exactly where they did before.
+ */
 @Composable
 fun KeyValue(label: String, value: String, warn: Boolean = false) {
     Row(
         Modifier.fillMaxWidth().padding(vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, fontSize = 12.sp, color = Night.Txt3, modifier = Modifier.weight(1f))
-        Mono(value, color = if (warn) Night.Warn else Night.Txt, size = 11.5.sp)
+        Text(
+            label,
+            fontSize = 12.sp,
+            color = Night.Txt3,
+            lineHeight = 16.sp,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(10.dp))
+        Mono(
+            value,
+            color = if (warn) Night.Warn else Night.Txt,
+            size = 11.5.sp,
+            textAlign = TextAlign.End,
+            modifier = Modifier.weight(1.7f),
+        )
     }
 }
 

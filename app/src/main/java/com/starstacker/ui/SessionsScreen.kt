@@ -236,7 +236,9 @@ private fun SessionPaneRow(
             )
             .padding(13.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        // Top, not centre: the description wraps to two lines on a long session, and a centred
+        // badge then floats halfway down the row looking like it belongs to neither line.
+        Row(verticalAlignment = Alignment.Top) {
             // The thumbnail slot the prototype fills from a stacked master. There is no stacking
             // until Phase 3, so it says so rather than showing an empty square that reads as a
             // failed image load. Doubles as the selection mark, which needs no second control.
@@ -272,10 +274,20 @@ private fun SessionPaneRow(
                     color = Night.Txt,
                 )
                 Spacer(Modifier.height(2.dp))
-                Mono(session.describeWithSize(), color = Night.Txt3, size = 10.sp)
-                Spacer(Modifier.height(1.dp))
-                Mono("started ${session.startedAtClock()}", color = Night.Dim, size = 9.5.sp)
+                Mono(
+                    session.describeWithSize(),
+                    color = Night.Txt3,
+                    size = 10.sp,
+                    lineHeight = 15.sp,
+                )
+                // Only when it adds something. An unnamed session is *named* for its start time,
+                // so printing `started 20:39` under a row titled `20:39` states one fact twice.
+                if (!session.labelIsStartTime) {
+                    Spacer(Modifier.height(1.dp))
+                    Mono("started ${session.startedAtClock()}", color = Night.Dim, size = 9.5.sp)
+                }
             }
+            Spacer(Modifier.size(8.dp))
             Badge(session.badge, if (session.needsAttention) Night.Warn else Night.Txt3)
         }
         // The per-row delete, offered where the session is rather than only behind a selection —
@@ -397,9 +409,11 @@ fun SessionDetailScreen(
                 )
                 Spacer(Modifier.height(3.dp))
                 Mono(
-                    "${FULL_DATE.format(Date(info.startedAtEpochMs))} · ${detail.summary.describeWithSize()}",
+                    "${FULL_DATE.format(Date(info.startedAtEpochMs))} · " +
+                        detail.summary.describeCountsWithSize(),
                     color = Night.Txt3,
                     size = 10.5.sp,
+                    lineHeight = 15.sp,
                 )
             }
         }

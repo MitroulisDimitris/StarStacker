@@ -83,7 +83,7 @@ Two consequences to accept deliberately:
 | 1B | 7 | 1 | **hardware-verified except what needs darkness** — see §5 and §1.7 |
 | 1C | 17 | 1 | **every task built.** Blocked on the field, not on code: darks have never once executed, and no 45-minute session has been shot |
 | 1D | 9 | 0 | **all nine built and photographed 2026-08-18** (§1.15). T-3.21's last piece waits on the session pane, which is now T-3.27 rather than T-6.1 |
-| 1E | 10 | 0 | **all ten built 2026-08-19** (§1.18) — and **none of it has run on the phone**, which is the whole of what is left. 46 new JVM tests; two defects fixed and a third found by one of them |
+| 1E | 10 | 1 | **all ten built, and walked on the phone 2026-08-19** (§1.18, §1.19). T-3.36 met its acceptance whole. **T-3.33 and T-3.35's hard parts are demonstrated** — setup takes no frames, the camera stays closed, the dial moves in sixths and the length bound follows the compensated sub. What is unwalked: the naming prompt, a completed deletion, a failing sweep. A fourth defect — `KeyValue` crushing its label, since Phase 1C — was found by the owner and fixed (§1.19) |
 | 2+ | outlined | 0 | not started |
 
 > **The `Ticked` column counts `[x]` only.** §0 ties that to an acceptance demonstrated on a real
@@ -778,6 +778,60 @@ answer), that a failing sweep opens the disclosure (T-3.31, which needs a sky th
 converge), what the root scan costs on a real root (**OI-5**, now self-timing every time the pane
 opens), and whether a document provider honours `deleteDocument` (T-3.28, which reports a refusal
 per session rather than assuming success, but has never met a provider).
+
+---
+
+## 1.19 Walked on the phone, and a layout defect the owner found first — 2026-08-19
+
+The device came back, so §1.18's "none of it has run on the phone" is now partly answered. What was
+walked: the main screen, the session pane, a session's detail, framing, setup, the sky measurement,
+the exposure dial and the plan. What was **not**: starting a session through the naming prompt,
+completing a deletion, and a sweep that fails.
+
+**The owner found a layout defect before any of that, and it was mine but not new.** In session
+setup, with the storage warning showing, `Storage` rendered **one letter per line, stacked
+vertically**. The cause is in `KeyValue`, which every readout card in the app is built from and
+which has been there since Phase 1C: the value was **unweighted** and the label carried
+`weight(1f)`. A `Row` measures unweighted children *first*, against the full width, and divides
+what survives among the weighted ones — so a value like `needs 399.9 GB, 46.1 GB free — this session
+will not fit` took the entire row and the label was measured at a few pixels.
+
+Two things about that are worth keeping.
+
+- **It only appears when it matters most.** Short values — `ISO 800`, `done`, `A059P` — leave plenty
+  of room, so every screen looked correct for three phases. The strings long enough to trigger it
+  are exactly the ones the storage and battery budgets emit *when the session will not fit*: the
+  layout broke precisely when it had something urgent to say.
+- **The rule is now stated where the component is**: the row degrades by wrapping the value, never
+  by crushing the label. Both sides are weighted, 1 : 1.7, and the value is end-aligned so short
+  values sit exactly where they always did.
+
+Reproduced on the device by compensating to −3 5/6 stops and dragging the session length to its end:
+17010 × 519 ms wants 399.9 GB against 46.1 GB free. Both the `Storage` and `Battery` rows now wrap
+onto two right-aligned lines with their labels intact, and the red banner below Start says the same
+thing in prose.
+
+**Two defects of my own in the new pane, found by looking rather than by testing.** An unnamed
+session is *named for its start time*, and the row then printed `started 20:39` under a title
+reading `20:39` — one fact, stated twice. And the `Captured` badge was centred against a
+description that wraps to two lines on a long session, so it floated halfway down the row belonging
+to neither. The badge is top-aligned now and the redundant line is suppressed when the label already
+is the clock. The detail screen had the same disease in miniature: `Tue 18 Aug 2026, 20:39 · 18 Aug
+· 0/14 · …`, dating the session twice in one breath.
+
+**What the walk confirmed.** Arriving at setup takes no frames and leaves the camera closed —
+`dumpsys media.camera` reports no open device — and the cost is stated first: *"9 test frames of
+0.25 s — one per ISO from 50 to 12800"* (**T-3.33**, the acceptance §1.18 said a laptop could not
+even partly answer). The dial moves in sixths and reads `−3 5/6 stops`, the scale is marked −4…+4,
+and **the session-length bound follows the compensated sub** — `1 frame to 147 min` at 519 ms, where
+the old code would have offered a bound computed from 7.4 s (**T-3.35**). The pane lists all four
+sessions with their real sizes (1.0 GB, 96 MB, 1.1 GB, 2.5 GB), a row opens to its frame log with
+the rejections and their numbers intact, long press selects and the count tracks it, and the
+deletion confirmation names `19:09 · 4 lights · 96 MB` before anything happens.
+
+**Nothing was deleted.** The confirmation was opened and cancelled: the four sessions on that phone
+are real captures from the field, and T-3.28's remaining acceptance is worth less than they are. It
+wants a session nobody minds losing.
 
 ---
 
@@ -1859,13 +1913,15 @@ changes whether someone can run one without being surprised.
   **Remaining:** the dial has not been dragged on glass. Whether sixths feel right under a thumb is
   a judgement about a physical gesture.
 
-- [~] **T-3.36** **Say what the exposure is, and what it becomes.** `as solved` is replaced by the
+- [x] **T-3.36** **Say what the exposure is, and what it becomes.** `as solved` is replaced by the
   solved sub as a time, and moving the control shows the change rather than the destination:
   `3.2 s → 4.5 s per frame`. The number is what the user is deciding about; "as solved" is the
   app's own bookkeeping.
   *Accept:* at zero compensation the solved sub is shown as a time; moved, both times are shown
   with the direction between them.
-  **Built 2026-08-19.** `3.2 s → 4.5 s per frame`, and the title says `Exposure compensation` —
+  **Done 2026-08-19, seen on the phone.** At zero it read `7.4 s per frame`; dragged to −3 5/6 it
+  read `7.4 s → 519 ms per frame`. Both halves of the acceptance, photographed.
+  `3.2 s → 4.5 s per frame`, and the title says `Exposure compensation` —
   `Exposure` named the wrong thing, since the screen has an exposure and this is what compensates
   it. Stops read as a photographer's fractions (`+1 1/3`), not as `+1.33`, because the scale is
   marked in stops and a decimal invites comparison against a number of seconds.
@@ -2126,6 +2182,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-08-19 | **Phase 1E walked on the phone, and `KeyValue` fixed (§1.19).** The owner found the defect first: in session setup with the storage warning showing, `Storage` rendered **one letter per line**. The cause is in `KeyValue` and predates Phase 1E by three phases — the value was unweighted, so a `Row` measured it first against the full width and left the weighted label a few pixels. It only ever showed when it mattered, because the strings long enough to trigger it are the ones the storage and battery budgets emit *when the session will not fit*. Both sides are weighted now, 1 : 1.7, value end-aligned; the rule is that the row wraps the value rather than crushing the label. Reproduced and confirmed fixed on device at 17010 × 519 ms wanting 399.9 GB of 46.1 GB free. Two smaller ones of my own in the new pane: an unnamed session printed `started 20:39` under a row titled `20:39`, and the `Captured` badge floated mid-row against a wrapped description — the badge is top-aligned and the redundant line suppressed. **The walk confirmed T-3.33 outright** (arriving at setup takes no frames, `dumpsys media.camera` shows no open device, and the cost is stated before the button) **and T-3.35's substance** (sixths, a −4…+4 scale, and `1 frame to 147 min` proving the length bound follows the compensated sub). **T-3.36 is ticked** — `7.4 s per frame` at zero and `7.4 s → 519 ms per frame` when moved. Nothing was deleted: the confirmation was opened on a real 96 MB capture and cancelled. |
 | 2026-08-19 | **Phase 1E built — all ten tasks, and three defects (§1.18).** `All sessions` opens the sessions rather than a file manager (**T-3.27**, pulling T-6.1/T-6.3 out of Phase 4), with a detail screen carrying the frame log, the derivation, the pointing and the path; sessions can be deleted singly or as a batch behind a confirmation that names the frames and the bytes (**T-3.28**, **T-3.29**, **D-26**); a session is named at Start and named for the day when it is not (**T-3.30**); focus by hand became a disclosure that opens itself when a sweep fails (**T-3.31**); the cost of no stored focus is stated under Continue from a single authored sentence (**T-3.32**); the sky is measured when asked, with the price stated first (**T-3.33**, **D-27**); the histogram has a title, a labelled clipping wall and a named axis (**T-3.34**); exposure compensation is ±4 stops in sixths under a title that says what it compensates, reading `3.2 s → 4.5 s per frame` (**T-3.35**, **T-3.36**). **T-3.35's two predicted defects were both real** and are fixed in a new pure `ExposureCompensation`, tested: the length slider's bound now follows the compensated sub (2244 frames vs 562 at +2 stops — the 4× that was wrong), and the sub is clamped to the sensor's 49.64 s ceiling with the clamp stated on screen. **A third defect was found by a test, not by reading**: the rule keeping the date out of a folder name twice also swallowed `2026-08-18-comet`, a chosen name, dropping it from the folder entirely. `session.json` gained a `label` field, since the folder deliberately does not always carry the name. 293 JVM tests, up 46. **Nothing has run on the phone** — the device was not attached, so all ten stay `[~]`, and four acceptances (T-3.33's closed camera, T-3.31's failing sweep, OI-5's scan cost, SAF deletion) are what `[~]` is carrying. One deviation, argued in §1.18: T-3.30's `Not now` returns without starting rather than starting under the day's name. |
 | 2026-08-19 | **Audit pass, and two entries that had been wrong for three days.** §14's tally said 13 issues resolved where the table holds 12, and **Blocking now** still read "the one remaining gate is a measurement that takes minutes once T-1.1 exists — see OI-6", which stopped being true on 2026-08-16 when T-1.1 was built and OI-6 closed favourably; it now names the three issues a single 45-minute session closes together. The header had said `Last updated: 2026-08-16` through two whole phases. §15's test count caught up (234 → **247**), and the `--es diag` harness is listed by its modes rather than by the one file it started in. Phase 4's **T-6.1**, **T-6.3** and **T-6.7** now say which parts of them Phase 1E takes and which parts genuinely cannot come early — the cached index waits on OI-5, thumbnails and "delete subs, keep masters" wait on a Phase 3 master, and manual include/exclude waits on something that reads the flags. No task changed state. |
 | 2026-08-18 | **Phase 1E planned — the second walkthrough (§1.17).** Ten tasks, and two of them reverse things this document argued for earlier. **The sky will be measured when asked** rather than on arrival (**D-27**): T-3.25's "solving is what this screen is for" was true of the screen and false of the cost, since the measurement opens the camera and spends frames the moment the screen appears. **Exposure compensation goes to ±4 stops** in sixths, marked like a camera's dial, because the predicted histogram sits directly above it and shows the consequence — the picture can do the arguing that `MAX_STOPS = 2.0` was doing by fiat. **D-26** amends **D-10** so a person can delete their own session, which D-10 never meant to forbid. The rest is placement: `All sessions` opened a file manager rather than the sessions (T-3.27, pulling T-6.1/T-6.3 forward), sessions were all labelled with the literal string `"session"` (T-3.30), focus by hand sat permanently open and scrolls away from the preview it must be judged against (T-3.31), nothing said what continuing without focus costs though the app allows it (T-3.32), and the histogram had no title (T-3.34). Two defects found while planning: the session-length slider's upper bound is computed from the **uncompensated** sub, already wrong by up to 4× and 16× at the new range, and the compensated sub is not clamped to the sensor's 49.64 s maximum (T-3.35). |

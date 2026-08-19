@@ -35,19 +35,38 @@ data class SessionSummary(
     val sizeBytes: Long = 0L,
 ) {
     /** `9 Aug · 142/150 · 28m 24s` — the prototype's second line. */
-    fun describe(): String = buildString {
-        append(DATE.format(Date(startedAtEpochMs)))
-        append(" · $accepted/$lights")
-        if (darks > 0) append(" · $darks darks")
-        append(" · ${formatDuration(integrationSeconds)}")
-    }
+    fun describe(): String = "${DATE.format(Date(startedAtEpochMs))} · ${counts()}"
 
     /** The same line with the size on disk, for the pane where storage is half the point. */
     fun describeWithSize(): String =
         if (sizeBytes <= 0L) describe() else "${describe()} · ${formatBytes(sizeBytes)}"
 
+    /**
+     * Everything [describeWithSize] says **except the date**, for the detail screen — which prints
+     * the full date and weekday in its own line above and would otherwise say
+     * `Tue 18 Aug 2026, 20:39 · 18 Aug · …`, dating the session twice in one breath.
+     */
+    fun describeCountsWithSize(): String =
+        if (sizeBytes <= 0L) counts() else "${counts()} · ${formatBytes(sizeBytes)}"
+
+    private fun counts(): String = buildString {
+        append("$accepted/$lights")
+        if (darks > 0) append(" · $darks darks")
+        append(" · ${formatDuration(integrationSeconds)}")
+    }
+
     /** The clock time it started — what tells two sessions of one night apart. */
     fun startedAtClock(): String = TIME.format(Date(startedAtEpochMs))
+
+    /**
+     * True when [label] *is* the start time, because nothing else was available to call it.
+     *
+     * The pane uses it to suppress its own `started 20:39` line, which for an unnamed session
+     * repeats the row's title word for word — the fallback naming a session after its clock time
+     * and the row restating that clock time are two halves of the same idea, and printing both
+     * makes the row look like it holds two different facts.
+     */
+    val labelIsStartTime: Boolean get() = label == startedAtClock()
 
     /**
      * What T-3.28's confirmation has to state before anything is deleted: how many frames, and
