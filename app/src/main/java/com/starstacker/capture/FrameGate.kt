@@ -50,6 +50,19 @@ class FrameGate(
          * registration residuals in Phase 2 instead.
          */
         val peakTiltDeg: Double? = null,
+        /**
+         * T-4.4 — what registration made of this frame, when it was attempted.
+         *
+         * Two separate flags rather than one "registration was bad", because they call for
+         * opposite advice. [registrationBumped] is a good frame spoiled by movement — steady the
+         * tripod. [registrationFailed] is a frame the pipeline cannot place at all, which is
+         * almost always the sky rather than the mount. Collapsing them would tell someone to
+         * stop knocking their tripod while a cloud goes over.
+         */
+        val registrationBumped: Boolean = false,
+        val registrationFailed: Boolean = false,
+        /** For the rejection detail, so the number can be argued with later (**D-10**). */
+        val registrationDetail: String? = null,
     )
 
     data class Verdict(
@@ -103,6 +116,17 @@ class FrameGate(
             )
         }
 
+        // T-4.4's fine bump, judged before the star-count baseline for the same reason the tilt
+        // check is: the frame is spoiled whatever the sky was doing, and a bumped frame that also
+        // happens to be thin should be reported as bumped rather than as cloud.
+        if (metrics.registrationBumped) {
+            return Verdict(
+                false, RejectReason.BUMPED,
+                "the star field smeared during the exposure — " +
+                    (metrics.registrationDetail ?: "registration residual spiked"),
+            )
+        }
+
         val baseline = baselineStarCount
         if (baseline != null && metrics.starCount < baseline * starCollapseFraction) {
             // Deliberately does not join the baseline — see the method note.
@@ -110,6 +134,19 @@ class FrameGate(
                 false, RejectReason.CLOUD,
                 "%d stars against a baseline of %d — cloud, or the target has set"
                     .format(metrics.starCount, baseline),
+            )
+        }
+
+        // Last, and deliberately so: a frame that could not be registered is usually a frame with
+        // too few stars, and the cloud check above gives that the better diagnosis. Reaching here
+        // means the star count was normal and the frame still would not place — which is a
+        // genuine registration failure and not a weather report.
+        if (metrics.registrationFailed) {
+            remember(metrics.starCount)
+            return Verdict(
+                false, RejectReason.REGISTRATION,
+                metrics.registrationDetail
+                    ?: "could not be registered against the reference frame",
             )
         }
 

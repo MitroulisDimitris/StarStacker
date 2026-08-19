@@ -16,6 +16,7 @@ import com.starstacker.session.SessionLog
 import com.starstacker.session.SessionPointing
 import com.starstacker.session.SessionState
 import com.starstacker.session.SessionWriter
+import com.starstacker.registration.LiveRegistration
 import com.starstacker.stars.CfaBinner
 import com.starstacker.stars.BinnedPlane
 import com.starstacker.stars.FrameStars
@@ -230,6 +231,16 @@ class CaptureEngine(
     private var offsetY = 0.0
     private var lastDeltaX = 0.0
     private var lastDeltaY = 0.0
+
+    /**
+     * T-4.4 — registration against the session's reference frame, carried across the sequence.
+     *
+     * Held here rather than passed in because the reference *is* session state: the first frame
+     * good enough to register against defines the coordinate system every later frame is measured
+     * in, and a session that restarted its reference halfway through would produce two stacks
+     * wearing one name.
+     */
+    private val registration = LiveRegistration()
 
     /** Reused across the whole sequence — a 25 MB allocation per frame is FR-12.2's warning. */
     private var buffer: ShortArray? = null
@@ -474,6 +485,23 @@ class CaptureEngine(
         // exposure rather than delaying it (≈130 ms against a multi-second sub).
         val analysis = analyse(session, pixels, request)
         val stars = analysis?.stars
+
+        // T-4.4 — registered against the session's reference frame, lights only. A dark has no
+        // stars by construction, and running registration over one would establish a reference
+        // made of hot pixels.
+        val registered = if (kind == FrameKind.LIGHT && analysis != null && stars != null) {
+            runCatching {
+                registration.register(
+                    stars = stars.stars,
+                    plane = analysis.plane,
+                    sensorWidth = session.plan.raw.width,
+                    sensorHeight = session.plan.raw.height,
+                )
+            }.onFailure { Log.w(TAG, "registration failed for frame $index", it) }.getOrNull()
+        } else {
+            null
+        }
+
         val metrics = FrameGate.Metrics(
             starCount = stars?.count ?: 0,
             medianEccentricity = stars?.medianEccentricity,
@@ -485,6 +513,9 @@ class CaptureEngine(
                 startNs = exposureStartNs,
                 endNs = exposureEndNs,
             ),
+            registrationBumped = registered?.bumped ?: false,
+            registrationFailed = registered?.failed ?: false,
+            registrationDetail = registered?.let { registration.describe(it) },
         )
         // The rotation is worth a line even when the frame passes: "unmeasured" and "did not
         // move" are the same verdict and very different facts, and only this distinguishes them.
@@ -506,6 +537,10 @@ class CaptureEngine(
             accepted = verdict.accepted,
             rejectReason = verdict.reason,
             rejectDetail = verdict.detail,
+            // FR-9.2's per-frame transform, in **sensor** coordinates so a restack working at full
+            // resolution can use it directly. Recorded even for a rejected frame: D-10 keeps the
+            // evidence, and a frame rejected for cloud may still be worth including by hand later.
+            transform = registered?.transform?.toMatrix(),
         )
         writer.update { log ->
             log.copy(frames = log.frames.map { if (it.index == index && it.kind == kind) measured else it })
