@@ -84,7 +84,7 @@ Two consequences to accept deliberately:
 | 1C | 17 | 1 | **every task built.** Blocked on the field, not on code: darks have never once executed, and no 45-minute session has been shot |
 | 1D | 9 | 0 | **all nine built and photographed 2026-08-18** (§1.15). T-3.21's last piece waits on the session pane, which is now T-3.27 rather than T-6.1 |
 | 1E | 10 | 2 | **all ten built and walked on the phone 2026-08-19** (§1.18–§1.20). **T-3.28** and **T-3.36** met their acceptances whole; T-3.33 and T-3.35's hard parts are demonstrated. Four defects fixed, two of them predating the phase: `KeyValue` crushed its label whenever a value got long (§1.19), and **the sensor's exposure ceiling was being enforced when the hardware does not enforce it** (§1.20, **D-28**). Unwalked: the naming prompt, a failing sweep |
-| 2 | 7 | 0 | **T-4.0 and T-4.1 built 2026-08-19** (§1.22, §1.23) — the synthetic sky with ground truth, and the analytic drift seed. 38 tests between them. Nothing consumes the seed yet; T-4.2 is its first customer |
+| 2 | 7 | 0 | **T-4.0, T-4.1 and T-4.2 built 2026-08-19** (§1.22–§1.24) — the synthetic sky with ground truth, the analytic drift seed, and asterism matching. 53 tests between them. T-4.3 fits the correspondences; none of it has met a real star field |
 | 3+ | outlined | 0 | not started |
 
 > **The `Ticked` column counts `[x]` only.** §0 ties that to an acceptance demonstrated on a real
@@ -1073,6 +1073,61 @@ The other roll case worth having is *roll is measured about the lens, not the ho
 tilted up 45° but not rolled must read zero, because the lens axis moved and "up on the sky" moved
 with it. Getting that wrong would put a phantom rotation into every tilted pointing — which is to
 say, into every real one.
+
+---
+
+## 1.24 Asterism matching, and a threshold that had to be measured — 2026-08-19
+
+Registration is two problems and T-4.2 is the hard one. Once you know that star 7 here is star 12
+there, fitting the transform is least squares. Working out *which star is which*, from two lists of
+unlabelled dots, is the part that needs an idea.
+
+The idea is that shapes survive what positions do not. `astroalign` (MIT) is the reference, and the
+invariant is the same: the two sorted side ratios of a triangle, unchanged by translation, rotation
+and scale.
+
+**T-4.0 is what made this testable honestly, and this is the first task to prove it.** Correctness
+here is not "the stars look lined up" — it is "star 7 is star 12", and only a synthetic field knows
+the answer. Against a real sky the best available check is to stack and squint, which cannot
+distinguish a correct matcher from one that is right most of the time. Most of the time is exactly
+what quietly ruins a stack.
+
+### The threshold, which guessing got wrong by two orders of magnitude
+
+The first version accepted any pair proposed by two or more triangles. That let **fifteen
+correspondences through between two completely unrelated fields** — the worst possible failure,
+since a confident wrong answer is indistinguishable downstream from a right one.
+
+Measuring the vote distributions rather than guessing again showed why, and gave the fix for free:
+
+| | pairs | votes per pair |
+|---|---|---|
+| true match, 24 stars | 24 of 24 correct | **251 – 277** |
+| unrelated fields | 15, all wrong | 14 – 35 |
+| mirrored field | 11, 9 wrong | 11 – 28 |
+
+A star in a 24-star field belongs to 253 triangles, so a true correspondence is confirmed by
+**very nearly every triangle containing it**. That is what being right looks like, and it is an
+order of magnitude clear of coincidence.
+
+The lesson is in the normalisation rather than the number. **A vote count means nothing on its own;
+it has to be measured against how many chances the pair had.** A flat threshold tuned for 24 stars
+rejects true pairs in an 8-star field, where the same certainty earns only 21 votes; one tuned for 8
+lets every coincidence through at 24. The ratio is scale-free, and with 1.09 against 0.14 the exact
+cut is not delicate — a quarter, chosen low rather than central because the errors are not
+symmetric: a missing pair costs one star out of dozens, a rejected frame costs the whole exposure.
+
+**This is a filter, not a verdict.** T-4.3's RANSAC is the real guard against a set that agrees with
+itself but with no rigid transform. The job here is to keep obvious rubbish out of it, and to make a
+failed match *look* like a failure rather than like fifteen confident pairs.
+
+### One test failed because the test was wrong
+
+The ambiguity guard rejects a seeded pair when the nearest candidate is not clearly nearer than the
+runner-up. The case written to exercise it put candidates 0 px and 4 px from the prediction, which
+is not ambiguous at all — it is a clear winner — so the guard correctly accepted it and the test
+correctly failed. Fixed by making the two candidates equidistant, which is what the sentence in the
+test name always meant.
 
 ---
 
@@ -2231,8 +2286,19 @@ changes whether someone can run one without being surprised.
   *Remaining:* nothing consumes the seed yet — T-4.2 is its first customer — and `cameraRollDeg` is
   **device** roll, so turning it into image roll needs each camera's `SENSOR_ORIENTATION` added.
   That belongs with T-4.4, where a real frame and a real camera meet.
-- [ ] **T-4.2** Asterism matching: triangle side ratios, invariant to translation/rotation/scale
+- [~] **T-4.2** Asterism matching: triangle side ratios, invariant to translation/rotation/scale
   (astroalign as reference, MIT).
+  **Built 2026-08-19** as `registration/AsterismMatcher.kt`, 15 tests, §1.24. Star *positions*
+  change between frames — that is the problem — but a **triangle of three stars has a shape**, and
+  shape survives moving, turning and scaling. Recognise the shape and each matched triangle
+  proposes three correspondences; the ones proposed over and over are right.
+  **Handedness is kept rather than discarded**: side ratios alone match a triangle to its mirror,
+  and since the sky never reflects (FR-7.3) every such match is false. **Thin triangles are
+  refused**, their ratios being noise wearing a number's clothes. **The seeded path is tried
+  first** — T-4.1's prediction plus nearest-neighbour, which works on *four* stars where triangle
+  statistics have nothing to say, and falls back rather than accepting a half-set.
+  *Remaining:* nothing consumes the correspondences yet — T-4.3 fits them — and the matcher has
+  never run on a real star field, only on rendered ones.
 - [ ] **T-4.3** RANSAC outlier rejection + rigid (3-DoF) transform fit refining the seed (FR-7.3).
 - [ ] **T-4.4** Live registration every frame on the binned plane; residual spike → bump detection.
 - [ ] **T-4.5** Common-area tracking and the live `NN%` indicator (FR-7.5).
@@ -2418,7 +2484,7 @@ the driver, and not one that blocks work.
 | **Field** | The phase checkpoints — a tripod, a dark sky, and a completed session | Manual, logged in the changelog |
 | **External** | DNGs open in Siril/RawTherapee (T-1.5); on-device master compared to Siril/DSS on identical subs (T-5.7) | Desktop |
 
-**342 JVM tests as of 2026-08-19** — qualification 21, session naming 17, star detection 14,
+**357 JVM tests as of 2026-08-19** — qualification 21, session naming 17, star detection 14,
 session planner 14, frame gate 14, leak analysis 13, session pane store 12, session log 12, preview
 stack 11, permissions 11, focus sweep 11, exposure solver 11, astro 11, DNG reader 10, camera picker
 10, exposure compensation 10, trailing limit 9, stream planning 8, noise model 8, JSON 8, exposure
@@ -2494,6 +2560,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-08-19 | **T-4.2 — asterism matching, and a threshold that had to be measured (§1.24).** Star positions change between frames; a **triangle of three stars has a shape**, and shape survives translation, rotation and scale. Each recognised triangle proposes three correspondences and the ones proposed repeatedly are right. Handedness is kept rather than discarded, since side ratios alone match a triangle to its mirror and the sky never reflects; thin triangles are refused as noise wearing a number's clothes; T-4.1's seed is tried first and works on **four stars**, where triangle statistics have nothing to say. **The first version was badly wrong and guessing would not have found it**: accepting any pair with two supporting triangles let fifteen correspondences through between two *unrelated* fields — a confident wrong answer, which is the one failure nothing downstream can catch. Measuring the vote distributions gave both the diagnosis and the fix: a true pair in a 24-star field collects **251–277 votes out of the 253 triangles its star belongs to**, against 14–35 for coincidences. So the rule is not a vote count but a **fraction of the chances the pair had** — scale-free, where a flat threshold tuned for 24 stars rejects true pairs at 8 and one tuned for 8 admits every coincidence at 24. **T-4.0 is what made any of this checkable**: correctness is "star 7 is star 12", which only a synthetic field knows. 357 JVM tests. |
 | 2026-08-19 | **T-4.1 — the analytic drift seed, and a sign the tests caught (§1.23).** The sky's motion is not unknown, so the transform between two frames is *computed* from position, pointing, roll and elapsed time, leaving matching to refine rather than search. On the reference device the field moves about a pixel between consecutive 7.4 s subs and **hundreds of pixels across a 45-minute session**, which is the whole argument for seeding. The rotation half already existed in `Astro` and is reused; the drift half is `d(alt)/dt = ω cos φ sin A` and `d(az)/dt = ω (sin φ − cos φ cos A tan a)`. **Roll had been thrown away** — `PointingFix` kept only the optical axis though the rotation matrix holding roll was three lines away — and without it a seed knows the size of the drift but not its direction; `PointingFix.cameraRollDeg` now carries it. Both sign conventions are pinned against cases with known answers, because a seed pointing the wrong way is worse than none: matching converges confidently on the wrong star, and a flipped axis has exactly the right magnitude so nothing else would catch it. **The roll sign was wrong and the test caught it**: the natural cross product has the handedness of someone standing in front of the lens, where the useful convention is anticlockwise in the image. 342 JVM tests. |
 | 2026-08-19 | **T-4.0 — a synthetic sky, and the trap inside it (§1.22).** Phase 2 begins with the fixture rather than the algorithm, because registration needs something a real sky cannot give: a frame whose **true** transform is known. `SyntheticSky` renders a GRBG mosaic in 10-bit ADU with a black pedestal — what the sensor emits, not the binned plane `StarDetectorTest` already had — accumulating everything in electrons and converting once, since shot noise is √N in electrons and that becomes false in ADU. Star fields follow a power law, with hot pixels, vignetting and a light-pollution gradient, all seeded so a failure can be replayed. **12 tests check the fixture itself**, because a placement bias would make a correct registrator look broken or a broken one look correct. **The trap worth recording**: the first version rendered 256×192 to be quick and found 5 of 20 stars, where 512×384 found 15 — `StarDetector` fits its background on 64 px tiles, and a plane one or two tiles across puts the gradient into the *noise* estimate (33 ADU against a true 17), doubling the threshold and silently losing every faint star. The economical choice produced a fixture that exercised a degenerate path. `MIN_USEFUL_WIDTH` is now the default. Also found: `StarDetector.saturationLevel` defaults to `Double.MAX_VALUE`, so a fully clipped frame is not flagged unless the white level is passed. 316 JVM tests. |
 | 2026-08-19 | **`maxFrameDuration` is the number that *is* enforced (§1.21, OI-24 closed).** The long-exposure frame cost is **per-frame, not per-session** — but only past `SENSOR_INFO_MAX_FRAME_DURATION`, 49.6408 s here. Cadence measured from `capturedAt`: three real sessions at 0.951 s and 7.399 s and a probe at 40 s all run at exactly **1.00×**; a probe at 60 s runs at **2.89×, 2.01×, 2.87×**. So the two vendor numbers describe different things — the exposure range bounds a single frame and is not enforced (320 s works, §1.20), while the frame-duration limit bounds a sustained stream and is enforced as a cadence. This had to be fixed rather than noted, because **D-28** lets a user ask for subs past the ceiling and therefore past this limit too: a 60 s plan counted 60 s a frame and would have taken 156, putting the session length, end time, storage rate and battery estimate all out by 2.6×. `ExposureCompensation.frameCostSeconds` now returns `sub + 10 ms` below the limit and `sub × 2.6` above it, the factor being the measured mean rather than a round number. **§1.9's 2 ms overhead is confirmed, not overturned** — every session shot so far is below the limit and unaffected. 304 JVM tests. |
