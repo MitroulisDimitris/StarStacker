@@ -224,11 +224,15 @@ private fun ExposureCard(controller: SetupController) {
             color = Night.Txt,
         )
         Spacer(Modifier.height(4.dp))
+        // "Solved from your sensor and this pointing" described the app's own working rather than
+        // the reader's position. What the line has to carry is that these are a *suggestion* built
+        // from something measured, and therefore both trustworthy and overridable — which is what
+        // the compensation dial below it is for.
         Mono(
             if (controller.pinnedIso != null) {
                 "ISO pinned to ${controller.pinnedIso} — re-solved around it"
             } else {
-                "Solved from your sensor and this pointing"
+                "Suggested settings based on measurements."
             },
             color = Night.Txt3,
             size = 10.5.sp,
