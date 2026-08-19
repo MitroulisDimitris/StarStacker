@@ -65,7 +65,31 @@ class PreviewStack(
      */
     fun add(plane: FloatArray, planeWidth: Int, planeHeight: Int, dx: Double, dy: Double) {
         require(planeWidth > 0 && planeHeight > 0) { "empty plane" }
-        downsampleInto(plane, planeWidth, planeHeight, dx, dy)
+        add(
+            plane, planeWidth, planeHeight,
+            PlaneMapping.shifted(
+                scaleX = planeWidth.toDouble() / width,
+                scaleY = planeHeight.toDouble() / height,
+                dx = dx,
+                dy = dy,
+            ),
+        )
+    }
+
+    /**
+     * T-4.6 — folds a frame in through a full affine mapping rather than a shift.
+     *
+     * **What this replaces could not correct rotation at all.** The preview used to align frames by
+     * a translation voted on between consecutive frames, which is right for a tripod that only
+     * drifts and wrong for every alt-az mount, where the field turns as well. Rotation was
+     * therefore accumulating into the preview as a smear that grew with the session — worst at the
+     * corners, invisible at the centre, and indistinguishable from poor focus to anyone looking at
+     * it. Given a measured transform (T-4.4) the preview can now show what the stack will actually
+     * look like, which is the entire point of having one.
+     */
+    fun add(plane: FloatArray, planeWidth: Int, planeHeight: Int, mapping: PlaneMapping) {
+        require(planeWidth > 0 && planeHeight > 0) { "empty plane" }
+        downsampleInto(plane, planeWidth, planeHeight, mapping)
 
         // Capped running mean: the divisor stops growing, so late frames keep their influence.
         depth++
@@ -88,21 +112,21 @@ class PreviewStack(
         plane: FloatArray,
         planeWidth: Int,
         planeHeight: Int,
-        dx: Double,
-        dy: Double,
+        mapping: PlaneMapping,
     ) {
         val scaleX = planeWidth.toDouble() / width
         val scaleY = planeHeight.toDouble() / height
         val boxX = maxOf(1, scaleX.roundToInt())
         val boxY = maxOf(1, scaleY.roundToInt())
-        val offsetX = dx.roundToInt()
-        val offsetY = dy.roundToInt()
 
         for (py in 0 until height) {
-            val srcY0 = (py * scaleY).toInt() + offsetY
             val row = py * width
             for (px in 0 until width) {
-                val srcX0 = (px * scaleX).toInt() + offsetX
+                // Both coordinates now depend on both indices, so neither can be hoisted out of
+                // the inner loop as the shift-only version did. Two multiplies and an add per
+                // pixel is the price of being able to correct rotation at all.
+                val srcX0 = mapping.sourceX(px, py).roundToInt()
+                val srcY0 = mapping.sourceY(px, py).roundToInt()
                 var sum = 0.0
                 var n = 0
                 for (by in 0 until boxY) {

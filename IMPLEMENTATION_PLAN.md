@@ -84,7 +84,7 @@ Two consequences to accept deliberately:
 | 1C | 17 | 1 | **every task built.** Blocked on the field, not on code: darks have never once executed, and no 45-minute session has been shot |
 | 1D | 9 | 0 | **all nine built and photographed 2026-08-18** (§1.15). T-3.21's last piece waits on the session pane, which is now T-3.27 rather than T-6.1 |
 | 1E | 10 | 2 | **all ten built and walked on the phone 2026-08-19** (§1.18–§1.20). **T-3.28** and **T-3.36** met their acceptances whole; T-3.33 and T-3.35's hard parts are demonstrated. Four defects fixed, two of them predating the phase: `KeyValue` crushed its label whenever a value got long (§1.19), and **the sensor's exposure ceiling was being enforced when the hardware does not enforce it** (§1.20, **D-28**). Unwalked: the naming prompt, a failing sweep |
-| 2 | 7 | 0 | **T-4.0 – T-4.5 built 2026-08-19** (§1.22–§1.27) — synthetic sky, drift seed, asterism matching, rigid fit with RANSAC, live registration in `CaptureEngine`, and the common-area readout. 102 tests; end to end the chain recovers a known transform to **0.15° and 0.6 px**. Only T-4.6 remains, and none of it has met a real star field |
+| 2 | 7 | 0 | **all seven built 2026-08-19** (§1.22–§1.28) — synthetic sky, drift seed, asterism matching, rigid fit with RANSAC, live registration, common area, and an aligned preview. 113 tests; end to end the chain recovers a known transform to **0.15° and 0.6 px**. Ticked nowhere, because **none of it has met a real star field** — that is the whole of Checkpoint 2 |
 | 3+ | outlined | 0 | not started |
 
 > **The `Ticked` column counts `[x]` only.** §0 ties that to an acceptance demonstrated on a real
@@ -1305,6 +1305,55 @@ describes the finished image.
 
 ---
 
+## 1.28 The preview finally shows what the stack will look like — 2026-08-19
+
+T-4.6 closes Phase 2's algorithmic arc. Its first half was already done: T-4.4 writes each frame's
+transform into `FrameRecord.transform`, and `SessionLogTest` has had a round-trip test for that
+field since Phase 1C, written before anything could fill it.
+
+The second half is the one worth recording. **The live preview has been aligning frames by
+translation alone**, voted between consecutive frames by `StarOffset`. That is correct for a tripod
+that only drifts and wrong for every alt-az mount, where the field also turns. Rotation was
+therefore accumulating into the preview as a smear that grew through the session — worst at the
+corners, invisible at the centre, and indistinguishable from soft focus to anyone looking at it on
+a phone in the dark. Now that a measured transform exists per frame, the preview can show what the
+stack will actually look like, which is the only reason to have a preview at all.
+
+Measured on a synthetic session rotating 0.4° a frame over eight frames — under three degrees in
+total, which an alt-az mount reaches in minutes near the zenith — stacking through the real
+transform gives **tighter stars and more of them** than the translation-only path, because a
+smeared star spreads its flux and drops below the detection threshold.
+
+### The risk was coordinates, not geometry
+
+Rotating a raster is well-trodden. What is not is that **three coordinate systems meet in one
+expression**: preview pixels, the binned analysis plane, and the sensor coordinates the transform
+was measured in. Get the composition wrong and nothing throws — the preview is simply a little
+soft, which is also what bad focus, bad seeing and a perfectly good stack on a mediocre night all
+look like.
+
+So it is `PlaneMapping`, one documented place, tested against the transform it must reproduce
+rather than against itself. Three specific traps have tests of their own:
+
+- **A sensor translation must be divided by the bin factor.** Applied raw it moves the frame four
+  times too far — still alignment, just bad alignment.
+- **The `binOffset · (a + b − 1)` term is small and not zero.** A naive `tx / binFactor` drops it;
+  under rotation it is a fraction of a pixel, which is exactly the size of error that survives
+  every visual check and still smears a hundred-frame stack.
+- **Rows must stay rows without rotation, and must not with it.** A transposed matrix breaks the
+  first; a mapping that quietly ignored its cross terms would pass everything else while degrading
+  to the very behaviour this task replaces.
+
+### One thing deliberately not deleted
+
+`StarOffset`'s translation-only path is kept as a fallback. It is close to unreachable now — an
+accepted light has either a transform or is the reference — but registration **has never run under
+a real sky**, and retiring a proven path in favour of an unproven one on the same day is a poor
+trade. It is reached when registration throws rather than merely fails, which the gate would
+otherwise have caught.
+
+---
+
 ---
 
 ## 2. Decisions
@@ -2517,8 +2566,23 @@ changes whether someone can run one without being surprised.
   Surfaces as `Common NN%` beside Kept on the capture screen, warning below 80 %.
   *Remaining:* never run on a real session, and nothing yet *acts* on a collapsing common area —
   it is a readout, not a policy.
-- [ ] **T-4.6** Transforms written into `session.json`; live preview stack upgraded to true aligned
+- [~] **T-4.6** Transforms written into `session.json`; live preview stack upgraded to true aligned
   accumulation.
+  **Built 2026-08-19**, 11 tests, §1.28. The first half landed with T-4.4 — `FrameRecord.transform`
+  carries the six affine terms in sensor coordinates, and `SessionLogTest` had a round-trip test
+  waiting for it since Phase 1C.
+  **The second half is the substantial one.** The preview aligned by a *translation* voted between
+  consecutive frames, so field rotation accumulated into it as a smear that grew with the session —
+  worst at the corners, invisible at the centre, and indistinguishable from poor focus to anyone
+  looking at it. It now samples through the measured affine transform, so the preview shows what
+  the stack will actually look like, which is the entire point of having one.
+  **The risk was coordinates, not geometry**: preview pixels, the binned plane and sensor
+  coordinates all meet in one expression, and getting it wrong produces a preview that is merely a
+  little soft. `PlaneMapping` composes them in one documented place and is tested against the
+  transform it must reproduce.
+  *Remaining:* `StarOffset`'s translation-only path is kept as a fallback rather than deleted —
+  registration has never run under a real sky, and retiring a proven path for an unproven one on
+  the same day would be a poor trade. And nothing here has run a real session.
 
 ## 8. Phase 3 — Stacking
 
@@ -2699,7 +2763,7 @@ the driver, and not one that blocks work.
 | **Field** | The phase checkpoints — a tripod, a dark sky, and a completed session | Manual, logged in the changelog |
 | **External** | DNGs open in Siril/RawTherapee (T-1.5); on-device master compared to Siril/DSS on identical subs (T-5.7) | Desktop |
 
-**406 JVM tests as of 2026-08-19** — qualification 21, session naming 17, star detection 14,
+**417 JVM tests as of 2026-08-19** — qualification 21, session naming 17, star detection 14,
 session planner 14, frame gate 14, leak analysis 13, session pane store 12, session log 12, preview
 stack 11, permissions 11, focus sweep 11, exposure solver 11, astro 11, DNG reader 10, camera picker
 10, exposure compensation 10, trailing limit 9, stream planning 8, noise model 8, JSON 8, exposure
@@ -2775,6 +2839,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-08-19 | **T-4.6 — the preview finally shows what the stack will look like (§1.28), and Phase 2 is built.** The transform half landed with T-4.4; `SessionLogTest` had a round-trip test waiting for `FrameRecord.transform` since Phase 1C. The substantial half: **the preview had been aligning by translation alone**, voted between consecutive frames — correct for a tripod that only drifts, wrong for every alt-az mount, so rotation accumulated as a smear worst at the corners, invisible at the centre, and indistinguishable from soft focus. Stacking through the measured transform now gives **tighter stars and more of them** on a session rotating 0.4° a frame, because a smeared star spreads its flux below the detection threshold. **The risk was coordinates, not geometry**: preview pixels, the binned plane and sensor coordinates meet in one expression, and getting it wrong throws nothing — it just makes the preview slightly soft, which is what bad focus, bad seeing and a good stack on a mediocre night also look like. `PlaneMapping` composes them once, tested against the transform it must reproduce, with specific cases for the three traps: a sensor translation divided by the bin factor, the sub-pixel `binOffset·(a+b−1)` term a naive division drops, and rows staying rows without rotation but not with it. `StarOffset`'s path is **kept as a fallback rather than deleted**, because registration has never run under a real sky and retiring a proven path for an unproven one on the same day is a poor trade. 417 JVM tests. |
 | 2026-08-19 | **T-4.5 — common area, and a minus sign that cost eight tests (§1.27).** A stack can only use sky every frame saw, so the usable region is the exact intersection of all footprints — convex-polygon clipping rather than a pixel count, since sampling would make a 2 % change indistinguishable from noise, and clipping is incrementally cheap which is what makes the figure live. **Deliberately not the number Setup shows**: `SessionPlanner` predicts how large a centred *crop* survives the predicted rotation and ignores drift, which on an alt-az tripod is usually the larger effect. One is a plan, the other a result; a test pins the relation that must hold — an inscribed rectangle lies inside the true overlap, so the prediction is a lower bound on the measurement. **Eight of eighteen tests failed on the first run from one omission**: the segment/line intersection solved `t = +side/denominator` where the algebra gives `−`. Every crossing landed the same distance on the wrong side of the edge, the polygon self-intersected, and its area stopped meaning anything — 150 units of overlap inside two 100-unit squares, and 21 % for a drift that cost 2.5 %. **The second sign error today** after §1.23's roll angle, and the same signature both times: the magnitudes were right, which is exactly what lets a sign error survive everything except a case with an arithmetic answer. Surfaces as `Common NN%` on the capture screen, warning below 80 %. Only accepted frames narrow it. 406 JVM tests. |
 | 2026-08-19 | **T-4.4 — live registration, and the bump the accelerometer cannot see (§1.26).** The first Phase 2 task inside the running app: `CaptureEngine` registers every light against the session's reference frame, writes the transform into `FrameRecord.transform` — a field waiting since Phase 1C — and `FrameGate` gained two verdicts. **This project has now built the bump detector twice**, and the gate's own comment predicted it: tilt catches gross bumps, while a footstep on soft ground sits far below the accelerometer's noise floor and still smears a 7 s sub. Such a bump moves the field *during* the exposure, so the transform still fits and what betrays it is the inliers all missing by more than they should — the residual being the one number derived from many stars being wrong together. The rule is a **baseline, not a threshold**, since sessions at 0.2 px and 0.8 px can both be steady; with two constraints borrowed from earlier mistakes (a phase too short to judge is `UNKNOWN`, §1.16; a rejected frame does not join the baseline, `FrameGate`) and one new (an absolute floor, so a session registering at 0.05 px does not call 0.16 px a bump). **Ordering is diagnosis**: a thin unregisterable frame is called cloud rather than registration failure, because telling someone to steady their tripod while a cloud goes over is the wrong advice at 2 a.m. Registration runs **against the reference, not the previous frame** — chaining 150 transforms accumulates a drift no single measurement reveals — and the transform is converted to **sensor coordinates**, since a restack at full resolution would otherwise be wrong by exactly the bin factor. 388 JVM tests. |
 | 2026-08-19 | **T-4.3 — the rigid fit, and Phase 2's chain closes (§1.25).** Least squares answers "what transform best explains these pairs" correctly and that is the wrong question: it assumes every pair measures the same thing, when T-4.2 deliberately hands over a few that do not, and squared error means a star ten pixels out pulls a hundred times harder than a good pair a pixel out. **RANSAC inverts it** — fit the minimum that determines a transform (two pairs, since three degrees of freedom cost two stars), count who agrees, keep the largest agreement, refit on all of it. The seed is scored as a free hypothesis and never trusted, which is what "refining the seed" means. **Rigid only, no scale or shear**: extra freedom gets spent absorbing centroid noise, shrinking the field a fraction of a percent to explain away a residual that came from detection. **End to end against ground truth** — render, bin, detect, match, fit — the known transform comes back to **0.15° and 0.6 px** with sub-pixel residual, which is the payoff for T-4.0 being built first: correctness here is *which star is which* and *how far out*, and neither is observable against a real sky. Two points recorded for later: the RANSAC generator is **seeded**, because a frame that stacks today and is rejected tomorrow on identical data is a bug nobody can reproduce; and consensus is taken **twice**, since the refit moves the transform and can change who agrees with it. `residualRmsPx` is exposed for **T-4.4** — a bump trails stars during the exposure so the transform still fits, and only the inliers missing by more than they should betrays it. 373 JVM tests. |

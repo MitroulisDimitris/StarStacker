@@ -19,6 +19,7 @@ import com.starstacker.session.SessionWriter
 import com.starstacker.registration.CommonAreaTracker
 import com.starstacker.registration.LiveRegistration
 import com.starstacker.stars.CfaBinner
+import com.starstacker.stars.PlaneMapping
 import com.starstacker.stars.BinnedPlane
 import com.starstacker.stars.FrameStars
 import com.starstacker.stars.PreviewStack
@@ -564,7 +565,7 @@ class CaptureEngine(
         }
 
         if (verdict.accepted && kind == FrameKind.LIGHT && analysis != null) {
-            updatePreview(analysis)
+            updatePreview(analysis, registered)
             // T-4.5: only accepted frames narrow the common area. A frame the gate threw out is
             // not going into the stack, so it constrains nothing — and letting it count would mean
             // one passing cloud permanently lowered a number that describes the finished image.
@@ -624,9 +625,40 @@ class CaptureEngine(
      * vote returning null means the frames do not agree, and adding it anyway would smear the one
      * thing the preview exists to show.
      */
-    private fun updatePreview(analysis: Analysis) {
+    private fun updatePreview(
+        analysis: Analysis,
+        registered: LiveRegistration.Outcome?,
+    ) {
         val stack = preview ?: PreviewStack(PreviewStack.WIDTH, PreviewStack.HEIGHT)
             .also { preview = it }
+
+        // T-4.6 — the measured transform, when there is one. This is what the preview is *for*:
+        // showing what the stack will look like, which it could not do while it corrected only
+        // translation and let the field rotation smear.
+        val transform = registered?.transform
+        if (registered != null && (transform != null || registered.isReference)) {
+            val scaleX = analysis.plane.width.toDouble() / PreviewStack.WIDTH
+            val scaleY = analysis.plane.height.toDouble() / PreviewStack.HEIGHT
+            val mapping = if (transform == null) {
+                PlaneMapping.scaling(scaleX, scaleY)
+            } else {
+                PlaneMapping.fromSensorMatrix(
+                    sensorMatrix = transform.toMatrix(),
+                    scaleX = scaleX,
+                    scaleY = scaleY,
+                    binFactor = analysis.plane.binFactor,
+                    binOffset = (analysis.plane.binFactor - 1) / 2.0,
+                )
+            }
+            previousStars = analysis.stars.stars
+            stack.add(analysis.plane.data, analysis.plane.width, analysis.plane.height, mapping)
+            return
+        }
+
+        // The fallback, kept rather than deleted. Registration has never run under a real sky, and
+        // replacing a proven translation-only path with an unproven one on the same day would be
+        // a poor trade — this is reached when registration threw rather than merely failed, which
+        // the gate would otherwise have caught.
         val stars = analysis.stars.stars
         val previous = previousStars
 
