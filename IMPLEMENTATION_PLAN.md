@@ -84,7 +84,8 @@ Two consequences to accept deliberately:
 | 1C | 17 | 1 | **every task built.** Blocked on the field, not on code: darks have never once executed, and no 45-minute session has been shot |
 | 1D | 9 | 0 | **all nine built and photographed 2026-08-18** (§1.15). T-3.21's last piece waits on the session pane, which is now T-3.27 rather than T-6.1 |
 | 1E | 10 | 2 | **all ten built and walked on the phone 2026-08-19** (§1.18–§1.20). **T-3.28** and **T-3.36** met their acceptances whole; T-3.33 and T-3.35's hard parts are demonstrated. Four defects fixed, two of them predating the phase: `KeyValue` crushed its label whenever a value got long (§1.19), and **the sensor's exposure ceiling was being enforced when the hardware does not enforce it** (§1.20, **D-28**). Unwalked: the naming prompt, a failing sweep |
-| 2+ | outlined | 0 | not started |
+| 2 | 7 | 0 | **T-4.0 built 2026-08-19** (§1.22) — the synthetic sky, 12 tests, which is what lets registration and stacking be developed without a clear night. T-4.1 onward not started |
+| 3+ | outlined | 0 | not started |
 
 > **The `Ticked` column counts `[x]` only.** §0 ties that to an acceptance demonstrated on a real
 > device, and most of what is built is demonstrated in part — the count understates the app
@@ -970,6 +971,53 @@ early, one that over-promises it runs into the dawn.
 overhead is confirmed, not overturned — three real sessions at 0.951 s and 7.399 s run at exactly
 1.00×, so every session shot so far, and every session anyone will shoot untracked, is unaffected.
 The correction only bites where the app newly allows people to go.
+
+---
+
+## 1.22 A synthetic sky, and the trap inside it — 2026-08-19
+
+T-4.0 is built. It matters more than a test fixture usually would, because **every unticked box in
+Phases 0, 1B, 1C and 1E is blocked on the same thing — a clear night** — and registration cannot be
+developed that way even with one. You cannot measure a 0.2 px residual against a real star field;
+you can only look at the stack and decide whether it seems sharp. Ground truth is the point, and a
+real sky is the one place it can never come from.
+
+**The generator has its own tests, and that is not ceremony.** Phase 2 will assert that registration
+recovers a transform to a fraction of a pixel. If the frames carry a placement bias, a correct
+registrator looks broken — or, far worse, a broken one looks correct and ships. So the fixture is
+checked first: stars land where the truth says, a pure translation moves every detected centroid by
+exactly that much, a rotation about the centre leaves the centre still, a sequence accumulates its
+drift instead of repeating it, hot pixels stay put across frames while noise does not, and the same
+seed renders the same bytes.
+
+**Shot noise is √N in electrons**, which is why the scene is accumulated in electrons and converted
+to ADU exactly once at the end. Applying it after the conversion would be wrong by the gain, and
+the gain moves with ISO. There is a test that four times the signal gives twice the noise, because
+a synthetic frame with the wrong noise is worse than none — every threshold tuned against it is
+tuned against a fiction.
+
+### The trap: a small frame does not test the pipeline, it tests the pipeline's failure mode
+
+The first version rendered 256×192 to keep tests quick, and found **5 of 20 stars**. The same field
+at 512×384 found 15.
+
+`StarDetector` fits its background on **64 px tiles** of the binned plane and estimates noise from
+the residual. A plane one or two tiles across cannot follow the light-pollution gradient, so the
+gradient lands in the *noise* estimate instead: 33 ADU measured against a true pixel noise of 17.
+That doubles the 5σ threshold and silently loses every faint star — no error, no warning, just a
+sparse field that looks like a detector problem.
+
+It is worth recording because it inverts the usual instinct. The economical choice — render less,
+run faster — produced a fixture that exercised a degenerate path and would have sent someone
+hunting a registration bug that was never there. `MIN_USEFUL_WIDTH` is now the default and the
+class note says why.
+
+Two smaller calibrations, both arrived at by measuring rather than guessing: the star brightness
+power law is bounded **below** so its faint end clears the 5σ threshold and **above** so the
+brightest peak plus the sky stays under the 1023 ADU white level — a fixture whose brightest stars
+saturate hands registration a biased centroid to chase. And `StarDetector`'s `saturationLevel`
+defaults to `Double.MAX_VALUE`, so a fully clipped frame is *not* flagged unless the white level is
+passed in, as the app does and as the first draft of the test did not.
 
 ---
 
@@ -2092,10 +2140,26 @@ changes whether someone can run one without being surprised.
 
 ## 7. Phase 2 — Registration & live gating
 
-- [ ] **T-4.0** **Synthetic sky generator** (test infrastructure, build this first): renders
+- [~] **T-4.0** **Synthetic sky generator** (test infrastructure, build this first): renders
   DNG-equivalent frames with known star fields, a known rotation/translation per frame, realistic
   noise, hot pixels, vignetting and a light-pollution gradient. Lets Phases 2–5 be developed and
   regression-tested indoors on cloudy nights, and gives registration and stacking a ground truth.
+  **Built 2026-08-19** as `test/synth/SyntheticSky.kt`, 12 tests.
+  **It renders a mosaic, not a plane.** `StarDetectorTest` already synthesised stars, but on the
+  *binned mono plane* — the right level for the detector and the wrong one for everything
+  downstream, since it skips the Bayer pattern, the black pedestal, the ADU quantisation and the
+  clipping that the real pipeline meets first. This emits what the sensor emits: a GRBG mosaic of
+  10-bit ADU with a black level, which `CfaBinner` bins and the rest reads unchanged.
+  **Everything is accumulated in electrons and converted once**, because shot noise is √N in
+  *electrons* and that statement becomes false the moment it is applied to ADU — which are
+  electrons over a gain that moves with ISO. The defaults are §1.8's measured figures at ISO 3200.
+  **The ground truth is checked before anything is built on it** (§1.22): a registration test
+  asserting a 0.2 px residual is worth nothing if the frames do not carry the transform they claim,
+  and a generator with a half-pixel placement bias would make a correct registrator look broken —
+  or a broken one look correct.
+  *Remaining:* nothing needs it yet. Its first real customers are T-4.2 and T-4.3, and the DNG
+  *encoding* is not implemented — frames are in-memory mosaics, which is all Phases 2–3 consume.
+  Writing actual DNG bytes is worth doing only when something wants to open one in Siril.
 - [ ] **T-4.1** Analytic transform seed from GPS + compass + accelerometer + timestamps + intrinsics
   (FR-7.2.1) — the robustness win when star-starved.
 - [ ] **T-4.2** Asterism matching: triangle side ratios, invariant to translation/rotation/scale
@@ -2285,7 +2349,7 @@ the driver, and not one that blocks work.
 | **Field** | The phase checkpoints — a tripod, a dark sky, and a completed session | Manual, logged in the changelog |
 | **External** | DNGs open in Siril/RawTherapee (T-1.5); on-device master compared to Siril/DSS on identical subs (T-5.7) | Desktop |
 
-**300 JVM tests as of 2026-08-19** — qualification 21, session naming 17, star detection 14,
+**316 JVM tests as of 2026-08-19** — qualification 21, session naming 17, star detection 14,
 session planner 14, frame gate 14, leak analysis 13, session pane store 12, session log 12, preview
 stack 11, permissions 11, focus sweep 11, exposure solver 11, astro 11, DNG reader 10, camera picker
 10, exposure compensation 10, trailing limit 9, stream planning 8, noise model 8, JSON 8, exposure
@@ -2361,6 +2425,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-08-19 | **T-4.0 — a synthetic sky, and the trap inside it (§1.22).** Phase 2 begins with the fixture rather than the algorithm, because registration needs something a real sky cannot give: a frame whose **true** transform is known. `SyntheticSky` renders a GRBG mosaic in 10-bit ADU with a black pedestal — what the sensor emits, not the binned plane `StarDetectorTest` already had — accumulating everything in electrons and converting once, since shot noise is √N in electrons and that becomes false in ADU. Star fields follow a power law, with hot pixels, vignetting and a light-pollution gradient, all seeded so a failure can be replayed. **12 tests check the fixture itself**, because a placement bias would make a correct registrator look broken or a broken one look correct. **The trap worth recording**: the first version rendered 256×192 to be quick and found 5 of 20 stars, where 512×384 found 15 — `StarDetector` fits its background on 64 px tiles, and a plane one or two tiles across puts the gradient into the *noise* estimate (33 ADU against a true 17), doubling the threshold and silently losing every faint star. The economical choice produced a fixture that exercised a degenerate path. `MIN_USEFUL_WIDTH` is now the default. Also found: `StarDetector.saturationLevel` defaults to `Double.MAX_VALUE`, so a fully clipped frame is not flagged unless the white level is passed. 316 JVM tests. |
 | 2026-08-19 | **`maxFrameDuration` is the number that *is* enforced (§1.21, OI-24 closed).** The long-exposure frame cost is **per-frame, not per-session** — but only past `SENSOR_INFO_MAX_FRAME_DURATION`, 49.6408 s here. Cadence measured from `capturedAt`: three real sessions at 0.951 s and 7.399 s and a probe at 40 s all run at exactly **1.00×**; a probe at 60 s runs at **2.89×, 2.01×, 2.87×**. So the two vendor numbers describe different things — the exposure range bounds a single frame and is not enforced (320 s works, §1.20), while the frame-duration limit bounds a sustained stream and is enforced as a cadence. This had to be fixed rather than noted, because **D-28** lets a user ask for subs past the ceiling and therefore past this limit too: a 60 s plan counted 60 s a frame and would have taken 156, putting the session length, end time, storage rate and battery estimate all out by 2.6×. `ExposureCompensation.frameCostSeconds` now returns `sub + 10 ms` below the limit and `sub × 2.6` above it, the factor being the measured mean rather than a round number. **§1.9's 2 ms overhead is confirmed, not overturned** — every session shot so far is below the limit and unaffected. 304 JVM tests. |
 | 2026-08-19 | **The real exposure ceiling: there isn't one within reach (§1.20, OI-23 closed).** 90, 120, 150, 240 and **320 s** all honoured to within 30 µs against a stated maximum of 49.6406 s — 6.4× the advertised bound with no wall found. The 320 s frame was rejected `SATURATED` at 1023 ADU, which is 320 s at ISO 800 in a lit room working correctly; the *exposure* was honoured. Two register hypotheses died on the way (2²³ rows = 155.2 s, 2²⁴ rows = 310.4 s), and since the applied values do not sit on the 18.5 µs row quantum, the extended range is governed by something other than the arithmetic behind the stated ceiling. **The app's 240 s sanity bound is therefore below the hardware's capability**, so the operative limit is the one chosen for dark current and aeroplanes rather than one the sensor imposes. One methodological trap recorded: the 240 s probe was first called a failure after 7 minutes of no frame, which was premature — single-frame probes land at ~2× their own exposure, so it needed 13. **OI-24** opened for whether that 2× is per-session or per-frame, because if it is per-frame `SessionPlanner`'s 2 ms overhead is out by an exposure at long subs. Setup's `Solved from your sensor and this pointing` became **`Suggested settings based on measurements.`** — the old line described the app's working rather than the reader's position. |
 | 2026-08-19 | **The sensor's exposure ceiling is advertised, not enforced — clamp removed (§1.20, D-28).** Asked "why is 50 s the limit?", the answer turned out to be "it is not". `SENSOR_INFO_EXPOSURE_TIME_RANGE` reports 49.6406 s; the device returned **119.999987713 s for a 120 s request**, and 89.999999662 s for a 90 s one. T-3.35's clamp rested on an assumption from the Camera2 contract rather than on a measurement, and it was refusing exposures the hardware would take — in **two** places, since `SetupController.resolve` capped the automatic solve as well. That is not academic: the trailing limit scales as 1/cos(dec), so **above dec 81.5° on this lens the sky permits longer subs than the ceiling allowed**, and every circumpolar target was capped by a number the sensor ignores. The clamp is gone; the solver's ceiling becomes `max(stated, 240 s)`, a sanity bound about dark current, aeroplanes and field rotation rather than about the sensor. **What replaces it is verification, not trust**: `nextVerifiedFrame` already checked every frame's metadata against the request (**D-21**), and past the stated ceiling it now fails with `ExposureRefused` instead of skipping — because skipping is right while the sensor settles and catastrophic if it never will, discarding two-minute frames until the session budget is gone and then reporting a *timeout*, which names the wrong problem. The rule lives in `ExposureAttempts`, pure Kotlin, 7 tests, and carries the subtlety that **a frame skipped for its generation is not evidence of refusal** — that path is the darks path, and counting it would abandon every session that takes darks. No warning on screen: a line about crossing a ceiling that is not enforced would warn about nothing. **OI-23** opened for where the real wall is. 300 JVM tests. **T-3.28 ticked** — a probe session was deleted through the pane (`overexposure-probe · 1 light · 24 MB`, gone from the list and from disk) with the four real field sessions untouched. |
