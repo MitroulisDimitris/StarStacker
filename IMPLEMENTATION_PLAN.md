@@ -84,7 +84,7 @@ Two consequences to accept deliberately:
 | 1C | 17 | 1 | **every task built.** Blocked on the field, not on code: darks have never once executed, and no 45-minute session has been shot |
 | 1D | 9 | 0 | **all nine built and photographed 2026-08-18** (§1.15). T-3.21's last piece waits on the session pane, which is now T-3.27 rather than T-6.1 |
 | 1E | 10 | 2 | **all ten built and walked on the phone 2026-08-19** (§1.18–§1.20). **T-3.28** and **T-3.36** met their acceptances whole; T-3.33 and T-3.35's hard parts are demonstrated. Four defects fixed, two of them predating the phase: `KeyValue` crushed its label whenever a value got long (§1.19), and **the sensor's exposure ceiling was being enforced when the hardware does not enforce it** (§1.20, **D-28**). Unwalked: the naming prompt, a failing sweep |
-| 2 | 7 | 0 | **T-4.0 built 2026-08-19** (§1.22) — the synthetic sky, 12 tests, which is what lets registration and stacking be developed without a clear night. T-4.1 onward not started |
+| 2 | 7 | 0 | **T-4.0 and T-4.1 built 2026-08-19** (§1.22, §1.23) — the synthetic sky with ground truth, and the analytic drift seed. 38 tests between them. Nothing consumes the seed yet; T-4.2 is its first customer |
 | 3+ | outlined | 0 | not started |
 
 > **The `Ticked` column counts `[x]` only.** §0 ties that to an acceptance demonstrated on a real
@@ -1018,6 +1018,61 @@ brightest peak plus the sky stays under the 1023 ADU white level — a fixture w
 saturate hands registration a biased centroid to chase. And `StarDetector`'s `saturationLevel`
 defaults to `Double.MAX_VALUE`, so a fully clipped frame is *not* flagged unless the white level is
 passed in, as the app does and as the first draft of the test did not.
+
+---
+
+## 1.23 The seed, and two sign conventions that had to be pinned — 2026-08-19
+
+T-4.1 exists because asterism matching has two failure modes and a seed fixes both: it is slow when
+the search range is wide, and it fails outright when the frame is star-starved — thin cloud, a
+bright moon, an aircraft. Those are the frames least worth losing, being in the middle of a session
+that would otherwise be continuous.
+
+The insight is that **the sky's motion is not unknown**. It is the Earth turning, at a rate known to
+nine figures, and the phone already measures everything else: where it is, where it points, which
+way up it is, and when each frame was taken. So the transform can be computed and matching only has
+to refine it.
+
+Numbers for the reference device at 73.7 arcsec/px: between consecutive 7.4 s subs the field moves
+**about a pixel**, but across a 45-minute session it moves **hundreds of pixels and rotates by more
+than a degree**. That spread is the whole argument — it is why a blind matcher has to search so
+wide, and why a seed turns an expensive hunt into a cheap refinement.
+
+### What was already there, and what had been thrown away
+
+The rotation rate was already in `Astro` (§7.1) and is reused rather than copied. The missing half
+was the drift, which is two more formulas. But the real gap was an *input*: `PointingFix` carried
+altitude and azimuth and **discarded roll**, though the rotation matrix containing it sat three
+lines away in `PointingSource`. Pointing says how fast the sky drifts and along which horizon
+direction; roll says where that direction lands in the picture. Without it the seed knows the size
+of the shift and not its sign, which is worse than not knowing at all.
+
+### Two sign conventions, and why they were tested before they were trusted
+
+**A seed that points the wrong way is worse than no seed**, because matching will converge
+confidently on the wrong star and the frame will be accepted. And a flipped axis produces numbers of
+exactly the right *magnitude*, so it cannot be caught by looking at the output. Both conventions are
+therefore pinned by cases whose answers are known without any of the code:
+
+- **The drift rates**, against four sanity cases — at the north pole nothing rises or sets and
+  azimuth advances at exactly ω; at the equator due east a star climbs at the full rate and does not
+  drift sideways; on the meridian altitude is stationary; and a star crossing the southern meridian
+  moves *west*, which is the single case that distinguishes the correct azimuth formula from its
+  sign-flipped twin. Plus an independent identity: total speed is ω·cos δ wherever you stand, so
+  recovering declination from the rates must agree with `Astro.declinationDeg`'s spherical
+  trigonometry. It does, to 1e-6.
+- **The roll**, against phone positions anyone can picture. **This one was wrong, and the test
+  caught it**: the cross product `(skyUp × deviceUp) · opticalAxis` has the handedness of someone
+  standing *in front of* the lens looking back, and the useful convention is the opposite —
+  anticlockwise **in the image**, which is what the person holding the phone sees. Lens north, top
+  of the phone west, is a left turn from behind and therefore +90°. All three failures were pure
+  sign with exact magnitudes, which is precisely the defect that survives every check except an
+  explicit one.
+
+The other roll case worth having is *roll is measured about the lens, not the horizon*: a phone
+tilted up 45° but not rolled must read zero, because the lens axis moved and "up on the sky" moved
+with it. Getting that wrong would put a phantom rotation into every tilted pointing — which is to
+say, into every real one.
 
 ---
 
@@ -2160,8 +2215,22 @@ changes whether someone can run one without being surprised.
   *Remaining:* nothing needs it yet. Its first real customers are T-4.2 and T-4.3, and the DNG
   *encoding* is not implemented — frames are in-memory mosaics, which is all Phases 2–3 consume.
   Writing actual DNG bytes is worth doing only when something wants to open one in Siril.
-- [ ] **T-4.1** Analytic transform seed from GPS + compass + accelerometer + timestamps + intrinsics
+- [~] **T-4.1** Analytic transform seed from GPS + compass + accelerometer + timestamps + intrinsics
   (FR-7.2.1) — the robustness win when star-starved.
+  **Built 2026-08-19** as `registration/SkyDrift.kt` (18 tests) and `pointing/CameraRoll.kt` (8),
+  §1.23. The sky's motion is not unknown — it is the Earth turning at a rate known to nine figures —
+  so the transform between two frames can be *computed* from where the phone is, where it points,
+  which way up it is and how long has passed, leaving matching only to refine it.
+  **The rotation half already existed**: `Astro.fieldRotationArcsecPerSec` is reused rather than
+  reimplemented. What was missing is the *drift*: `d(alt)/dt = ω cos φ sin A` and
+  `d(az)/dt = ω (sin φ − cos φ cos A tan a)`, the second reported as a great-circle rate so the
+  cos(altitude) lives in one place instead of in every caller.
+  **Roll had been thrown away.** `PointingFix` carried only the optical axis, though the rotation
+  matrix holding roll was three lines away in `PointingSource` — and without it a seed knows the
+  size of the drift and not its direction in the frame. `PointingFix.cameraRollDeg` now carries it.
+  *Remaining:* nothing consumes the seed yet — T-4.2 is its first customer — and `cameraRollDeg` is
+  **device** roll, so turning it into image roll needs each camera's `SENSOR_ORIENTATION` added.
+  That belongs with T-4.4, where a real frame and a real camera meet.
 - [ ] **T-4.2** Asterism matching: triangle side ratios, invariant to translation/rotation/scale
   (astroalign as reference, MIT).
 - [ ] **T-4.3** RANSAC outlier rejection + rigid (3-DoF) transform fit refining the seed (FR-7.3).
@@ -2349,7 +2418,7 @@ the driver, and not one that blocks work.
 | **Field** | The phase checkpoints — a tripod, a dark sky, and a completed session | Manual, logged in the changelog |
 | **External** | DNGs open in Siril/RawTherapee (T-1.5); on-device master compared to Siril/DSS on identical subs (T-5.7) | Desktop |
 
-**316 JVM tests as of 2026-08-19** — qualification 21, session naming 17, star detection 14,
+**342 JVM tests as of 2026-08-19** — qualification 21, session naming 17, star detection 14,
 session planner 14, frame gate 14, leak analysis 13, session pane store 12, session log 12, preview
 stack 11, permissions 11, focus sweep 11, exposure solver 11, astro 11, DNG reader 10, camera picker
 10, exposure compensation 10, trailing limit 9, stream planning 8, noise model 8, JSON 8, exposure
@@ -2425,6 +2494,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-08-19 | **T-4.1 — the analytic drift seed, and a sign the tests caught (§1.23).** The sky's motion is not unknown, so the transform between two frames is *computed* from position, pointing, roll and elapsed time, leaving matching to refine rather than search. On the reference device the field moves about a pixel between consecutive 7.4 s subs and **hundreds of pixels across a 45-minute session**, which is the whole argument for seeding. The rotation half already existed in `Astro` and is reused; the drift half is `d(alt)/dt = ω cos φ sin A` and `d(az)/dt = ω (sin φ − cos φ cos A tan a)`. **Roll had been thrown away** — `PointingFix` kept only the optical axis though the rotation matrix holding roll was three lines away — and without it a seed knows the size of the drift but not its direction; `PointingFix.cameraRollDeg` now carries it. Both sign conventions are pinned against cases with known answers, because a seed pointing the wrong way is worse than none: matching converges confidently on the wrong star, and a flipped axis has exactly the right magnitude so nothing else would catch it. **The roll sign was wrong and the test caught it**: the natural cross product has the handedness of someone standing in front of the lens, where the useful convention is anticlockwise in the image. 342 JVM tests. |
 | 2026-08-19 | **T-4.0 — a synthetic sky, and the trap inside it (§1.22).** Phase 2 begins with the fixture rather than the algorithm, because registration needs something a real sky cannot give: a frame whose **true** transform is known. `SyntheticSky` renders a GRBG mosaic in 10-bit ADU with a black pedestal — what the sensor emits, not the binned plane `StarDetectorTest` already had — accumulating everything in electrons and converting once, since shot noise is √N in electrons and that becomes false in ADU. Star fields follow a power law, with hot pixels, vignetting and a light-pollution gradient, all seeded so a failure can be replayed. **12 tests check the fixture itself**, because a placement bias would make a correct registrator look broken or a broken one look correct. **The trap worth recording**: the first version rendered 256×192 to be quick and found 5 of 20 stars, where 512×384 found 15 — `StarDetector` fits its background on 64 px tiles, and a plane one or two tiles across puts the gradient into the *noise* estimate (33 ADU against a true 17), doubling the threshold and silently losing every faint star. The economical choice produced a fixture that exercised a degenerate path. `MIN_USEFUL_WIDTH` is now the default. Also found: `StarDetector.saturationLevel` defaults to `Double.MAX_VALUE`, so a fully clipped frame is not flagged unless the white level is passed. 316 JVM tests. |
 | 2026-08-19 | **`maxFrameDuration` is the number that *is* enforced (§1.21, OI-24 closed).** The long-exposure frame cost is **per-frame, not per-session** — but only past `SENSOR_INFO_MAX_FRAME_DURATION`, 49.6408 s here. Cadence measured from `capturedAt`: three real sessions at 0.951 s and 7.399 s and a probe at 40 s all run at exactly **1.00×**; a probe at 60 s runs at **2.89×, 2.01×, 2.87×**. So the two vendor numbers describe different things — the exposure range bounds a single frame and is not enforced (320 s works, §1.20), while the frame-duration limit bounds a sustained stream and is enforced as a cadence. This had to be fixed rather than noted, because **D-28** lets a user ask for subs past the ceiling and therefore past this limit too: a 60 s plan counted 60 s a frame and would have taken 156, putting the session length, end time, storage rate and battery estimate all out by 2.6×. `ExposureCompensation.frameCostSeconds` now returns `sub + 10 ms` below the limit and `sub × 2.6` above it, the factor being the measured mean rather than a round number. **§1.9's 2 ms overhead is confirmed, not overturned** — every session shot so far is below the limit and unaffected. 304 JVM tests. |
 | 2026-08-19 | **The real exposure ceiling: there isn't one within reach (§1.20, OI-23 closed).** 90, 120, 150, 240 and **320 s** all honoured to within 30 µs against a stated maximum of 49.6406 s — 6.4× the advertised bound with no wall found. The 320 s frame was rejected `SATURATED` at 1023 ADU, which is 320 s at ISO 800 in a lit room working correctly; the *exposure* was honoured. Two register hypotheses died on the way (2²³ rows = 155.2 s, 2²⁴ rows = 310.4 s), and since the applied values do not sit on the 18.5 µs row quantum, the extended range is governed by something other than the arithmetic behind the stated ceiling. **The app's 240 s sanity bound is therefore below the hardware's capability**, so the operative limit is the one chosen for dark current and aeroplanes rather than one the sensor imposes. One methodological trap recorded: the 240 s probe was first called a failure after 7 minutes of no frame, which was premature — single-frame probes land at ~2× their own exposure, so it needed 13. **OI-24** opened for whether that 2× is per-session or per-frame, because if it is per-frame `SessionPlanner`'s 2 ms overhead is out by an exposure at long subs. Setup's `Solved from your sensor and this pointing` became **`Suggested settings based on measurements.`** — the old line described the app's working rather than the reader's position. |

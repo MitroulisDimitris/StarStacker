@@ -34,6 +34,21 @@ enum class CompassAccuracy { UNRELIABLE, LOW, MEDIUM, HIGH, UNKNOWN }
 data class PointingFix(
     val altitudeDeg: Double,
     val azimuthMagneticDeg: Double,
+    /**
+     * T-4.1 — how far the **device** is rolled about its optical axis, relative to "up on the sky",
+     * anticlockwise as seen looking out along the lens. Null when it cannot be defined.
+     *
+     * The other two angles say where the camera points; this says which way up it is, and
+     * [com.starstacker.registration.SkyDrift] needs all three: pointing decides how fast the sky
+     * drifts and in which direction on the horizon, roll decides where that direction lands in the
+     * picture. Without it the seed knows the size of the shift and not its sign.
+     *
+     * **Device roll, not image roll.** The sensor is usually mounted at 90° to the phone's long
+     * axis (`SENSOR_ORIENTATION`), so turning this into a rotation of the *image* means adding that
+     * per-camera constant. It is not folded in here because this class describes the phone, not a
+     * camera — and the same fix serves cameras with different mounts.
+     */
+    val cameraRollDeg: Double?,
     val magneticDeclinationDeg: Double?,
     val latitudeDeg: Double?,
     val longitudeDeg: Double?,
@@ -160,6 +175,9 @@ class PointingSource(private val context: Context) {
             val azimuth = Astro.normaliseDegrees(
                 Math.toDegrees(atan2(direction[0], direction[1])),
             )
+            val roll = CameraRoll.degrees(
+                rotation, direction[0] / norm, direction[1] / norm, direction[2] / norm,
+            )
 
             val fix = location
             val declination = fix?.let {
@@ -176,6 +194,7 @@ class PointingSource(private val context: Context) {
                 PointingFix(
                     altitudeDeg = altitude,
                     azimuthMagneticDeg = azimuth,
+                    cameraRollDeg = roll,
                     magneticDeclinationDeg = declination,
                     latitudeDeg = fix?.latitude,
                     longitudeDeg = fix?.longitude,
