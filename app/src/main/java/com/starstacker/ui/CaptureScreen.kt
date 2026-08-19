@@ -160,6 +160,17 @@ fun CaptureScreen(
                         warn = progress.framesCaptured > 0 &&
                             progress.framesAccepted < progress.framesCaptured / 2,
                     )
+                    // T-4.5 / FR-7.5 — how much of the frame all the kept frames still share. It
+                    // only falls, and how fast is the one live signal that the tripod is drifting
+                    // or the field rotating faster than the plan assumed. Warned below 80 %, which
+                    // is where SessionPlanner's own rotation budget starts complaining.
+                    Metric(
+                        "Common",
+                        progress.commonAreaFraction
+                            ?.let { "%.0f".format(it * 100) } ?: "—",
+                        unit = "%",
+                        warn = (progress.commonAreaFraction ?: 1.0) < 0.8,
+                    )
                 }
                 progress.thermalNote?.let {
                     Spacer(Modifier.height(8.dp))

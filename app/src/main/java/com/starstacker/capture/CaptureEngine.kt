@@ -16,6 +16,7 @@ import com.starstacker.session.SessionLog
 import com.starstacker.session.SessionPointing
 import com.starstacker.session.SessionState
 import com.starstacker.session.SessionWriter
+import com.starstacker.registration.CommonAreaTracker
 import com.starstacker.registration.LiveRegistration
 import com.starstacker.stars.CfaBinner
 import com.starstacker.stars.BinnedPlane
@@ -96,6 +97,14 @@ class CaptureEngine(
         val lastStarCount: Int? = null,
         val lastBackground: Double? = null,
         val lastRejection: String? = null,
+        /**
+         * T-4.5 / FR-7.5 — the fraction of the reference frame that every kept frame has covered,
+         * 0–1, or null before anything has been registered.
+         *
+         * Null rather than 1.0 for "not yet", because a session that has not started and a session
+         * in perfect alignment both read 100 % and mean entirely different things.
+         */
+        val commonAreaFraction: Double? = null,
         val thermalNote: String? = null,
         val cooling: Boolean = false,
         val message: String? = null,
@@ -241,6 +250,14 @@ class CaptureEngine(
      * wearing one name.
      */
     private val registration = LiveRegistration()
+
+    /**
+     * T-4.5 — the running intersection of every accepted frame's footprint.
+     *
+     * Created on the first registered frame, because it needs the frame's size, and the engine
+     * does not know that until the stream is configured.
+     */
+    private var commonArea: CommonAreaTracker? = null
 
     /** Reused across the whole sequence — a 25 MB allocation per frame is FR-12.2's warning. */
     private var buffer: ShortArray? = null
@@ -548,10 +565,21 @@ class CaptureEngine(
 
         if (verdict.accepted && kind == FrameKind.LIGHT && analysis != null) {
             updatePreview(analysis)
+            // T-4.5: only accepted frames narrow the common area. A frame the gate threw out is
+            // not going into the stack, so it constrains nothing — and letting it count would mean
+            // one passing cloud permanently lowered a number that describes the finished image.
+            registered?.let { outcome ->
+                val tracker = commonArea ?: CommonAreaTracker(
+                    session.plan.raw.width.toDouble(),
+                    session.plan.raw.height.toDouble(),
+                ).also { commonArea = it }
+                tracker.include(outcome.transform)
+            }
         }
 
         val log = writer.log
         _progress.value = _progress.value.copy(
+            commonAreaFraction = commonArea?.takeIf { it.measured }?.fraction,
             framesCaptured = log.lights.size,
             framesAccepted = log.accepted.size,
             darksCaptured = log.darks.size,
