@@ -119,6 +119,21 @@ class SafSessionStore(
             .map { it.name }
             .sortedDescending()
 
+    /**
+     * T-3.28 — one `deleteDocument` on the session's own document, which takes the subtree with
+     * it. The guard is [SessionLayout.isPlainChildName] plus the lookup itself: the name is
+     * resolved against the root's children, so a name that is not a session of this root cannot
+     * name anything to delete.
+     */
+    override fun deleteSession(folderName: String): Boolean {
+        if (!SessionLayout.isPlainChildName(folderName)) return false
+        val sessionId = childDocumentId(rootDocumentUri, folderName) ?: return false
+        return runCatching {
+            DocumentsContract.deleteDocument(resolver, documentUri(sessionId))
+        }.onFailure { Log.w(TAG, "could not delete session '$folderName'", it) }
+            .getOrDefault(false)
+    }
+
     private fun documentUri(documentId: String): Uri =
         DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId)
 
@@ -233,6 +248,39 @@ private class SafSessionFolder(
             .filterNot { it.second == DocumentsContract.Document.MIME_TYPE_DIR }
             .map { it.first }
             .sorted()
+    }
+
+    /**
+     * Summed from `COLUMN_SIZE` over the session's own children and each subdirectory's — one
+     * query per directory, five in total, rather than one per file.
+     *
+     * A provider is allowed to leave the size null, and some do for documents it is still
+     * writing. A null is counted as zero rather than skipping the folder, so the figure can only
+     * understate what is on disk — which is the right direction for a number that appears in a
+     * deletion confirmation.
+     */
+    override fun sizeBytes(): Long =
+        (listOf(sessionUri) + directories.values).sumOf { parent -> childBytes(parent) }
+
+    private fun childBytes(parent: Uri): Long {
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+            parent,
+            DocumentsContract.getDocumentId(parent),
+        )
+        val projection = arrayOf(
+            DocumentsContract.Document.COLUMN_SIZE,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+        )
+        return runCatching {
+            resolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
+                var total = 0L
+                while (cursor.moveToNext()) {
+                    if (cursor.getString(1) == DocumentsContract.Document.MIME_TYPE_DIR) continue
+                    if (!cursor.isNull(0)) total += cursor.getLong(0)
+                }
+                total
+            } ?: 0L
+        }.getOrDefault(0L)
     }
 
     private fun readDocument(fileName: String): String? {

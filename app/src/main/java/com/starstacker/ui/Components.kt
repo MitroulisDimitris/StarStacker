@@ -1,6 +1,8 @@
 package com.starstacker.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -9,14 +11,21 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.TextUnit
@@ -186,4 +195,91 @@ fun Banner(text: String, color: Color = Night.Warn) {
 @Composable
 fun ButtonRow(content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { content() }
+}
+
+/**
+ * A single-line text entry in the night palette (T-3.30's name prompt is the only user so far).
+ *
+ * `BasicTextField` rather than Material's `TextField`, for the reason this file draws its own
+ * folder icon: a Material text field arrives with its own container colours, label animation and
+ * indicator line, none of which can be talked down to this palette without overriding more of it
+ * than is left. The rule the file exists to keep — one full-intensity element per screen — is not
+ * something a component with its own opinion about focus colour will respect.
+ *
+ * The caret is [Night.Hot], which is the one place that colour is spent off a button: in the dark,
+ * a text field with no visible caret reads as a label.
+ */
+@Composable
+fun NightTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    modifier: Modifier = Modifier,
+) {
+    BasicTextField(
+        value = value,
+        onValueChange = onValueChange,
+        singleLine = true,
+        textStyle = TextStyle(
+            color = Night.Txt,
+            fontSize = 15.sp,
+            fontFamily = NumFamily,
+        ),
+        cursorBrush = SolidColor(Night.Hot),
+        modifier = modifier
+            .fillMaxWidth()
+            .border(1.dp, Night.Line, RoundedCornerShape(11.dp))
+            .padding(horizontal = 12.dp, vertical = 13.dp),
+        decorationBox = { inner ->
+            if (value.isEmpty()) {
+                Text(
+                    placeholder,
+                    fontFamily = NumFamily,
+                    fontSize = 15.sp,
+                    color = Night.Dim,
+                )
+            }
+            inner()
+        },
+    )
+}
+
+/**
+ * The route to a file manager — on the main screen, in Settings, and on the sessions pane (T-3.21,
+ * T-3.27).
+ *
+ * **Drawn, not a glyph.** The first version used `U+1F5C0`, which the reference device's font does
+ * not carry: it rendered as a sliver of vertical tofu. Two rectangles cannot fail that way and need
+ * no icon dependency, which this app does not have.
+ *
+ * Shared here rather than copied because it now appears on three screens, and the glyph lesson is
+ * twice-learned already (§1.15) — a third private copy is a third chance to draw it differently.
+ */
+@Composable
+fun FolderButton(onClick: () -> Unit) {
+    Box(
+        Modifier
+            .size(34.dp)
+            .border(1.dp, Night.Line, RoundedCornerShape(9.dp))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.size(16.dp)) {
+            val w = size.width
+            val h = size.height
+            // The tab, then the body — the two strokes a folder is legible from.
+            drawLine(
+                color = Night.Txt2,
+                start = Offset(w * 0.08f, h * 0.24f),
+                end = Offset(w * 0.44f, h * 0.24f),
+                strokeWidth = w * 0.11f,
+            )
+            drawRect(
+                color = Night.Txt2,
+                topLeft = Offset(w * 0.08f, h * 0.32f),
+                size = Size(w * 0.84f, h * 0.46f),
+                style = Stroke(width = w * 0.09f),
+            )
+        }
+    }
 }

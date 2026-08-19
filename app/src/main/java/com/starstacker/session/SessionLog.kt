@@ -110,6 +110,15 @@ data class FrameRecord(
 data class SessionInfo(
     val schemaVersion: Int = SCHEMA_VERSION,
     val sessionId: String,
+    /**
+     * T-3.30 — what the user called this session, kept in full.
+     *
+     * Separate from [sessionId] because the folder deliberately does not always carry it: a
+     * session named for the day would otherwise put the date in its own name twice
+     * ([SessionLayout.folderName]). The label is what the list shows and what the user typed, so
+     * it is stored rather than re-derived from a folder name that may have dropped it.
+     */
+    val label: String = "",
     val startedAtEpochMs: Long,
     val finishedAtEpochMs: Long? = null,
     val deviceModel: String,
@@ -190,6 +199,7 @@ data class SessionLog(
         linkedMapOf(
             "schemaVersion" to info.schemaVersion,
             "sessionId" to info.sessionId,
+            "label" to info.label,
             "state" to info.state.name,
             "startedAt" to info.startedAtEpochMs,
             "finishedAt" to info.finishedAtEpochMs,
@@ -245,6 +255,11 @@ data class SessionLog(
             val info = SessionInfo(
                 schemaVersion = root.int("schemaVersion") ?: 1,
                 sessionId = root.string("sessionId").orEmpty(),
+                // Absent in schema 1 logs written before T-3.30, and in any folder that has been
+                // to a PC and back through a tool that does not know the field. Blank, not
+                // guessed: SessionSummary falls back to the folder name, which is where the only
+                // other copy of the name is.
+                label = root.string("label").orEmpty(),
                 startedAtEpochMs = root.long("startedAt") ?: 0L,
                 finishedAtEpochMs = root.long("finishedAt"),
                 deviceModel = root.string("device").orEmpty(),

@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.starstacker.camera.CameraAccess
 import com.starstacker.device.CameraProfile
+import com.starstacker.exposure.ExposureCompensation
 import com.starstacker.exposure.ExposureSolver
 import com.starstacker.exposure.PredictedHistogram
 import com.starstacker.exposure.SessionPlanner
@@ -67,9 +68,21 @@ class SetupController(
      *
      * The solver keeps deciding and the user keeps the veto. Zero is "take the answer"; the
      * histogram moves under the control so the cost of disagreeing is visible rather than
-     * described.
+     * described. The range, the step and the clamp are [ExposureCompensation]'s (T-3.35).
      */
     var exposureStops by mutableStateOf(0.0)
+        private set
+
+    /**
+     * T-3.33 — whether the sky has been asked for.
+     *
+     * The screen used to fire [measureAndSolve] from a `LaunchedEffect`, so arriving opened the
+     * camera and spent frames because a screen appeared: a mistaken tap cost a sky measurement,
+     * and the phone got warm for a reason the user could not see. **D-27** generalises the
+     * correction — a measurement that costs frames waits to be asked — and this flag is what
+     * distinguishes "not measured yet" from "measured and failed", which need different screens.
+     */
+    var measurementAsked by mutableStateOf(false)
         private set
 
     /**
@@ -95,6 +108,9 @@ class SetupController(
         plan = null
         pinnedIso = null
         error = null
+        // A different camera has a different sky rate and a different noise model, so the
+        // measurement does not carry over — and per D-27 the new one is asked for, not assumed.
+        measurementAsked = false
     }
 
     fun setPointing(fix: PointingFix?) {
@@ -108,12 +124,18 @@ class SetupController(
     /**
      * The most frames the slider offers: whatever fills [MAX_SESSION_HOURS] at this sub length,
      * so the right-hand end is always the same amount of *night* rather than the same number.
+     *
+     * **The compensated sub, not the solved one** (T-3.35). This read
+     * `solution.chosen.exposureSeconds` — the sub before the user's override — so at +2 stops the
+     * 2.5-hour bound was already wrong by 4×: the slider counted 4 s frames and offered a session
+     * built out of 16 s ones. At the new ±4 it would have been 16×.
      */
     val maxFrames: Int
-        get() {
-            val perFrame = (solution?.chosen?.exposureSeconds ?: 10.0) + MEASURED_OVERHEAD_SECONDS
-            return ((MAX_SESSION_HOURS * 3600.0) / perFrame).toInt().coerceAtLeast(2)
-        }
+        get() = ExposureCompensation.maxFrames(
+            subSeconds = effectiveSubSeconds ?: 10.0,
+            overheadSeconds = MEASURED_OVERHEAD_SECONDS,
+            hours = MAX_SESSION_HOURS,
+        )
 
     fun chooseFrameCount(frames: Int) {
         frameCount = frames.coerceIn(1, maxFrames)
@@ -128,13 +150,37 @@ class SetupController(
     fun toggleWork() { showWork = !showWork }
 
     fun compensate(stops: Double) {
-        exposureStops = stops.coerceIn(-MAX_STOPS, MAX_STOPS)
+        exposureStops = ExposureCompensation.snap(stops)
+        // The frame count is bounded by the *compensated* sub (see [maxFrames]), so a longer sub
+        // can put the current count past the new right-hand end. Re-clamping here rather than
+        // leaving the slider showing a value outside its own range.
+        frameCount = frameCount.coerceIn(1, maxFrames)
         replan()
     }
 
-    /** The sub actually planned: the solved answer shifted by [exposureStops]. */
+    /**
+     * The sub actually planned: the solved answer shifted by [exposureStops], **clamped to the
+     * sensor's longest exposure**.
+     *
+     * The clamp is T-3.35's. Without it, +4 stops on a 4 s solve asks for 64 s from a sensor whose
+     * ceiling is 49.64 s (§1.5), and this HAL answers an impossible request by quietly truncating
+     * rather than by failing — so the plan, the storage estimate and the end time would all be
+     * computed from an exposure that was never going to happen.
+     */
     val effectiveSubSeconds: Double?
-        get() = solution?.chosen?.exposureSeconds?.let { it * Math.pow(2.0, exposureStops) }
+        get() = solution?.chosen?.exposureSeconds?.let {
+            ExposureCompensation.apply(it, exposureStops, sensorMaxSeconds)
+        }
+
+    /** True when the sensor's ceiling, not the dial, is deciding the sub — stated on screen. */
+    val exposureClamped: Boolean
+        get() = solution?.chosen?.exposureSeconds?.let {
+            ExposureCompensation.isClampedAt(it, exposureStops, sensorMaxSeconds)
+        } == true
+
+    /** `SENSOR_INFO_EXPOSURE_TIME_RANGE`'s upper bound, and the solver's own ceiling. */
+    private val sensorMaxSeconds: Double
+        get() = camera?.exposureMaxSeconds ?: DEFAULT_MAX_EXPOSURE_SECONDS
 
     /** How far past the trailing budget the compensated sub goes, in pixels of elongation. */
     val compensatedTrailPx: Double?
@@ -163,11 +209,15 @@ class SetupController(
         resolve()
     }
 
-    /** Measures the sky, then solves. The only step that costs frames. */
+    /**
+     * Measures the sky, then solves. **The only step that costs frames**, which is why T-3.33
+     * moved it behind a button: nothing calls this except a tap.
+     */
     fun measureAndSolve() {
         val profile = camera ?: return
         if (job?.isActive == true) return
 
+        measurementAsked = true
         error = null
         job = scope.launch {
             try {
@@ -219,7 +269,7 @@ class SetupController(
             noiseModel = measured.model,
             trailing = trailing,
             isoCandidates = SkyProbe.isoLadder(profile.isoMin, profile.isoMax),
-            maxExposureSeconds = profile.exposureMaxSeconds ?: 30.0,
+            maxExposureSeconds = sensorMaxSeconds,
             dualGainIso = measured.dualGainIso,
             pinnedIso = pinnedIso,
         )
@@ -265,6 +315,22 @@ class SetupController(
         if (level < 0 || scale <= 0) 100.0 else level * 100.0 / scale
     }.getOrDefault(100.0)
 
+    /**
+     * T-3.33 — what pressing `Measure the sky` will cost, in the units the user pays it in.
+     *
+     * Stated *before* the button, not after: the whole objection to solving on arrival was that
+     * frames were spent by a screen appearing, and a button that spends them without saying so
+     * first only moves the surprise one tap later.
+     */
+    fun measurementCost(): String {
+        val profile = camera ?: return "select a camera first"
+        val ladder = SkyProbe.isoLadder(profile.isoMin, profile.isoMax)
+        val each = SkyProbe.DEFAULT_TEST_EXPOSURE_NS / 1e9
+        if (ladder.isEmpty()) return "this camera reports no ISO range to measure across"
+        return "%d test frames of %.2f s — one per ISO from %d to %d, a few seconds with the camera open"
+            .format(ladder.size, each, ladder.first(), ladder.last())
+    }
+
     /** FR-9.2 keeps the derivation in the session log, so a restack knows why it looks like this. */
     fun derivationLines(): List<String> {
         val current = solution ?: return emptyList()
@@ -298,8 +364,12 @@ class SetupController(
         const val TAG = "SetupController"
         const val DEFAULT_FRAMES = 120
 
-        /** Two stops either way. Past that the solve is not being adjusted, it is being ignored. */
-        const val MAX_STOPS = 2.0
+        /**
+         * The ceiling assumed when a camera does not report its own exposure range. Conservative
+         * on purpose: it is better to refuse a sub the sensor might have taken than to plan a
+         * session around one it will truncate.
+         */
+        const val DEFAULT_MAX_EXPOSURE_SECONDS = 30.0
 
         /**
          * The slider's right-hand end, in wall-clock hours. The frame count it corresponds to is

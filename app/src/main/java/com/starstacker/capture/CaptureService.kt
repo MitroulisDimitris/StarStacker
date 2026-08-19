@@ -142,6 +142,10 @@ class CaptureService : Service() {
             SessionLog(
                 SessionInfo(
                     sessionId = folderName,
+                    // T-3.30 — kept in full, because the folder does not always carry it: a
+                    // session named for the day drops the suffix rather than stating the date
+                    // twice (SessionLayout.folderName).
+                    label = label,
                     startedAtEpochMs = startedAt,
                     deviceModel = Build.MODEL,
                     cameraId = request.cameraId,

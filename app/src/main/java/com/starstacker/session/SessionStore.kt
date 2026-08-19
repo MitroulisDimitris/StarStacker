@@ -36,6 +36,20 @@ interface SessionStore {
      * is not on the per-frame path.
      */
     fun listSessions(): List<String>
+
+    /**
+     * T-3.28 / **D-26** — removes a session folder and everything under it.
+     *
+     * D-10 says the app never deletes, and this does not contradict it: D-10 is about the app's
+     * own judgement, so a frame the gate rejected still stays on disk forever. A person clearing
+     * their own 3.6 GB session is a different act, and refusing it is not honouring D-10 but
+     * hiding behind it.
+     *
+     * **Whole sessions only.** [folderName] must be a plain child of the root — the guard is in
+     * the implementations, and it is there because this is the one method in the app that can
+     * destroy a night's work. Returns false when nothing was removed.
+     */
+    fun deleteSession(folderName: String): Boolean
 }
 
 /** One session's folder. */
@@ -65,6 +79,15 @@ interface SessionFolder {
     fun readText(fileName: String): String?
 
     fun listFrames(directory: String): List<String>
+
+    /**
+     * Bytes on disk, summed over the frames and the log — what T-3.28's confirmation states and
+     * what the session pane shows per row.
+     *
+     * Enumerates the folder, so it is not on the per-frame path (see [SessionStore]) and the
+     * session pane loads it off the main thread.
+     */
+    fun sizeBytes(): Long
 }
 
 /**
@@ -100,6 +123,18 @@ class FileSessionStore(private val root: File) : SessionStore {
             ?.map { it.name }
             ?.sortedDescending()
             .orEmpty()
+
+    override fun deleteSession(folderName: String): Boolean {
+        if (!SessionLayout.isPlainChildName(folderName)) return false
+        val dir = File(root, folderName)
+        // Canonical paths, not the names: a name that passed the guard could still resolve
+        // outside the root through a symlink, and this is the one call that cannot be taken back.
+        val inside = runCatching {
+            dir.canonicalFile.parentFile == root.canonicalFile
+        }.getOrDefault(false)
+        if (!inside || !dir.isDirectory) return false
+        return dir.deleteRecursively()
+    }
 }
 
 private class FileSessionFolder(private val dir: File) : SessionFolder {
@@ -133,6 +168,10 @@ private class FileSessionFolder(private val dir: File) : SessionFolder {
 
     override fun listFrames(directory: String): List<String> =
         File(dir, directory).listFiles()?.filter { it.isFile }?.map { it.name }?.sorted().orEmpty()
+
+    override fun sizeBytes(): Long =
+        runCatching { dir.walkTopDown().filter { it.isFile }.sumOf { it.length() } }
+            .getOrDefault(0L)
 
     private companion object {
         const val BUFFER = 1 shl 16

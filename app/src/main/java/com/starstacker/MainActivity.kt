@@ -64,9 +64,15 @@ import com.starstacker.ui.CaptureScreen
 import com.starstacker.ui.FramingScreen
 import com.starstacker.ui.SetupController
 import com.starstacker.session.SessionCatalogue
+import com.starstacker.session.SessionNaming
 import com.starstacker.session.SessionSummary
 import com.starstacker.ui.MainScreen
 import com.starstacker.ui.MainWarning
+import com.starstacker.ui.SessionDetailLoading
+import com.starstacker.ui.SessionDetailScreen
+import com.starstacker.ui.SessionSelection
+import com.starstacker.ui.SessionsController
+import com.starstacker.ui.SessionsScreen
 import com.starstacker.ui.Permissions
 import com.starstacker.ui.SettingsScreen
 import com.starstacker.ui.SetupScreen
@@ -112,6 +118,9 @@ class MainActivity : ComponentActivity() {
     private val pointingSource by lazy { PointingSource(this) }
     private val framing by lazy { FramingController(this, lifecycleScope) }
     private val setup by lazy { SetupController(this, lifecycleScope) }
+
+    /** T-3.27 — the session pane's scan, selection targets and deletions. */
+    private val sessionsController by lazy { SessionsController(this, lifecycleScope) }
 
     private val requestCamera = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -217,6 +226,17 @@ class MainActivity : ComponentActivity() {
     /** T-3.18 — the main screen's session list, loaded off the launch path. */
     private var sessions by mutableStateOf<List<SessionSummary>>(emptyList())
     private var sessionCount by mutableStateOf(0)
+
+    /**
+     * T-3.30 — every folder in the root, and the default name derived from them.
+     *
+     * The folder list is kept because [SessionNaming] needs it twice: once to suggest a default
+     * when the prompt opens, and again to resolve a blank field at the moment Start is pressed.
+     * Both come off the same scan `refreshMain` already does, so naming costs no extra I/O — and
+     * per **D-5** it is the folders that are authoritative, never a stored counter.
+     */
+    private var sessionFolders by mutableStateOf<List<String>>(emptyList())
+    private var defaultSessionLabel by mutableStateOf("")
     private var freeBytes by mutableStateOf(0L)
     private var deviceTempC by mutableStateOf<Double?>(null)
     private var warningDismissed by mutableStateOf(false)
@@ -375,6 +395,20 @@ class MainActivity : ComponentActivity() {
                 var nav by rememberSaveable(stateSaver = BackStack.Saver) {
                     mutableStateOf(BackStack())
                 }
+                // T-3.29's acceptance asks for a selection that survives a scroll and a rotation.
+                // `rememberSaveable` gives both, and process death besides — which matters more
+                // here than rotation does, since rotation is locked to portrait but this app is
+                // designed to sit backgrounded for three quarters of an hour.
+                var sessionSelection by rememberSaveable(stateSaver = SessionSelection.Saver) {
+                    mutableStateOf(SessionSelection())
+                }
+                // A folder can vanish because a delete removed it or a PC did, and a selection
+                // holding names that are gone reports a count for sessions that do not exist.
+                LaunchedEffect(sessionsController.scanResult) {
+                    sessionSelection = sessionSelection.retaining(
+                        sessionsController.sessions.map { it.folderName },
+                    )
+                }
                 val screen = nav.current
 
                 // T-0.3: without this the system back gesture leaves the app from any screen,
@@ -474,7 +508,10 @@ class MainActivity : ComponentActivity() {
                         },
                         onOpenSettings = { nav = nav.push(Screen.SETTINGS) },
                         onOpenSessionFolder = { openSessionFolder() },
-                        onAllSessions = { openSessionFolder() },
+                        // T-3.27 — it opens the sessions now, not the folder they happen to live
+                        // in. The folder icon beside it still opens a file manager, which is a
+                        // different job.
+                        onAllSessions = { nav = nav.push(Screen.SESSIONS) },
                         onDismissWarning = { warningDismissed = true },
                         resumable = resumable.takeIf { !CaptureService.running }?.describe(),
                         onResume = {
@@ -566,8 +603,11 @@ class MainActivity : ComponentActivity() {
                     Screen.SETUP -> SetupScreen(
                         controller = setup,
                         pointing = pointing,
+                        defaultLabel = defaultSessionLabel.ifBlank {
+                            SessionNaming.forDay(System.currentTimeMillis(), sessionFolders)
+                        },
                         onBack = { nav = nav.pop() },
-                        onStart = {
+                        onStart = { typedLabel ->
                             val plan = setup.plan ?: return@SetupScreen
                             val camera = setup.camera ?: return@SetupScreen
                             CaptureService.start(
@@ -586,11 +626,70 @@ class MainActivity : ComponentActivity() {
                                     // would describe a sky that has moved.
                                     pointing = pointing?.toSessionPointing(),
                                 ),
-                                label = "session",
+                                // T-3.30 — a blank field is the same answer as not naming it, and
+                                // both land on the day's name. Resolved here, against the folders
+                                // as they are at this instant, rather than against the suggestion
+                                // computed when the screen was opened.
+                                label = SessionNaming.labelFor(
+                                    typed = typedLabel,
+                                    epochMs = System.currentTimeMillis(),
+                                    existingFolders = sessionFolders,
+                                ),
                             )
                             nav = nav.enterCapture()
                         },
                     )
+
+                    Screen.SESSIONS -> {
+                        // Rescanned on arrival rather than at the push site, so returning from a
+                        // detail screen or from the background also sees the disk as it is now —
+                        // a folder can appear or vanish because a PC did it (FR-10.6.4).
+                        LaunchedEffect(Unit) { sessionsController.refresh() }
+                        SessionsScreen(
+                            controller = sessionsController,
+                            selection = sessionSelection,
+                            onSelectionChange = { sessionSelection = it },
+                            onOpen = { summary ->
+                                sessionsController.open(summary)
+                                nav = nav.push(Screen.SESSION_DETAIL)
+                            },
+                            onOpenFolder = { openSessionFolder() },
+                            onBack = {
+                                sessionSelection = sessionSelection.clear()
+                                nav = nav.pop()
+                            },
+                        )
+                    }
+
+                    Screen.SESSION_DETAIL -> {
+                        val detail = sessionsController.detail
+                        val opening = sessionsController.opening
+                        when {
+                            detail != null -> SessionDetailScreen(
+                                detail = detail,
+                                onDelete = {
+                                    sessionsController.askDelete(listOf(detail.summary))
+                                    nav = nav.pop()
+                                },
+                                onBack = {
+                                    sessionsController.closeDetail()
+                                    nav = nav.pop()
+                                },
+                            )
+                            // Still reading. The log is loaded off the main thread and navigation
+                            // is not, so this state is always passed through, however briefly.
+                            opening != null -> SessionDetailLoading(
+                                folderName = opening,
+                                onBack = {
+                                    sessionsController.closeDetail()
+                                    nav = nav.pop()
+                                },
+                            )
+                            // No detail and nothing being read: the log would not parse, or the
+                            // folder went away under the screen. The pane says so.
+                            else -> LaunchedEffect(Unit) { nav = nav.pop() }
+                        }
+                    }
 
                     Screen.CAPTURE -> CaptureScreen(
                         progress = capture,
@@ -905,13 +1004,18 @@ class MainActivity : ComponentActivity() {
     private fun refreshMain() {
         lifecycleScope.launch(Dispatchers.IO) {
             val store = SessionRoot.store(this@MainActivity)
+            // One listing, used three ways: the recent rows, the `All sessions · N` count, and
+            // T-3.30's default name. Listing twice would be two answers to one question.
+            val names = runCatching { store.listSessions() }.getOrDefault(emptyList())
             val recent = runCatching { SessionCatalogue.recent(store) }.getOrDefault(emptyList())
-            val total = runCatching { SessionCatalogue.count(store) }.getOrDefault(0)
             val free = runCatching { store.freeBytes() }.getOrDefault(0L)
             val temp = batteryTemperatureC()
+            val label = SessionNaming.forDay(System.currentTimeMillis(), names)
             withContext(Dispatchers.Main) {
                 sessions = recent
-                sessionCount = total
+                sessionCount = names.size
+                sessionFolders = names
+                defaultSessionLabel = label
                 freeBytes = free
                 deviceTempC = temp
             }

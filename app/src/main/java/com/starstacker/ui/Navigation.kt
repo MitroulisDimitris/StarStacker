@@ -3,13 +3,18 @@ package com.starstacker.ui
 /**
  * T-0.3 — the screens, and the stack that orders them.
  *
- * `Session detail` in the task's original list is Phase 4 (T-6.3) and does not exist yet.
- *
  * [MAIN] became the root in T-3.18. [PROBE] was the root until then, which was the bug §1.15
  * describes: the capability probe is a diagnostic and it had been the front door since Phase 1A.
  * It is still reachable, from Settings, where diagnostics live.
+ *
+ * [SESSIONS] and [SESSION_DETAIL] are T-3.27, which pulls T-6.1 and T-6.3 forward out of Phase 4
+ * because the button that needs them already existed and lied about what it did: `All sessions`
+ * called `openSessionFolder()`, the same file-manager route as the folder icon beside it, so the
+ * app had two controls doing one thing and no screen for the thing they were named after. The
+ * folder icon stays — a file manager is a different job, for when the answer really is "give me
+ * the files".
  */
-enum class Screen { MAIN, FRAMING, SETUP, CAPTURE, SETTINGS, PROBE }
+enum class Screen { MAIN, FRAMING, SETUP, CAPTURE, SETTINGS, PROBE, SESSIONS, SESSION_DETAIL }
 
 /**
  * T-0.3's back stack, as plain data so the rules can be tested rather than clicked.

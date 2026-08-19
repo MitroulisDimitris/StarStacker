@@ -42,6 +42,21 @@ import com.starstacker.ui.theme.Night
  * leaves the red end. One full-intensity control only, and it is the one that starts and stops
  * the loop.
  */
+
+/**
+ * T-3.32 — what shooting without stored focus costs, in one sentence, authored **once**.
+ *
+ * It appears twice: under the focus state on the preview, and under `Continue to session setup`.
+ * A constant rather than two string literals because of the trap T-3.24 recorded — the screen gave
+ * two answers to one question, in two wordings, a scroll apart — and two copies of a sentence are
+ * one edit away from being exactly that again.
+ *
+ * The number behind it: with no stored focus the capture request passes 0.0 dioptres, which this
+ * HAL answers with the hyperfocal position (§1.11). Stars are then soft but present, so a whole
+ * session can be shot slightly out of focus with nothing appearing to be wrong until the morning.
+ */
+private const val NO_FOCUS_CONSEQUENCE =
+    "the session will shoot at hyperfocal — soft, not ruined"
 @Composable
 fun FramingScreen(
     options: List<CameraOption>,
@@ -150,17 +165,37 @@ fun FramingScreen(
             )
         }
 
-        item { Eyebrow("Focus · FR-6.3") }
-        item { FocusCard(controller, pointing?.altitudeDeg) }
+        // T-3.31: only when there is a sweep to look at. This was a permanent card holding the
+        // by-hand controls, which have moved onto the preview; what is left is the measurement,
+        // and a measurement nobody has taken needs no card.
+        if (controller.sweepSamples.isNotEmpty()) {
+            item { Eyebrow("Focus curve · FR-6.3") }
+            item { FocusCurveCard(controller) }
+        }
 
         // Quiet, not hot: the full-intensity control on this screen is the preview toggle, and a
         // screen with two of them has neither (T-0.2).
         item {
-            QuietButton(
-                text = "Continue to session setup →",
-                enabled = selectedCameraId != null,
-                onClick = onContinue,
-            )
+            Column {
+                QuietButton(
+                    text = "Continue to session setup →",
+                    enabled = selectedCameraId != null,
+                    onClick = onContinue,
+                )
+                // T-3.32 — the app walks to setup perfectly happily with no focus stored and used
+                // to say nothing about it there. Deliberately **not a gate**: FR-3.1.1's
+                // Functional tier shoots without calibration, and a beginner stopped at 1 a.m. by
+                // a sweep that will not converge under thin cloud has nowhere to go. D-25: the
+                // consequence stays, the justification does not.
+                if (controller.storedFocus == null) {
+                    Spacer(Modifier.height(6.dp))
+                    Mono(
+                        "No focus stored — $NO_FOCUS_CONSEQUENCE",
+                        color = Night.Warn,
+                        size = 10.5.sp,
+                    )
+                }
+            }
         }
 
         controller.streamDetail?.let { detail ->
@@ -249,10 +284,9 @@ private fun PreviewPanel(controller: FramingController, altitudeDeg: Double?) {
                 )
             }
         }
-        Spacer(Modifier.height(8.dp))
-        FocusBar(controller, altitudeDeg)
         Spacer(Modifier.height(6.dp))
-        // At ~1 fps an unlabelled preview reads as a frozen app, so the rate is stated.
+        // At ~1 fps an unlabelled preview reads as a frozen app, so the rate is stated. Directly
+        // under the image, because it describes the image and nothing else.
         Mono(
             "%.1f s per frame · ISO %d · frame %d%s".format(
                 controller.refreshSeconds,
@@ -262,6 +296,108 @@ private fun PreviewPanel(controller: FramingController, altitudeDeg: Double?) {
             ),
             color = Night.Txt3,
             size = 10.sp,
+        )
+        Spacer(Modifier.height(10.dp))
+        FocusBar(controller, altitudeDeg)
+        // Whatever focus last said — a sweep's verdict, a verification, a refusal. One line, here,
+        // where the state it comments on is (T-3.24's rule).
+        (controller.sweepProgress ?: controller.focusMessage)?.let { message ->
+            Spacer(Modifier.height(6.dp))
+            Text(
+                message,
+                fontSize = 10.5.sp,
+                color = if (controller.sweepProgress != null) Night.Hot else Night.Txt2,
+                lineHeight = 15.sp,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        ManualFocusDisclosure(controller, altitudeDeg)
+    }
+}
+
+/**
+ * T-3.31 — focus by hand, and stored-focus verification, as a disclosure under `Find focus`.
+ *
+ * **Both were permanently open, several scrolls below the preview.** That is wrong in both
+ * directions at once: the controls are visible when nobody wants them, and out of sight at the one
+ * moment they are wanted — a sweep that has just failed. So they open on exactly two events: the
+ * sweep failing ([FramingController.sweepFocus] sets it), and being asked for.
+ *
+ * `Verify stored focus` joins them for the same reason. It is a thing you do occasionally, not a
+ * thing you read every time, and it needs a stored focus to act on — so as a standing control it
+ * was disabled most of the time it was on screen.
+ *
+ * *Unchanged:* the stepping itself — ±1 motor step of 0.0374 dioptres against the live HFR (§1.7).
+ * The complaint answered here is the placement. If the control is wrong too, that is a separate
+ * task and it wants a number: which step, and judged against what.
+ */
+@Composable
+private fun ManualFocusDisclosure(controller: FramingController, altitudeDeg: Double?) {
+    val open = controller.manualFocusOpen
+    Column {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { controller.manualFocusOpen = !open }
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Mono(
+                if (controller.sweepFailed) "Focus by hand — the sweep found nothing"
+                else "Focus by hand",
+                color = if (controller.sweepFailed) Night.Warn else Night.Txt3,
+                size = 10.5.sp,
+                modifier = Modifier.weight(1f),
+            )
+            Mono(if (open) "▴" else "▾", color = Night.Txt3, size = 10.5.sp)
+        }
+        if (!open) return@Column
+
+        Spacer(Modifier.height(4.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Mono(
+                controller.activeFocus?.let { "%.3f dioptres".format(it) } ?: "lens at default",
+                color = if (controller.manualFocus != null) Night.Txt else Night.Txt3,
+                size = 11.sp,
+            )
+            Spacer(Modifier.weight(1f))
+            Mono(
+                controller.frame?.hfr?.let { "HFR %.2f".format(it) } ?: "HFR —",
+                color = Night.Txt2,
+                size = 11.sp,
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        ButtonRow {
+            Box(Modifier.weight(1f)) {
+                QuietButton(
+                    text = "◀ Further",
+                    enabled = controller.running && controller.busy == null,
+                    onClick = { controller.nudgeFocus(-1) },
+                )
+            }
+            Box(Modifier.weight(1f)) {
+                QuietButton(
+                    text = "Nearer ▶",
+                    enabled = controller.running && controller.busy == null,
+                    onClick = { controller.nudgeFocus(+1) },
+                )
+            }
+        }
+        if (controller.manualFocus != null) {
+            Spacer(Modifier.height(6.dp))
+            QuietButton(
+                text = "Use this focus for the session",
+                enabled = controller.busy == null,
+                onClick = { controller.storeManualFocus(altitudeDeg) },
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        QuietButton(
+            text = "Verify stored focus",
+            enabled = controller.running && controller.busy == null &&
+                controller.storedFocus != null,
+            onClick = { controller.verifyFocus(altitudeDeg) },
         )
     }
 }
@@ -400,81 +536,30 @@ private fun PointingCard(
     }
 }
 
+/**
+ * What is left of the focus card after T-3.31: **the measurement**.
+ *
+ * The by-hand controls and `Verify stored focus` moved onto the preview, where the thing they are
+ * judged against is. A sweep's curve is a different kind of object — it is evidence, read once
+ * after a sweep and then left alone — so it stays a card, and the card only exists when there is a
+ * sweep behind it.
+ *
+ * FR-4.1.4 wants the curve visible, because a minimum you can see is the difference between "the
+ * app says it focused" and "focus is bracketed".
+ */
 @Composable
-private fun FocusCard(controller: FramingController, altitudeDeg: Double?) {
-    val stored = controller.storedFocus
+private fun FocusCurveCard(controller: FramingController) {
     Card {
-        // The state headline moved to the preview (T-3.24); repeating it here gave the screen two
-        // answers to the same question, in two different wordings, a scroll apart.
-
-        // The fallback when the sweep will not converge. Stepping by hand against the live HFR
-        // is worse than a bracketed curve and enormously better than no focus at all — and a
-        // sweep that fails under thin cloud must not be a dead end in a field at 1 a.m.
-        Spacer(Modifier.height(12.dp))
-        Eyebrow("Focus by hand")
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Mono("HFR VS POSITION", color = Night.Dim, size = 8.5.sp)
+        Spacer(Modifier.height(4.dp))
+        HfrCurve(controller)
+        controller.storedFocus?.takeIf { !it.fixedFocus }?.let { stored ->
+            Spacer(Modifier.height(8.dp))
             Mono(
-                controller.activeFocus?.let { "%.3f dioptres".format(it) } ?: "lens at default",
-                color = if (controller.manualFocus != null) Night.Txt else Night.Txt3,
-                size = 11.sp,
-            )
-            Spacer(Modifier.weight(1f))
-            Mono(
-                controller.frame?.hfr?.let { "HFR %.2f".format(it) } ?: "HFR —",
+                "stored: %.3f dioptres · HFR %.2f px".format(stored.diopters, stored.hfr),
                 color = Night.Txt2,
-                size = 11.sp,
+                size = 10.sp,
             )
-        }
-        Spacer(Modifier.height(6.dp))
-        ButtonRow {
-            Box(Modifier.weight(1f)) {
-                QuietButton(
-                    text = "◀ Further",
-                    enabled = controller.running && controller.busy == null,
-                    onClick = { controller.nudgeFocus(-1) },
-                )
-            }
-            Box(Modifier.weight(1f)) {
-                QuietButton(
-                    text = "Nearer ▶",
-                    enabled = controller.running && controller.busy == null,
-                    onClick = { controller.nudgeFocus(+1) },
-                )
-            }
-        }
-        if (controller.manualFocus != null) {
-            Spacer(Modifier.height(6.dp))
-            QuietButton(
-                text = "Use this focus for the session",
-                enabled = controller.busy == null,
-                onClick = { controller.storeManualFocus(altitudeDeg) },
-            )
-        }
-
-        // `Find focus` is on the preview now (T-3.24), where the thing it needs to be judged
-        // against actually is. What is left here is re-checking a focus already stored.
-        Spacer(Modifier.height(10.dp))
-        QuietButton(
-            text = "Verify stored focus",
-            enabled = controller.running && controller.busy == null && stored != null,
-            onClick = { controller.verifyFocus(altitudeDeg) },
-        )
-
-        controller.sweepProgress?.let {
-            Spacer(Modifier.height(8.dp))
-            Mono(it, color = Night.Hot, size = 11.sp)
-        }
-
-        controller.focusMessage?.let {
-            Spacer(Modifier.height(8.dp))
-            Text(it, fontSize = 11.sp, color = Night.Txt2, lineHeight = 16.sp)
-        }
-
-        if (controller.sweepSamples.isNotEmpty()) {
-            Spacer(Modifier.height(10.dp))
-            Mono("HFR VS POSITION", color = Night.Dim, size = 8.5.sp)
-            Spacer(Modifier.height(4.dp))
-            HfrCurve(controller)
         }
     }
 }
@@ -561,7 +646,8 @@ private fun FocusBar(controller: FramingController, altitudeDeg: Double?) {
             )
             Mono(
                 when {
-                    stored == null -> "the session will shoot at hyperfocal — soft, not ruined"
+                    // The same sentence as the line under Continue, from the same constant.
+                    stored == null -> NO_FOCUS_CONSEQUENCE
                     stored.fixedFocus -> "nothing to calibrate on this lens"
                     else -> "%.3f dioptres · HFR %.2f px".format(stored.diopters, stored.hfr)
                 },

@@ -105,6 +105,26 @@ class FramingController(
     var sweepProgress: String? by mutableStateOf(null)
         private set
 
+    /**
+     * T-3.31 — whether the by-hand focus section is open.
+     *
+     * It was a permanent card several scrolls below the preview: open when it was not wanted, and
+     * out of sight at the one moment it is — a sweep that has just failed, in a field, at 1 a.m.
+     * So it is a disclosure under `Find focus` instead, and this is its state.
+     *
+     * Set by two things, which is the whole design: the user tapping the disclosure, and
+     * [sweepFocus] failing. The second is why it lives on the controller rather than in the
+     * composable — the event that should open it happens in the camera layer, not in the UI.
+     */
+    var manualFocusOpen by mutableStateOf(false)
+
+    /**
+     * Whether the last sweep failed to produce a focus. Drives the disclosure's own headline, so
+     * the reason the section opened is stated where the section opened.
+     */
+    var sweepFailed by mutableStateOf(false)
+        private set
+
     private var monitor: FocusMonitor? = null
     private var camera: CameraProfile? = null
 
@@ -137,6 +157,8 @@ class FramingController(
         storedFocus = withContext(Dispatchers.IO) { focusStore.get(profile.id) }
         focusStatus = FocusStatus.UNKNOWN
         focusMessage = null
+        sweepFailed = false
+        manualFocusOpen = false
         sweepSamples = emptyList()
         frame = null
         preview = null
@@ -244,9 +266,16 @@ class FramingController(
                     storedFocus = it
                     monitor = FocusMonitor(it.hfr)
                 }
+                // A sweep that returns no record has not thrown — it ran and could not find a
+                // minimum, which is the ordinary outcome under thin cloud. That is exactly the
+                // moment stepping by hand is wanted, so the section opens itself (T-3.31).
+                sweepFailed = outcome.record == null
+                if (sweepFailed) manualFocusOpen = true
             } catch (t: Throwable) {
                 Log.e(TAG, "focus sweep failed", t)
                 focusMessage = "sweep failed: ${t.message}"
+                sweepFailed = true
+                manualFocusOpen = true
             } finally {
                 busy = null
                 sweepProgress = null
@@ -341,6 +370,8 @@ class FramingController(
         // starting point for the drift monitor and not a verified minimum.
         monitor = measured?.hfr?.let { FocusMonitor(it) }
         focusStatus = if (measured?.hfr != null) FocusStatus.LOCKED else FocusStatus.UNKNOWN
+        // Focus exists now, however it was found, so the disclosure stops announcing a failure.
+        sweepFailed = false
         focusMessage = "focus set by hand at %.3f dioptres%s".format(
             position,
             measured?.hfr?.let { " · HFR %.2f px".format(it) }.orEmpty(),

@@ -165,43 +165,6 @@ private fun TopBar(onOpenSettings: () -> Unit) {
     }
 }
 
-/**
- * T-3.21's first half — the same affordance appears in Settings and on the sessions list.
- *
- * **Drawn, not a glyph.** The first version used `U+1F5C0`, which this device's font does not
- * carry: it rendered as a sliver of vertical tofu. A shape drawn from two rectangles cannot fail
- * that way and needs no icon dependency, which this app does not have.
- */
-@Composable
-private fun FolderButton(onClick: () -> Unit) {
-    Box(
-        Modifier
-            .size(34.dp)
-            .border(1.dp, Night.Line, RoundedCornerShape(9.dp))
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Canvas(Modifier.size(16.dp)) {
-            val w = size.width
-            val h = size.height
-            val stroke = Stroke(width = w * 0.09f)
-            // The tab, then the body — the two strokes a folder is legible from.
-            drawLine(
-                color = Night.Txt2,
-                start = Offset(w * 0.08f, h * 0.24f),
-                end = Offset(w * 0.44f, h * 0.24f),
-                strokeWidth = w * 0.11f,
-            )
-            drawRect(
-                color = Night.Txt2,
-                topLeft = Offset(w * 0.08f, h * 0.32f),
-                size = Size(w * 0.84f, h * 0.46f),
-                style = stroke,
-            )
-        }
-    }
-}
-
 @Composable
 private fun ResumeCard(describe: String, onResume: () -> Unit, onDiscard: () -> Unit) {
     Card {
@@ -289,14 +252,19 @@ private fun ConditionsStrip(freeBytes: Long, deviceTempC: Double?, moonPercent: 
             horizontalArrangement = Arrangement.SpaceBetween,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Metric("Free", formatBytes(freeBytes))
+            Metric("Free", formatFreeSpace(freeBytes))
             Metric("Device", deviceTempC?.let { "%.0f".format(it) } ?: "—", unit = "°C")
             Metric("Moon", "$moonPercent", unit = "%", warn = moonPercent >= 60)
         }
     }
 }
 
-private fun formatBytes(bytes: Long): String = when {
+/**
+ * Free space, which is a different question from a session's size and wants a different precision —
+ * 116 GB of headroom is a coarse fact, 3.6 GB of frames is not. [SessionSummary.formatBytes] is the
+ * other one; the names say which is which so a later edit does not merge them by accident.
+ */
+private fun formatFreeSpace(bytes: Long): String = when {
     bytes >= 1L shl 30 -> "%.0f GB".format(bytes.toDouble() / (1L shl 30))
     bytes >= 1L shl 20 -> "%.0f MB".format(bytes.toDouble() / (1L shl 20))
     else -> "$bytes B"

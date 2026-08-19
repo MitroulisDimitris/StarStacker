@@ -34,12 +34,50 @@ object SessionLayout {
     /**
      * Local time, deliberately. The folder name is read by a person standing in a field who knows
      * what time it was; UTC would make every session after midnight look like the wrong night.
+     *
+     * **The date is never in the name twice.** T-3.30 names an unnamed session for the day —
+     * `2026-08-18`, or `2026-08-18-2` for the second that night — and the stamp already begins
+     * with that date, so appending the label would produce `2026-08-18_2115_2026-08-18`. A label
+     * that is the day itself therefore contributes no suffix; `session.json` keeps the full label
+     * either way ([SessionInfo.label]), so nothing is lost by the folder being terse.
      */
     fun folderName(startedAtEpochMs: Long, label: String, timeZone: TimeZone = TimeZone.getDefault()):
         String {
         val format = SimpleDateFormat("yyyy-MM-dd_HHmm", Locale.US).apply { this.timeZone = timeZone }
-        return "${format.format(Date(startedAtEpochMs))}_${sanitise(label)}"
+        val stamp = format.format(Date(startedAtEpochMs))
+        val cleaned = sanitise(label)
+        return if (isDayLabel(cleaned, startedAtEpochMs, timeZone)) stamp else "${stamp}_$cleaned"
     }
+
+    /**
+     * Is this label the day's own name, exactly as [SessionNaming.forDay] produces it — the date,
+     * or the date and a bare number?
+     *
+     * **The suffix has to be all digits.** Matching `startsWith("$day-")` alone swallowed
+     * `2026-08-18-comet`, a name someone chose, and dropped it from the folder entirely: the label
+     * survived only in `session.json`, and the folder on disk looked like an unnamed session. Only
+     * the generated form is terse; anything a person typed reaches the folder.
+     */
+    private fun isDayLabel(cleaned: String, startedAtEpochMs: Long, timeZone: TimeZone): Boolean {
+        val day = SessionNaming.dayOf(startedAtEpochMs, timeZone)
+        if (cleaned == day) return true
+        if (!cleaned.startsWith("$day-")) return false
+        val suffix = cleaned.removePrefix("$day-")
+        return suffix.isNotEmpty() && suffix.all { it.isDigit() }
+    }
+
+    /**
+     * A name that can only ever mean one direct child of the root — no separators, no traversal,
+     * no empty string.
+     *
+     * The guard on [SessionStore.deleteSession], which is the only call in the app that can
+     * destroy a night's work. Checked here rather than in each store so both implementations
+     * cannot disagree about it, and so it can be tested without a filesystem.
+     */
+    fun isPlainChildName(folderName: String): Boolean =
+        folderName.isNotBlank() &&
+            folderName != "." && folderName != ".." &&
+            folderName.none { it == '/' || it == '\\' || it == '\u0000' }
 
     /**
      * Frame file names sort in capture order as text, because that is how every other tool will

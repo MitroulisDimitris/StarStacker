@@ -66,6 +66,10 @@ class NavigationTest {
             BackStack().enterCapture().current,
             BackStack().push(Screen.SETTINGS).current,
             BackStack().push(Screen.SETTINGS).push(Screen.PROBE).current,
+            // T-3.27's two, by the route MainActivity actually takes: `All sessions` from the main
+            // screen, then a row.
+            BackStack().push(Screen.SESSIONS).current,
+            BackStack().push(Screen.SESSIONS).push(Screen.SESSION_DETAIL).current,
         )
 
         assertEquals(Screen.entries.toSet(), reached)
