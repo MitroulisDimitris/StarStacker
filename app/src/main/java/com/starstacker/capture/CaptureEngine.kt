@@ -118,6 +118,23 @@ class CaptureEngine(
         val preview: IntArray? = null,
         val previewDepth: Int = 0,
         /**
+         * The most recently **rejected** light, as ARGB, and why it was rejected.
+         *
+         * Its own picture rather than a contribution to the stack, because the two answer
+         * different questions. The stack answers *"is this working"*; this answers *"what is it
+         * throwing away, and why"* — and until it existed a session where everything was rejected
+         * showed **nothing at all**, since the stack only ever holds accepted frames. That is the
+         * one state where a person most needs to see something: cloud, a lens cap, the phone
+         * pointed at the ground and twilight that has not faded all reject every frame, and they
+         * are indistinguishable from a blank screen and identical from a rejection count.
+         *
+         * **D-10 in the live path.** Nothing is deleted and the user is entitled to disagree with
+         * the gate; seeing the frame is what makes disagreeing possible while there is still time
+         * to act on it, rather than in the morning.
+         */
+        val rejectedPreview: IntArray? = null,
+        val rejectedNote: String? = null,
+        /**
          * T-3.22 — when the frame now in flight began waiting, on the monotonic clock, and how
          * long its exposure is.
          *
@@ -227,6 +244,16 @@ class CaptureEngine(
      * one should not pay 1.5 MB for a preview of nothing.
      */
     private var preview: PreviewStack? = null
+
+    /**
+     * The last rejected light, held at a depth of one.
+     *
+     * `cap = 1` is the whole trick: the running mean's divisor is `min(depth, cap)`, so at a cap of
+     * one each frame replaces the last outright. A single-frame view out of the accumulator that
+     * already exists, with no second downsampler and no allocation per frame (FR-12.2).
+     */
+    private var rejectedPreview: PreviewStack? = null
+    private var rejectedNote: String? = null
 
     /**
      * Alignment is **frame to frame**, accumulated — not every frame against the first.
@@ -564,6 +591,29 @@ class CaptureEngine(
             log.copy(frames = log.frames.map { if (it.index == index && it.kind == kind) measured else it })
         }
 
+        if (!verdict.accepted && kind == FrameKind.LIGHT && analysis != null) {
+            // Unaligned and unstacked, deliberately. A rejected frame has no transform worth
+            // trusting — that is often *why* it was rejected — and the point is to show the frame
+            // as the sensor saw it, not a corrected version of it.
+            val shown = rejectedPreview ?: PreviewStack(
+                PreviewStack.WIDTH, PreviewStack.HEIGHT, cap = 1,
+            ).also { rejectedPreview = it }
+            shown.add(
+                analysis.plane.data,
+                analysis.plane.width,
+                analysis.plane.height,
+                PlaneMapping.scaling(
+                    analysis.plane.width.toDouble() / PreviewStack.WIDTH,
+                    analysis.plane.height.toDouble() / PreviewStack.HEIGHT,
+                ),
+            )
+            rejectedNote = buildString {
+                append("frame $index · ")
+                append(verdict.reason?.name?.lowercase() ?: "rejected")
+                verdict.detail?.let { append(" — $it") }
+            }
+        }
+
         if (verdict.accepted && kind == FrameKind.LIGHT && analysis != null) {
             updatePreview(analysis, registered)
             // T-4.5: only accepted frames narrow the common area. A frame the gate threw out is
@@ -581,6 +631,8 @@ class CaptureEngine(
         val log = writer.log
         _progress.value = _progress.value.copy(
             commonAreaFraction = commonArea?.takeIf { it.measured }?.fraction,
+            rejectedPreview = rejectedPreview?.toArgb(),
+            rejectedNote = rejectedNote,
             framesCaptured = log.lights.size,
             framesAccepted = log.accepted.size,
             darksCaptured = log.darks.size,

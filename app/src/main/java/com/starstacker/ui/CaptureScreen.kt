@@ -135,6 +135,13 @@ fun CaptureScreen(
 
         item { ProgressRing(progress) }
 
+        // Below the stack, because it is diagnosis rather than progress — but present whenever
+        // there is one, including when the stack above is absent, which is the case it exists for.
+        if (progress.rejectedPreview != null) {
+            item { Eyebrow("Last rejected frame") }
+            item { RejectedFrameCard(progress.rejectedPreview!!, progress.rejectedNote) }
+        }
+
         if (progress.preview != null) {
             item { Eyebrow("Live stack - FR-7.4") }
             item { PreviewStackCard(progress.preview, progress.previewDepth) }
@@ -526,10 +533,48 @@ private fun PreviewStackCard(argb: IntArray, depth: Int) {
         )
         Spacer(Modifier.height(8.dp))
         Mono(
-            "$depth frames aligned on translation only - a preview, not the stack. " +
-                "Stars away from centre will smear until registration lands.",
+            "$depth frames, aligned on the measured transform (T-4.6). A preview at a fraction " +
+                "of full resolution — not the stack.",
             color = Night.Txt3,
             size = 10.sp,
+        )
+    }
+}
+
+/**
+ * The most recently rejected frame, so a session that is rejecting everything is not a blank
+ * screen.
+ *
+ * Until this existed the capture screen showed **nothing** when nothing was accepted, because the
+ * stack above only ever holds accepted frames. Cloud, a capped lens, the phone pointed at the
+ * ground and twilight that has not faded are all identical from a rejection count and all obvious
+ * from one look at the frame.
+ */
+@Composable
+private fun RejectedFrameCard(argb: IntArray, note: String?) {
+    val bitmap = remember(argb, note) {
+        Bitmap.createBitmap(
+            argb, PreviewStack.WIDTH, PreviewStack.HEIGHT, Bitmap.Config.ARGB_8888,
+        ).asImageBitmap()
+    }
+    Card {
+        Image(
+            bitmap = bitmap,
+            contentDescription = "The most recently rejected frame",
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(PreviewStack.WIDTH.toFloat() / PreviewStack.HEIGHT),
+            contentScale = ContentScale.Fit,
+        )
+        note?.let {
+            Spacer(Modifier.height(8.dp))
+            Mono(it, color = Night.Warn, size = 10.sp, lineHeight = 15.sp)
+        }
+        Spacer(Modifier.height(6.dp))
+        Mono(
+            "Kept on disk regardless — nothing is deleted (D-10).",
+            color = Night.Txt3,
+            size = 9.5.sp,
         )
     }
 }

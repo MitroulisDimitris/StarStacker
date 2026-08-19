@@ -1387,6 +1387,32 @@ or a lens cap"*.
 is the state a session reaches *after* the moment the bug fires. A regression test now starts from
 an empty gate, which is the state every session actually starts from.
 
+### The rejected frame is now visible, which it was not
+
+Asked, straight after the above, to *also* preview the rejected frames — and the request lands on a
+real hole. **The stack only ever holds accepted frames**, so a session rejecting everything showed
+*nothing at all*: the preview card is simply absent. That is precisely the state where a person most
+needs to see something, because cloud, a capped lens, a phone pointed at the ground and twilight
+that has not faded are identical from a rejection count and obvious from one look at the frame.
+
+The most recently rejected light is now drawn beneath the ring, **unaligned and unstacked** — a
+rejected frame has no transform worth trusting, which is often *why* it was rejected, and the point
+is to show what the sensor saw rather than a corrected version of it.
+
+It costs no new machinery. `PreviewStack` at `cap = 1` makes the running mean's divisor
+`min(depth, 1)`, so each frame replaces the last outright: a single-frame view out of the
+accumulator that already exists, with no second downsampler and no allocation per frame (FR-12.2).
+
+Verified on the device mid-session — *"frame 6 · cloud — 0 stars — too few to register or stack, so
+cloud, twilight or a lens cap"*, over a stretched picture of a dim room with hot pixels and no
+stars. That is exactly the diagnosis someone standing outside needs and could not previously get.
+**D-10 in the live path**: nothing is deleted, and seeing the frame is what makes disagreeing with
+the gate possible while there is still time to act on it, rather than in the morning.
+
+The stack card's caption was corrected at the same time. It still claimed frames were *"aligned on
+translation only"* and that *"stars away from centre will smear until registration lands"*.
+Registration landed today, in T-4.6.
+
 ### And a claim in this document that had gone stale
 
 The progress table has said since Phase 1C that **"darks have never once executed"**. They have:
