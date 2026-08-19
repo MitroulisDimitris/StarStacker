@@ -84,7 +84,7 @@ Two consequences to accept deliberately:
 | 1C | 17 | 1 | **every task built.** Blocked on the field, not on code: darks have never once executed, and no 45-minute session has been shot |
 | 1D | 9 | 0 | **all nine built and photographed 2026-08-18** (§1.15). T-3.21's last piece waits on the session pane, which is now T-3.27 rather than T-6.1 |
 | 1E | 10 | 2 | **all ten built and walked on the phone 2026-08-19** (§1.18–§1.20). **T-3.28** and **T-3.36** met their acceptances whole; T-3.33 and T-3.35's hard parts are demonstrated. Four defects fixed, two of them predating the phase: `KeyValue` crushed its label whenever a value got long (§1.19), and **the sensor's exposure ceiling was being enforced when the hardware does not enforce it** (§1.20, **D-28**). Unwalked: the naming prompt, a failing sweep |
-| 2 | 7 | 0 | **T-4.0, T-4.1 and T-4.2 built 2026-08-19** (§1.22–§1.24) — the synthetic sky with ground truth, the analytic drift seed, and asterism matching. 53 tests between them. T-4.3 fits the correspondences; none of it has met a real star field |
+| 2 | 7 | 0 | **T-4.0 – T-4.3 built 2026-08-19** (§1.22–§1.25) — synthetic sky, drift seed, asterism matching, rigid fit with RANSAC. 69 tests between them, and end to end the chain recovers a known transform to **0.15° and 0.6 px**. T-4.4 puts it in the live path; none of it has met a real star field |
 | 3+ | outlined | 0 | not started |
 
 > **The `Ticked` column counts `[x]` only.** §0 ties that to an acceptance demonstrated on a real
@@ -1128,6 +1128,58 @@ runner-up. The case written to exercise it put candidates 0 px and 4 px from the
 is not ambiguous at all — it is a clear winner — so the guard correctly accepted it and the test
 correctly failed. Fixed by making the two candidates equidistant, which is what the sentence in the
 test name always meant.
+
+---
+
+## 1.25 The fit, and the end of the chain that started with a fixture — 2026-08-19
+
+T-4.3 finishes the algorithmic half of Phase 2, and it is the first point where the four pieces
+built today have to agree with each other rather than merely each be right.
+
+**Least squares is not enough, and the reason is worth stating.** It answers "what transform best
+explains these pairs" correctly, and that is the wrong question: it assumes every pair is a
+measurement of the same thing, when T-4.2 hands over a few that are not — by design, since §1.24
+made it a filter rather than an adjudicator. Squared error compounds the damage: a mismatched star
+ten pixels out pulls a hundred times harder than a good pair a pixel out.
+
+RANSAC inverts the problem. Fit the *minimum* number of pairs that determines a transform, ask how
+many of the rest agree, keep the largest agreement, then refit on all of its supporters — the
+sample finds the inliers, the inliers give the precision. **Two pairs is the minimal sample**,
+because three degrees of freedom cost two stars at two equations each, and small samples are what
+make the method work at all.
+
+**Rigid only — no scale, no shear.** The lens does not zoom between frames and the sky does not
+stretch, so any extra freedom is spent absorbing noise: a four-parameter fit will happily shrink
+the field a fraction of a percent to reduce a residual that came from centroid error, and every
+star then lands slightly wrong in a way no later stage can undo.
+
+### The chain, end to end, against ground truth
+
+The test that matters is the one that uses all of it: render two frames with a known transform, bin
+them, detect, match asterisms, fit. **The truth comes back to 0.15° of rotation and 0.6 px of
+shift**, with a residual RMS under one pixel, from centroids measured on synthetic stars with
+realistic noise.
+
+That number is the answer to a question worth asking about today's work: T-4.0 was a fixture, and
+fixtures are usually a cost. Here it is the only reason any of T-4.1, T-4.2 or T-4.3 could be
+checked at all — correctness in registration is *which star is which* and *how far out is the
+answer*, and neither is observable against a real sky. The alternative was to stack and squint.
+
+### Two design points recorded because they will look arbitrary later
+
+**The random generator is seeded.** RANSAC samples randomly, and without a fixed seed a frame could
+stack today and be rejected tomorrow on identical data — a bug nobody can reproduce, in a pipeline
+that runs unattended for 45 minutes.
+
+**Consensus is taken twice.** The refit on all inliers moves the transform, which can change who
+agrees with it; without the second pass the reported inliers describe the *sample's* transform
+while the returned transform is a different one. It is a small inconsistency that would surface
+much later as an inlier count that does not match the residual.
+
+**And `residualRmsPx` is exposed for T-4.4.** A knocked tripod moves the stars *during* the
+exposure, so they trail and their centroids scatter — the transform still fits. What gives it away
+is that the inliers miss by more than they should, which is a property of the fit and of nothing
+else in the frame. There is a test for that separation.
 
 ---
 
@@ -2299,7 +2351,21 @@ changes whether someone can run one without being surprised.
   statistics have nothing to say, and falls back rather than accepting a half-set.
   *Remaining:* nothing consumes the correspondences yet — T-4.3 fits them — and the matcher has
   never run on a real star field, only on rendered ones.
-- [ ] **T-4.3** RANSAC outlier rejection + rigid (3-DoF) transform fit refining the seed (FR-7.3).
+- [~] **T-4.3** RANSAC outlier rejection + rigid (3-DoF) transform fit refining the seed (FR-7.3).
+  **Built 2026-08-19** as `registration/RigidFit.kt`, 16 tests, §1.25. Least squares is the right
+  answer to "what transform best explains these pairs" and the wrong answer to the question being
+  asked, because it assumes every pair measures the same thing — and squared error means one star
+  ten pixels out pulls a hundred times harder than a good pair a pixel out. RANSAC inverts it:
+  fit the *minimum* that determines a transform, count who agrees, keep the largest agreement,
+  then refit on all of it. **Two pairs is the minimal sample**, since three degrees of freedom
+  cost two stars.
+  **The seed is a free hypothesis** — scored first, never trusted, which is what "refining the
+  seed" means. **Rigid only, no scale or shear**: extra freedom is spent absorbing centroid noise.
+  `residualRmsPx` is exposed because **T-4.4 watches it** — a bump trails the stars during the
+  exposure, so the transform still fits and what betrays it is the inliers missing by more than
+  they should.
+  *Remaining:* nothing calls it in the app yet — T-4.4 puts it in the live path — and the whole
+  chain has still only run on rendered frames.
 - [ ] **T-4.4** Live registration every frame on the binned plane; residual spike → bump detection.
 - [ ] **T-4.5** Common-area tracking and the live `NN%` indicator (FR-7.5).
 - [ ] **T-4.6** Transforms written into `session.json`; live preview stack upgraded to true aligned
@@ -2484,7 +2550,7 @@ the driver, and not one that blocks work.
 | **Field** | The phase checkpoints — a tripod, a dark sky, and a completed session | Manual, logged in the changelog |
 | **External** | DNGs open in Siril/RawTherapee (T-1.5); on-device master compared to Siril/DSS on identical subs (T-5.7) | Desktop |
 
-**357 JVM tests as of 2026-08-19** — qualification 21, session naming 17, star detection 14,
+**373 JVM tests as of 2026-08-19** — qualification 21, session naming 17, star detection 14,
 session planner 14, frame gate 14, leak analysis 13, session pane store 12, session log 12, preview
 stack 11, permissions 11, focus sweep 11, exposure solver 11, astro 11, DNG reader 10, camera picker
 10, exposure compensation 10, trailing limit 9, stream planning 8, noise model 8, JSON 8, exposure
@@ -2560,6 +2626,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-08-19 | **T-4.3 — the rigid fit, and Phase 2's chain closes (§1.25).** Least squares answers "what transform best explains these pairs" correctly and that is the wrong question: it assumes every pair measures the same thing, when T-4.2 deliberately hands over a few that do not, and squared error means a star ten pixels out pulls a hundred times harder than a good pair a pixel out. **RANSAC inverts it** — fit the minimum that determines a transform (two pairs, since three degrees of freedom cost two stars), count who agrees, keep the largest agreement, refit on all of it. The seed is scored as a free hypothesis and never trusted, which is what "refining the seed" means. **Rigid only, no scale or shear**: extra freedom gets spent absorbing centroid noise, shrinking the field a fraction of a percent to explain away a residual that came from detection. **End to end against ground truth** — render, bin, detect, match, fit — the known transform comes back to **0.15° and 0.6 px** with sub-pixel residual, which is the payoff for T-4.0 being built first: correctness here is *which star is which* and *how far out*, and neither is observable against a real sky. Two points recorded for later: the RANSAC generator is **seeded**, because a frame that stacks today and is rejected tomorrow on identical data is a bug nobody can reproduce; and consensus is taken **twice**, since the refit moves the transform and can change who agrees with it. `residualRmsPx` is exposed for **T-4.4** — a bump trails stars during the exposure so the transform still fits, and only the inliers missing by more than they should betrays it. 373 JVM tests. |
 | 2026-08-19 | **T-4.2 — asterism matching, and a threshold that had to be measured (§1.24).** Star positions change between frames; a **triangle of three stars has a shape**, and shape survives translation, rotation and scale. Each recognised triangle proposes three correspondences and the ones proposed repeatedly are right. Handedness is kept rather than discarded, since side ratios alone match a triangle to its mirror and the sky never reflects; thin triangles are refused as noise wearing a number's clothes; T-4.1's seed is tried first and works on **four stars**, where triangle statistics have nothing to say. **The first version was badly wrong and guessing would not have found it**: accepting any pair with two supporting triangles let fifteen correspondences through between two *unrelated* fields — a confident wrong answer, which is the one failure nothing downstream can catch. Measuring the vote distributions gave both the diagnosis and the fix: a true pair in a 24-star field collects **251–277 votes out of the 253 triangles its star belongs to**, against 14–35 for coincidences. So the rule is not a vote count but a **fraction of the chances the pair had** — scale-free, where a flat threshold tuned for 24 stars rejects true pairs at 8 and one tuned for 8 admits every coincidence at 24. **T-4.0 is what made any of this checkable**: correctness is "star 7 is star 12", which only a synthetic field knows. 357 JVM tests. |
 | 2026-08-19 | **T-4.1 — the analytic drift seed, and a sign the tests caught (§1.23).** The sky's motion is not unknown, so the transform between two frames is *computed* from position, pointing, roll and elapsed time, leaving matching to refine rather than search. On the reference device the field moves about a pixel between consecutive 7.4 s subs and **hundreds of pixels across a 45-minute session**, which is the whole argument for seeding. The rotation half already existed in `Astro` and is reused; the drift half is `d(alt)/dt = ω cos φ sin A` and `d(az)/dt = ω (sin φ − cos φ cos A tan a)`. **Roll had been thrown away** — `PointingFix` kept only the optical axis though the rotation matrix holding roll was three lines away — and without it a seed knows the size of the drift but not its direction; `PointingFix.cameraRollDeg` now carries it. Both sign conventions are pinned against cases with known answers, because a seed pointing the wrong way is worse than none: matching converges confidently on the wrong star, and a flipped axis has exactly the right magnitude so nothing else would catch it. **The roll sign was wrong and the test caught it**: the natural cross product has the handedness of someone standing in front of the lens, where the useful convention is anticlockwise in the image. 342 JVM tests. |
 | 2026-08-19 | **T-4.0 — a synthetic sky, and the trap inside it (§1.22).** Phase 2 begins with the fixture rather than the algorithm, because registration needs something a real sky cannot give: a frame whose **true** transform is known. `SyntheticSky` renders a GRBG mosaic in 10-bit ADU with a black pedestal — what the sensor emits, not the binned plane `StarDetectorTest` already had — accumulating everything in electrons and converting once, since shot noise is √N in electrons and that becomes false in ADU. Star fields follow a power law, with hot pixels, vignetting and a light-pollution gradient, all seeded so a failure can be replayed. **12 tests check the fixture itself**, because a placement bias would make a correct registrator look broken or a broken one look correct. **The trap worth recording**: the first version rendered 256×192 to be quick and found 5 of 20 stars, where 512×384 found 15 — `StarDetector` fits its background on 64 px tiles, and a plane one or two tiles across puts the gradient into the *noise* estimate (33 ADU against a true 17), doubling the threshold and silently losing every faint star. The economical choice produced a fixture that exercised a degenerate path. `MIN_USEFUL_WIDTH` is now the default. Also found: `StarDetector.saturationLevel` defaults to `Double.MAX_VALUE`, so a fully clipped frame is not flagged unless the white level is passed. 316 JVM tests. |
