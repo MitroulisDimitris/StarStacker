@@ -15,18 +15,35 @@ import kotlin.math.roundToInt
  * range can be as wide as a camera's is and the picture does the arguing. ±4 stops in sixths,
  * marked at whole stops, like every exposure-compensation dial ever made (§1.17).
  *
- * ### The two defects the wider range exposed
+ * ### The defect the wider range exposed
  *
- * Both were already live at ±2 and would have been four times worse at ±4, and both are here
- * rather than in [com.starstacker.ui.SetupController] so they can be tested without a Context:
+ * **The session-length slider's upper bound came off the *uncompensated* sub.** At +2 stops the
+ * 2.5-hour bound was already wrong by 4×, promising a session four times longer than the frames it
+ * counted; at +4 it would be 16×. [maxFrames] takes the sub that will actually be shot. It lives
+ * here rather than in [com.starstacker.ui.SetupController] so it can be tested without a Context —
+ * a frame bound 4× too generous looks exactly like an ordinary number on screen.
  *
- * - **The compensated sub was never clamped to the sensor's maximum.** Asking this HAL for longer
- *   than its 49.64 s ceiling (§1.5) gets silence or a truncated frame, not an error — D-21's whole
- *   family of "the HAL took the request and did something else". [apply] clamps, and
- *   [isClampedAt] lets the screen say so rather than showing a number the sensor will not honour.
- * - **The session-length slider's upper bound came off the *uncompensated* sub.** At +2 stops the
- *   2.5-hour bound was already wrong by 4×, promising a session four times longer than the frames
- *   it counted; at +4 it would be 16×. [maxFrames] takes the sub that will actually be shot.
+ * ### The sensor ceiling is soft, because it is not real — measured 2026-08-19
+ *
+ * This object used to clamp the compensated sub to `SENSOR_INFO_EXPOSURE_TIME_RANGE`'s upper
+ * bound, on the reasoning that asking for more "gets silence or a truncated frame, not an error".
+ * **That was an assumption from the Camera2 contract, and the device disagrees.** Asked for 120 s
+ * against a stated maximum of 49.6406 s, the reference device returned a frame of
+ * **119.999987713 s** — 12 µs short of the request, honestly reported, 2.4× beyond the advertised
+ * ceiling (§1.20).
+ *
+ * The ceiling is therefore advertised rather than enforced, and clamping to it refused exposures
+ * the hardware was willing to take. That is not academic: the trailing limit scales as
+ * 1/cos(declination), so past **dec 81.5°** on this lens the *sky* permits longer subs than the
+ * stated ceiling allows, and every circumpolar target was being capped by a number the sensor
+ * ignores.
+ *
+ * What replaces the clamp is not trust but **verification**: `SequenceSession.nextVerifiedFrame`
+ * checks every frame's own metadata against what was asked, and beyond the stated ceiling it now
+ * gives up with `ExposureRefused` rather than skipping frames until the session times out. A
+ * device that really does clamp is caught on the first frame and says so. That is portable in a
+ * way a hardcoded number is not — it works on the phone that honours the request *and* on the one
+ * that does not, without either being special-cased.
  */
 object ExposureCompensation {
 
@@ -56,31 +73,40 @@ object ExposureCompensation {
     }
 
     /**
-     * The sub actually planned: the solved answer shifted by [stops], never past what the sensor
-     * will take.
+     * A sanity bound on any single sub, in seconds. **Not the sensor's limit** — that is unknown
+     * and at least 120 s (§1.20) — but the point past which one long frame is the wrong shape for
+     * this app regardless of what the silicon allows.
      *
-     * @param maxSeconds the sensor's own ceiling, `SENSOR_INFO_EXPOSURE_TIME_RANGE`'s upper bound.
+     * Three reasons, none of them about the sensor: dark current accumulates linearly with time
+     * and the phone is at 32 °C in the middle of a session; one aeroplane ruins the whole frame,
+     * and four minutes is a lot to lose to an aeroplane; and an alt-az mount rotates the field
+     * throughout, which no exposure length can undo. Stacking is what buys integration here.
      */
-    fun apply(solvedSeconds: Double, stops: Double, maxSeconds: Double): Double {
-        val requested = solvedSeconds * 2.0.pow(stops)
-        return if (maxSeconds > 0.0 && maxSeconds.isFinite()) {
-            requested.coerceAtMost(maxSeconds)
-        } else {
-            requested
-        }
-    }
+    const val SANITY_CEILING_SECONDS = 240.0
 
     /**
-     * True when the clamp is what decided the answer — the compensation is asking for longer than
-     * the sensor can expose, so turning the dial further changes nothing.
+     * The sub actually planned: the solved answer shifted by [stops].
      *
-     * The screen needs this because otherwise the control lies twice over: the number stops moving
-     * while the dial keeps going, and the user cannot tell whether the app or the sensor said no.
+     * **No clamp to the sensor's stated maximum** — see the class note. What used to guard this is
+     * now `SequenceSession`'s per-frame check, which is a measurement rather than an assumption.
      */
-    fun isClampedAt(solvedSeconds: Double, stops: Double, maxSeconds: Double): Boolean {
-        if (maxSeconds <= 0.0 || !maxSeconds.isFinite()) return false
-        return solvedSeconds * 2.0.pow(stops) > maxSeconds + 1e-9
-    }
+    fun apply(solvedSeconds: Double, stops: Double): Double = solvedSeconds * 2.0.pow(stops)
+
+    /**
+     * The upper bound to hand the solver: the sensor's stated ceiling is a floor on what we will
+     * consider, not a cap, because it is advertised rather than enforced (§1.20).
+     *
+     * The other half of the solver's `min` is the trailing limit, which is the *real* constraint
+     * on an untracked phone — a few seconds at the equator, minutes near the pole. Letting this
+     * side go soft is what allows a circumpolar target to use the exposure the sky actually
+     * permits; [SANITY_CEILING_SECONDS] stops it running away where the trailing limit diverges.
+     */
+    fun solverCeilingSeconds(sensorMaxSeconds: Double): Double =
+        if (sensorMaxSeconds.isFinite() && sensorMaxSeconds > SANITY_CEILING_SECONDS) {
+            sensorMaxSeconds
+        } else {
+            SANITY_CEILING_SECONDS
+        }
 
     /**
      * The most frames the session-length slider offers: whatever fills [hours] at this sub length,

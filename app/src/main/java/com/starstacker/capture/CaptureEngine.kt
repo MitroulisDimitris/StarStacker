@@ -235,6 +235,29 @@ class CaptureEngine(
     private var buffer: ShortArray? = null
     private var detector: StarDetector? = null
 
+    /** `SENSOR_INFO_EXPOSURE_TIME_RANGE`'s upper bound, read once and kept for the sequence. */
+    private var ceilingNs: Long? = null
+
+    /**
+     * What the camera *says* its longest exposure is — which is not what it will actually do
+     * (§1.20), and is used here only to decide when the app has gone off-contract deliberately.
+     *
+     * Read from the characteristics rather than carried on [Request]: it is a property of the
+     * hardware, not of the plan, and a copy travelling through the service intent is a second
+     * source of truth that can disagree with the device it describes.
+     *
+     * [Long.MAX_VALUE] when the camera reports no range, which reads as "nothing is past the
+     * ceiling" and so leaves the original skip-until-settled behaviour untouched. That is the
+     * conservative direction: a device too vague to state a limit should not have its frames
+     * refused on the strength of a limit we invented.
+     */
+    private fun statedCeilingNs(cameraId: String): Long =
+        ceilingNs ?: runCatching {
+            access.characteristics(cameraId)
+                .get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
+                ?.upper
+        }.getOrNull().let { it ?: Long.MAX_VALUE }.also { ceilingNs = it }
+
     /** Null unless there is a real fix — an absent GPS IFD is honest, a zeroed one is not. */
     private fun locationOf(pointing: SessionPointing?): Location? {
         val lat = pointing?.latitudeDeg ?: return null
@@ -356,7 +379,17 @@ class CaptureEngine(
         )
 
         val frame = session.nextVerifiedFrame(
-            timeoutFor(request.exposureNs), request.exposureNs, minGeneration,
+            timeoutMs = timeoutFor(request.exposureNs),
+            exposureNs = request.exposureNs,
+            minGeneration = minGeneration,
+            // Past the sensor's advertised ceiling the app is off-contract by choice (§1.20), so a
+            // frame returning the wrong exposure is a decline rather than a settle — and worth
+            // failing fast on, because at these lengths every skipped frame costs minutes.
+            refuseAfter = if (request.exposureNs > statedCeilingNs(request.cameraId)) {
+                REFUSE_AFTER_FRAMES
+            } else {
+                null
+            },
         )
         val reading = environment.reading()
         val capturedAt = environment.nowEpochMs()
@@ -590,5 +623,16 @@ class CaptureEngine(
 
         /** How long the darks prompt waits for an answer before finishing without them. */
         const val DARK_PROMPT_TIMEOUT_MS = 15L * 60 * 1000
+
+        /**
+         * Consecutive wrong-exposure frames tolerated past the stated ceiling before the session
+         * gives up with `ExposureRefused`.
+         *
+         * Three, not one: the sensor legitimately takes a frame or two to apply a change, and
+         * those settling frames come back at the *previous* exposure, which is short. Three is
+         * enough to let a settle finish and few enough that a device which really does clamp is
+         * caught in a couple of frames rather than after a whole night of two-minute discards.
+         */
+        const val REFUSE_AFTER_FRAMES = 3
     }
 }

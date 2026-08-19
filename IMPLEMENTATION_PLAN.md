@@ -83,7 +83,7 @@ Two consequences to accept deliberately:
 | 1B | 7 | 1 | **hardware-verified except what needs darkness** — see §5 and §1.7 |
 | 1C | 17 | 1 | **every task built.** Blocked on the field, not on code: darks have never once executed, and no 45-minute session has been shot |
 | 1D | 9 | 0 | **all nine built and photographed 2026-08-18** (§1.15). T-3.21's last piece waits on the session pane, which is now T-3.27 rather than T-6.1 |
-| 1E | 10 | 1 | **all ten built, and walked on the phone 2026-08-19** (§1.18, §1.19). T-3.36 met its acceptance whole. **T-3.33 and T-3.35's hard parts are demonstrated** — setup takes no frames, the camera stays closed, the dial moves in sixths and the length bound follows the compensated sub. What is unwalked: the naming prompt, a completed deletion, a failing sweep. A fourth defect — `KeyValue` crushing its label, since Phase 1C — was found by the owner and fixed (§1.19) |
+| 1E | 10 | 2 | **all ten built and walked on the phone 2026-08-19** (§1.18–§1.20). **T-3.28** and **T-3.36** met their acceptances whole; T-3.33 and T-3.35's hard parts are demonstrated. Four defects fixed, two of them predating the phase: `KeyValue` crushed its label whenever a value got long (§1.19), and **the sensor's exposure ceiling was being enforced when the hardware does not enforce it** (§1.20, **D-28**). Unwalked: the naming prompt, a failing sweep |
 | 2+ | outlined | 0 | not started |
 
 > **The `Ticked` column counts `[x]` only.** §0 ties that to an acceptance demonstrated on a real
@@ -835,6 +835,71 @@ wants a session nobody minds losing.
 
 ---
 
+## 1.20 The sensor's stated exposure ceiling is not enforced — measured 2026-08-19
+
+`SENSOR_INFO_EXPOSURE_TIME_RANGE` on the rear camera reports an upper bound of **49.6406 s**. T-3.35
+clamped to it, on the reasoning that asking for more "gets silence or a truncated frame, not an
+error — D-21's whole family". **That reasoning was an assumption from the Camera2 contract, which
+says out-of-range values are clamped, and the device disagrees with it.**
+
+Asked for 120 s through the capture path:
+
+```
+requested   120.000000000 s
+APPLIED     119.999987713 s      <- 12 us short, honestly reported
+25 MB DNG, background 165 ADU, gate accepted it
+```
+
+Repeated at 90 s after the change below: **89.999999662 s**. The ceiling is advertised, not
+enforced, and it was refusing exposures the hardware was perfectly willing to take.
+
+### This is not academic, because the trailing limit diverges at the pole
+
+The trailing limit scales as 1/cos(declination). On this lens — 2.0 µm pixels at 5.6 mm, so
+73.7 arcsec/px, 1.5 px of tolerance — it runs:
+
+| declination | trailing limit |
+|---|---|
+| 0° | 7.3 s (and the solver picked 7.4 s, which is the check that the arithmetic is right) |
+| 70° | 21.5 s |
+| **81.5°** | **49.7 s — crosses the stated ceiling** |
+| 85° | 84 s |
+| 88° | 210 s |
+
+**Above about dec 81.5° the sky permits longer subs than the stated ceiling allowed**, so every
+circumpolar target — a normal thing to shoot from northern latitudes — was capped by a number the
+sensor ignores. And the cap was in two places, not one: the compensation dial, and
+`SetupController.resolve`'s `maxExposureSeconds`, which capped the *automatic solve* as well.
+
+### What replaces the clamp
+
+**D-28**: ask, then verify. The clamp is gone from both places; the solver's ceiling becomes
+`max(stated, 240 s)` — a sanity bound about *dark current, aeroplanes and field rotation*, not about
+the sensor — and the other half of the solver's `min` is the trailing limit, which is the real
+constraint.
+
+The guarantee moves to where it can be measured rather than predicted: **`nextVerifiedFrame` already
+checked every frame's own metadata against the request** (D-21), and now, for requests past the
+stated ceiling, gives up with `ExposureRefused` instead of skipping. That distinction is the whole
+point. Skipping is right while the sensor settles and catastrophic if it never will — at 120 s a
+clamping device would discard a two-minute frame, then another, until the session budget was gone,
+and then report a **timeout**, which names the wrong problem entirely.
+
+`ExposureAttempts` holds the rule, in pure Kotlin with no Android imports, because it decides
+whether a night is abandoned. It carries one subtlety worth stating: **a frame skipped for its
+generation is not evidence of refusal.** The generation guard exists for darks — after the sensor
+restarts with the lens covered, frames from before the cover are still in flight, right exposure,
+wrong generation. Counting those would abandon every session that takes darks, which is precisely
+the opposite of the failure being guarded against.
+
+**No warning on screen.** A line about crossing a ceiling that is not enforced would be warning
+about nothing; the check that matters measures what the sensor did.
+
+**What is still unknown** is where the real ceiling is — **OI-23**. 90 s and 120 s both work; nobody
+has looked for the wall, and the app will now happily ask for up to 240 s.
+
+---
+
 ---
 
 ## 2. Decisions
@@ -867,6 +932,7 @@ wants a session nobody minds losing.
 | **D-25** | **The UI explains only what the user must decide.** Reasoning lives in KDoc and this document, never on screen. Consequence the user cannot deduce is not reasoning and stays | §1.15. Written after the settings screen shipped with paragraphs justifying dark mode, the camera permission and the storage location — none of them a decision anyone makes. The author's thinking in front of someone in a field at 2 a.m. is a cost with no reader | Low |
 
 | **D-26** | **The app deletes nothing on its own; the user may delete a session outright.** Deletion is explicit, confirmed, and names what is being lost | Amends **D-10**, which is about the app's own *judgement* — a rejected frame stays on disk because the app does not get to decide someone's data is worthless. A person clearing their own 3.6 GB session is not that, and a capture app with no way to free space is not honouring D-10 but hiding behind it | Low |
+| **D-28** | **The sensor's stated exposure ceiling is advertised, not enforced — so ask, then verify.** No clamp to `SENSOR_INFO_EXPOSURE_TIME_RANGE`; instead every frame's metadata is checked against the request, and past the stated ceiling a run of wrong exposures fails the session by name rather than being skipped | Measured 2026-08-19 (§1.20): the device returned 119.999987713 s for a 120 s request against a stated 49.6406 s maximum. Clamping refused exposures the hardware would take, and above dec 81.5° the *sky* permits longer subs than the ceiling allowed. Verification is also portable in a way a constant is not — it is correct on the phone that honours the request and on the one that does not, with neither special-cased. Leans on **D-21**, which already verifies every frame | Low — the clamp is two lines to restore |
 | **D-27** | **Nothing that costs frames or opens the camera starts because a screen appeared.** Measurements are begun by a control, and the screen says what one will cost before it is pressed | Reverses T-3.25's auto-solve. Arriving somewhere is not consent to spend the sensor: the frames are real, the phone warms, and an unexplained camera indicator on a screen the user is only passing through reads as the app misbehaving. The rule generalises, because every future screen with a measurement behind it meets the same temptation | Low |
 
 ---
@@ -1757,7 +1823,7 @@ changes whether someone can run one without being surprised.
   **Remaining:** the scan has never run against a real root, so OI-5 is still open; and the pane
   has not been photographed.
 
-- [~] **T-3.28** **Delete a session — and nothing else, ever.** Offered on a row and in the detail,
+- [x] **T-3.28** **Delete a session — and nothing else, ever.** Offered on a row and in the detail,
   with the frame count and the size on disk stated in the confirmation, deleting the folder and
   everything under it. Multi-select (T-3.29) makes it a batch.
   **D-26** amends **D-10**, which is otherwise contradicted by this task existing.
@@ -1770,8 +1836,13 @@ changes whether someone can run one without being surprised.
   well — a name that passes the guard could still resolve outside the root through a symlink, and
   this is the one call in the app that can destroy a night's work. A test deletes `../DCIM` and
   asserts the photos are still there.
-  **Remaining:** never run against SAF, where `deleteDocument` may refuse. The code reports a
-  refusal per session rather than assuming success, but that path is untested on a provider.
+  **Done 2026-08-19, on the phone.** A 24 MB probe session was deleted through the pane: the
+  confirmation read `overexposure-probe · 1 light · 24 MB`, the row went, the pane went to
+  `4 ON THIS PHONE`, and the folder was gone from disk — with the four real field sessions beside
+  it untouched. The confirmation was also opened on one of those and cancelled, which is the other
+  half of the acceptance.
+  **Still untested:** SAF, where `deleteDocument` may refuse. The code reports a refusal per
+  session rather than assuming success, but that path has never met a document provider.
 
 - [~] **T-3.29** **Select sessions.** Multi-select in the pane, with the count stated and the
   selection surviving a scroll and a rotation.
@@ -1894,13 +1965,19 @@ changes whether someone can run one without being surprised.
   marked at whole stops (−4 −3 −2 −1 0 +1 +2 +3 +4), moving in **sixths of a stop**, under a title
   that says what it compensates.
   Two things fall out of the wider range and both are acceptance criteria, not notes:
-  - the compensated sub must **clamp to the sensor's maximum exposure** — 49.64 s here (§1.5) —
-    rather than asking for one the HAL will silently refuse or truncate (D-21's whole family);
+  - ~~the compensated sub must **clamp to the sensor's maximum exposure** — 49.64 s here (§1.5) —
+    rather than asking for one the HAL will silently refuse or truncate (D-21's whole family);~~
+    **Reversed 2026-08-19 by measurement (§1.20, D-28).** The premise was wrong: the ceiling is
+    advertised, not enforced, and the device returned 119.999987713 s for a 120 s request. The
+    clamp was refusing exposures the hardware would take — and above dec 81.5° the sky asks for
+    them. Replaced by a per-frame check that measures what the sensor did;
   - `SetupController.maxFrames` derives the session-length slider's upper bound from
     `solution.chosen.exposureSeconds`, the **uncompensated** sub, so the 2.5-hour bound is already
     wrong by up to 4× at ±2 stops and would be wrong by 16× at ±4.
-  *Accept:* the scale reads −4 to +4 with the stops marked, moves in sixths, never asks for an
-  exposure the sensor cannot take, and the length slider's range follows the compensated sub.
+  *Accept:* the scale reads −4 to +4 with the stops marked, moves in sixths, and the length
+  slider's range follows the compensated sub. **Exposures past the sensor's stated ceiling are
+  asked for and verified rather than refused** (D-28) — a frame that comes back at the wrong
+  exposure fails the session by name.
   **Built 2026-08-19, and both defects are fixed and tested.** The arithmetic moved to
   `exposure/ExposureCompensation.kt` precisely so it could be: `SetupController` needs a `Context`
   and cannot be unit-tested, and these two are the kind of defect that looks like an ordinary
@@ -1910,8 +1987,14 @@ changes whether someone can run one without being surprised.
   exposure"* rather than letting the dial move while the number stops. A camera reporting **no**
   ceiling is not clamped to zero, which would have been a worse failure than not clamping.
   `compensate` also re-clamps the frame count, since a longer sub can put it past the new bound.
-  **Remaining:** the dial has not been dragged on glass. Whether sixths feel right under a thumb is
-  a judgement about a physical gesture.
+  **Dragged on glass 2026-08-19** (§1.19): `−3 5/6 stops`, the marked scale, and `1 frame to
+  147 min` proving the length bound follows the compensated sub.
+  **The clamp was then removed** (§1.20, **D-28**) when the device turned out to honour 120 s
+  against a stated 49.64 s ceiling. `ExposureCompensation.apply` no longer clamps,
+  `solverCeilingSeconds` lets the solver past the stated maximum up to a 240 s sanity bound, and
+  `ExposureAttempts` fails a session whose frames come back at the wrong exposure.
+  **Remaining:** whether sixths feel right under a thumb is a judgement about a physical gesture,
+  and nobody has shot a circumpolar target — the case the reversal exists for.
 
 - [x] **T-3.36** **Say what the exposure is, and what it becomes.** `as solved` is replaced by the
   solved sub as a time, and moving the control shows the change rather than the destination:
@@ -2049,7 +2132,7 @@ changes whether someone can run one without being surprised.
 ## 14. Open issues
 
 **Needed-by** is the phase that cannot finish without a resolution.
-**Status: 12 resolved · 8 open pending measurement · 2 deferred · 0 blocking.**
+**Status: 12 resolved · 9 open pending measurement · 2 deferred · 0 blocking.**
 An issue is only "open" here if it can actually change the shape of the code. Questions with an
 obvious default and a defined experiment are listed with that default already in force, so they
 never block work.
@@ -2072,6 +2155,7 @@ when the number comes back.
 | **OI-19** | **Will the hidden cameras also *capture*, not just open?** All five IDs open, but only camera 0 has completed a real RAW capture. An ID that opens can still fail session configuration or never deliver a frame | Assume the tele and ultrawide work; verify before promising them to the user | Run the T-1.4 capture against IDs 2, 3 and 4 — cheap now the harness exists | 7 |
 | **OI-20** | **Screen-off capture needs a foreground service, not just a surface-free session.** Measured 2026-08-17: the framing loop is frozen a few seconds after the screen goes off, process still alive. D-22 dissolved the *surface* problem but not the *lifecycle* one (§1.7) | Assume the `camera`-type FGS of D-12 is sufficient — it is what the type exists for | T-3.6's own acceptance: a 45-minute sequence with the screen off and the app backgrounded, then repeated with battery optimisation left on | 1C |
 | **OI-22** | **A configured session occasionally delivers no frames at all.** Measured 2026-08-18 (§1.16): one session in 78 returned 0 of 2 frames inside a 12.4 s budget, immediately after a rapid open/close loop, while the other 77 configured in ~100 ms and delivered at once. It opens, configures and closes cleanly — only the frames never arrive, so nothing throws and nothing downstream is told anything is wrong | Accept and log. At 1 in 78 it costs a framing preview that stays black for a few seconds, not a session | Re-run `--es diag lifecycle --ei sessions 30` several times over and count. If it reproduces, the remedy is a deadline on the first frame and a re-configure, which is a shape change to `FramingSession` rather than a tuning constant | 1B |
+| **OI-23** | **Where is the real exposure ceiling?** `SENSOR_INFO_EXPOSURE_TIME_RANGE` says 49.6406 s and the device honoured both 90 s and 120 s (§1.20), so the stated bound is advertised rather than enforced — but nobody has looked for the wall | The 240 s sanity bound in `ExposureCompensation`, which is about dark current and aeroplanes rather than about the sensor. Frames past the stated ceiling are verified per frame, so a device that does clamp fails by name instead of silently | Bisect upward from 120 s through the diag path — `--es diag capture --ei exposureMs N` — and read the applied exposure back out of `session.json`. Each probe costs its own exposure, so it is minutes, not hours. Worth pairing with a dark-current reading at each step, since that is what makes a long sub bad long before the sensor refuses it | 1C |
 | **OI-4** | Framing preview exposure length | 1 s, boost to 4 s, auto-stop after 2 min idle — **now implemented as the default** (T-2.2), so the experiment is a tuning pass rather than a build | Real-sky trial: shortest exposure at which framing is workable | 1B |
 | **OI-5** | SAF write throughput and root-scan cost | **File baseline measured 2026-08-18: 200 × 24 MiB at 570 MiB/s (0.042 s/file), root scan 0.001 s.** SAF half still unmeasured — it needs a folder picked through the UI, which adb cannot do. The scan figure is from a 2-session root, not the ~12 the issue asks for, so it does not yet test D-5's premise | T-0.5: the same run against `SafSessionStore`, and a root with ~12 sessions. **T-3.27 both makes this bite and takes the measurement**: the session pane reads every `session.json` in the root and sums the bytes under every folder, where everything built so far reads five logs and no sizes — and `SessionCatalogue.all()` times itself on every open, surfacing the figure above 250 ms. So the experiment now runs whenever the pane is used; what is missing is a root with ~12 sessions to run it against | 0 |
 | **OI-9** | Is the OEM `SENSOR_NOISE_PROFILE` good enough to pick a sane ISO at Functional tier? | Yes — use it. **Half-answered 2026-08-17: the profile is a real per-ISO measurement, not a stub** — nine distinct read-noise values across nine ISOs, falling smoothly from 5.64 e⁻ at ISO 50 to 2.07 e⁻ at ISO 3200 (§1.8). No dual-gain step is visible; the decline is the ordinary ADC-noise-over-gain trend. What remains is whether the *absolute* figures are right, which needs the Phase 6 bias series to compare against | **Trigger:** run the T-3.3 solver twice, once on OEM data and once on read noise measured from a quick bias pair. If the chosen ISO differs by more than one stop, promote the §4.1.1 noise model out of Phase 6 into 1C | 1C |
@@ -2114,12 +2198,12 @@ when the number comes back.
 | **Field** | The phase checkpoints — a tripod, a dark sky, and a completed session | Manual, logged in the changelog |
 | **External** | DNGs open in Siril/RawTherapee (T-1.5); on-device master compared to Siril/DSS on identical subs (T-5.7) | Desktop |
 
-**293 JVM tests as of 2026-08-19** — qualification 21, session naming 17, star detection 14,
+**300 JVM tests as of 2026-08-19** — qualification 21, session naming 17, star detection 14,
 session planner 14, frame gate 14, leak analysis 13, session pane store 12, session log 12, preview
-stack 11, permissions 11, focus sweep 11, exposure solver 11, astro 11, exposure compensation 10,
-DNG reader 10, camera picker 10, trailing limit 9, stream planning 8, noise model 8, JSON 8, session
-selection 7, session recovery 7, navigation 7, focus monitor 7, autostretch 7, predicted histogram 6,
-image rotation 5, frame description 5, session pointing 4, clock 3.
+stack 11, permissions 11, focus sweep 11, exposure solver 11, astro 11, DNG reader 10, camera picker
+10, exposure compensation 10, trailing limit 9, stream planning 8, noise model 8, JSON 8, exposure
+attempts 7, session selection 7, session recovery 7, navigation 7, focus monitor 7, autostretch 7,
+predicted histogram 6, image rotation 5, frame description 5, session pointing 4, clock 3.
 
 **The 46 added for Phase 1E are worth naming, because two of them describe defects that were
 already live and one describes a defect a test found.** *The frame bound follows the compensated sub,
@@ -2129,6 +2213,14 @@ date is not mistaken for the default* is the third, which nobody would have foun
 Two more exist to stop a specific regression rather than to describe a feature: *delete cannot escape
 the root*, which deletes `../DCIM` and asserts the photos survive, and *names that no longer exist
 are dropped*, without which a batch delete leaves a count claiming sessions that are gone.
+
+**The 7 in `ExposureAttempts` are the newest, and they guard a night rather than a feature** (§1.20).
+The rule decides when a run of unusable frames stops being *settling* and starts being *refusal*,
+which is what makes it safe to ask for exposures past the sensor's stated ceiling. The one worth
+naming is *a frame skipped only for its generation is not evidence of refusal*: the generation guard
+exists for darks, where frames from before the lens was covered are still in flight with the right
+exposure and the wrong generation, and counting those would abandon every session that takes darks —
+the exact opposite of the failure the rule guards against.
 
 The 13 that closed T-1.3 are an odd entry in that list, because they test **a measurement rather
 than the app** — whether a run of descriptor counts is a leak. They are here for the reason the
@@ -2182,6 +2274,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-08-19 | **The sensor's exposure ceiling is advertised, not enforced — clamp removed (§1.20, D-28).** Asked "why is 50 s the limit?", the answer turned out to be "it is not". `SENSOR_INFO_EXPOSURE_TIME_RANGE` reports 49.6406 s; the device returned **119.999987713 s for a 120 s request**, and 89.999999662 s for a 90 s one. T-3.35's clamp rested on an assumption from the Camera2 contract rather than on a measurement, and it was refusing exposures the hardware would take — in **two** places, since `SetupController.resolve` capped the automatic solve as well. That is not academic: the trailing limit scales as 1/cos(dec), so **above dec 81.5° on this lens the sky permits longer subs than the ceiling allowed**, and every circumpolar target was capped by a number the sensor ignores. The clamp is gone; the solver's ceiling becomes `max(stated, 240 s)`, a sanity bound about dark current, aeroplanes and field rotation rather than about the sensor. **What replaces it is verification, not trust**: `nextVerifiedFrame` already checked every frame's metadata against the request (**D-21**), and past the stated ceiling it now fails with `ExposureRefused` instead of skipping — because skipping is right while the sensor settles and catastrophic if it never will, discarding two-minute frames until the session budget is gone and then reporting a *timeout*, which names the wrong problem. The rule lives in `ExposureAttempts`, pure Kotlin, 7 tests, and carries the subtlety that **a frame skipped for its generation is not evidence of refusal** — that path is the darks path, and counting it would abandon every session that takes darks. No warning on screen: a line about crossing a ceiling that is not enforced would warn about nothing. **OI-23** opened for where the real wall is. 300 JVM tests. **T-3.28 ticked** — a probe session was deleted through the pane (`overexposure-probe · 1 light · 24 MB`, gone from the list and from disk) with the four real field sessions untouched. |
 | 2026-08-19 | **Phase 1E walked on the phone, and `KeyValue` fixed (§1.19).** The owner found the defect first: in session setup with the storage warning showing, `Storage` rendered **one letter per line**. The cause is in `KeyValue` and predates Phase 1E by three phases — the value was unweighted, so a `Row` measured it first against the full width and left the weighted label a few pixels. It only ever showed when it mattered, because the strings long enough to trigger it are the ones the storage and battery budgets emit *when the session will not fit*. Both sides are weighted now, 1 : 1.7, value end-aligned; the rule is that the row wraps the value rather than crushing the label. Reproduced and confirmed fixed on device at 17010 × 519 ms wanting 399.9 GB of 46.1 GB free. Two smaller ones of my own in the new pane: an unnamed session printed `started 20:39` under a row titled `20:39`, and the `Captured` badge floated mid-row against a wrapped description — the badge is top-aligned and the redundant line suppressed. **The walk confirmed T-3.33 outright** (arriving at setup takes no frames, `dumpsys media.camera` shows no open device, and the cost is stated before the button) **and T-3.35's substance** (sixths, a −4…+4 scale, and `1 frame to 147 min` proving the length bound follows the compensated sub). **T-3.36 is ticked** — `7.4 s per frame` at zero and `7.4 s → 519 ms per frame` when moved. Nothing was deleted: the confirmation was opened on a real 96 MB capture and cancelled. |
 | 2026-08-19 | **Phase 1E built — all ten tasks, and three defects (§1.18).** `All sessions` opens the sessions rather than a file manager (**T-3.27**, pulling T-6.1/T-6.3 out of Phase 4), with a detail screen carrying the frame log, the derivation, the pointing and the path; sessions can be deleted singly or as a batch behind a confirmation that names the frames and the bytes (**T-3.28**, **T-3.29**, **D-26**); a session is named at Start and named for the day when it is not (**T-3.30**); focus by hand became a disclosure that opens itself when a sweep fails (**T-3.31**); the cost of no stored focus is stated under Continue from a single authored sentence (**T-3.32**); the sky is measured when asked, with the price stated first (**T-3.33**, **D-27**); the histogram has a title, a labelled clipping wall and a named axis (**T-3.34**); exposure compensation is ±4 stops in sixths under a title that says what it compensates, reading `3.2 s → 4.5 s per frame` (**T-3.35**, **T-3.36**). **T-3.35's two predicted defects were both real** and are fixed in a new pure `ExposureCompensation`, tested: the length slider's bound now follows the compensated sub (2244 frames vs 562 at +2 stops — the 4× that was wrong), and the sub is clamped to the sensor's 49.64 s ceiling with the clamp stated on screen. **A third defect was found by a test, not by reading**: the rule keeping the date out of a folder name twice also swallowed `2026-08-18-comet`, a chosen name, dropping it from the folder entirely. `session.json` gained a `label` field, since the folder deliberately does not always carry the name. 293 JVM tests, up 46. **Nothing has run on the phone** — the device was not attached, so all ten stay `[~]`, and four acceptances (T-3.33's closed camera, T-3.31's failing sweep, OI-5's scan cost, SAF deletion) are what `[~]` is carrying. One deviation, argued in §1.18: T-3.30's `Not now` returns without starting rather than starting under the day's name. |
 | 2026-08-19 | **Audit pass, and two entries that had been wrong for three days.** §14's tally said 13 issues resolved where the table holds 12, and **Blocking now** still read "the one remaining gate is a measurement that takes minutes once T-1.1 exists — see OI-6", which stopped being true on 2026-08-16 when T-1.1 was built and OI-6 closed favourably; it now names the three issues a single 45-minute session closes together. The header had said `Last updated: 2026-08-16` through two whole phases. §15's test count caught up (234 → **247**), and the `--es diag` harness is listed by its modes rather than by the one file it started in. Phase 4's **T-6.1**, **T-6.3** and **T-6.7** now say which parts of them Phase 1E takes and which parts genuinely cannot come early — the cached index waits on OI-5, thumbnails and "delete subs, keep masters" wait on a Phase 3 master, and manual include/exclude waits on something that reads the flags. No task changed state. |

@@ -19,6 +19,31 @@ import java.io.OutputStream
 import java.util.concurrent.Executor
 
 /**
+ * The sensor was asked for an exposure and kept returning a different one (D-21).
+ *
+ * **Why this exists rather than a clamp.** `SENSOR_INFO_EXPOSURE_TIME_RANGE` is advertised, not
+ * enforced: the reference device returned 119.999987713 s for a 120 s request against a stated
+ * maximum of 49.6406 s (§1.20). So the app no longer refuses long exposures on the strength of a
+ * number the hardware ignores — it asks, and then checks what actually arrived.
+ *
+ * **Why it is not just a timeout.** [SequenceSession.nextVerifiedFrame] skips frames that do not
+ * match, which is correct while the sensor settles and catastrophic if it never will: at 120 s a
+ * device that silently clamps would discard a two-minute frame, then another, then another, until
+ * the session budget was gone — and report a timeout, which names the wrong problem. Giving up
+ * after a few frames turns "the whole night produced nothing and I don't know why" into one line
+ * that says which exposure was asked for and which one came back.
+ */
+class ExposureRefused(
+    val requestedNs: Long,
+    val appliedNs: Long?,
+) : Exception(
+    "the sensor returned %s for a request of %s — it will not take this exposure".format(
+        appliedNs?.let { "%.3f s".format(it / 1e9) } ?: "no exposure metadata",
+        "%.3f s".format(requestedNs / 1e9),
+    ),
+)
+
+/**
  * The capture-side sibling of [FramingSession] (T-3.6/T-3.7).
  *
  * They look similar and differ in the three places that matter, all of which follow from one
@@ -209,12 +234,19 @@ class SequenceSession private constructor(
      *
      * Frames that do not match are closed and skipped — the sensor takes a few frames to apply a
      * change, and a frame taken under the old settings is not a sub, it is a warm-up.
+     *
+     * @param refuseAfter how many consecutive frames may come back at the wrong exposure before
+     *   this gives up with [ExposureRefused]. Null keeps the original behaviour: skip until the
+     *   timeout, which is right when the sensor is merely settling. Pass a number when the request
+     *   is one the device might decline outright — see [ExposureRefused].
      */
     suspend fun nextVerifiedFrame(
         timeoutMs: Long,
         exposureNs: Long,
         minGeneration: Int = 0,
+        refuseAfter: Int? = null,
     ): CapturedFrame = withTimeout(timeoutMs) {
+        val attempts = ExposureAttempts(refuseAfter)
         while (true) {
             val frame = incoming.receive()
             val settled = ManualRequest.exposureMatches(frame.appliedExposureNs, exposureNs)
@@ -222,12 +254,18 @@ class SequenceSession private constructor(
             // restarted — for darks, where a frame taken before the lens was covered would
             // otherwise be filed as a dark and quietly poison the master.
             if (settled && frame.generation >= minGeneration) return@withTimeout frame
+
+            val giveUp = attempts.skipped(settled, frame.appliedExposureNs)
             Log.i(
                 TAG,
                 "skipping frame: exposure ${frame.appliedExposureNs} ns for $exposureNs ns, " +
                     "generation ${frame.generation} < $minGeneration",
             )
             frame.close()
+
+            if (giveUp) {
+                throw ExposureRefused(exposureNs, attempts.lastAppliedNs)
+            }
         }
         @Suppress("UNREACHABLE_CODE")
         error("unreachable")

@@ -159,26 +159,20 @@ class SetupController(
     }
 
     /**
-     * The sub actually planned: the solved answer shifted by [exposureStops], **clamped to the
-     * sensor's longest exposure**.
+     * The sub actually planned: the solved answer shifted by [exposureStops].
      *
-     * The clamp is T-3.35's. Without it, +4 stops on a 4 s solve asks for 64 s from a sensor whose
-     * ceiling is 49.64 s (§1.5), and this HAL answers an impossible request by quietly truncating
-     * rather than by failing — so the plan, the storage estimate and the end time would all be
-     * computed from an exposure that was never going to happen.
+     * **Unclamped.** This used to be held at `SENSOR_INFO_EXPOSURE_TIME_RANGE`'s upper bound on the
+     * assumption that the HAL would truncate anything longer. Measured 2026-08-19, it does not: the
+     * device returned 119.999987713 s for a 120 s request against a stated ceiling of 49.6406 s
+     * (§1.20). The guarantee now comes from `SequenceSession`'s per-frame verification, which
+     * checks what the sensor actually did instead of predicting it.
      */
     val effectiveSubSeconds: Double?
         get() = solution?.chosen?.exposureSeconds?.let {
-            ExposureCompensation.apply(it, exposureStops, sensorMaxSeconds)
+            ExposureCompensation.apply(it, exposureStops)
         }
 
-    /** True when the sensor's ceiling, not the dial, is deciding the sub — stated on screen. */
-    val exposureClamped: Boolean
-        get() = solution?.chosen?.exposureSeconds?.let {
-            ExposureCompensation.isClampedAt(it, exposureStops, sensorMaxSeconds)
-        } == true
-
-    /** `SENSOR_INFO_EXPOSURE_TIME_RANGE`'s upper bound, and the solver's own ceiling. */
+    /** `SENSOR_INFO_EXPOSURE_TIME_RANGE`'s upper bound — advertised, not enforced (§1.20). */
     private val sensorMaxSeconds: Double
         get() = camera?.exposureMaxSeconds ?: DEFAULT_MAX_EXPOSURE_SECONDS
 
@@ -269,7 +263,7 @@ class SetupController(
             noiseModel = measured.model,
             trailing = trailing,
             isoCandidates = SkyProbe.isoLadder(profile.isoMin, profile.isoMax),
-            maxExposureSeconds = sensorMaxSeconds,
+            maxExposureSeconds = ExposureCompensation.solverCeilingSeconds(sensorMaxSeconds),
             dualGainIso = measured.dualGainIso,
             pinnedIso = pinnedIso,
         )

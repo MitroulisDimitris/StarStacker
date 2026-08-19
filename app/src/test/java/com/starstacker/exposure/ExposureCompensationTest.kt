@@ -6,32 +6,39 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
- * T-3.35 — the exposure dial, and the two defects the wider range exposed.
- *
- * The first two tests below are the ones that matter: both describe behaviour that was **already
- * wrong at ±2 stops** and would have been four times wronger at ±4, and neither is visible from a
- * screenshot. A sub clamped by the sensor and a frame bound computed from the wrong exposure both
- * look like ordinary numbers.
+ * T-3.35 — the exposure dial, the defect the wider range exposed, and the clamp that was removed
+ * once the device contradicted the assumption behind it.
  */
 class ExposureCompensationTest {
 
-    /** The reference device's ceiling, measured (§1.5). */
-    private val sensorMax = 49.64
+    /** What the reference device *says* its ceiling is — advertised, not enforced (§1.20). */
+    private val statedMax = 49.6406
 
     @Test
-    fun `the compensated sub never exceeds the sensor's longest exposure`() {
-        // +4 stops on a 4 s solve asks for 64 s. This HAL answers an impossible request by
-        // truncating rather than by failing, so an unclamped number would have propagated into
-        // the plan, the storage estimate and the end time — all describing a frame that was
-        // never going to be taken.
-        assertEquals(sensorMax, ExposureCompensation.apply(4.0, 4.0, sensorMax), 1e-9)
-        assertTrue(ExposureCompensation.isClampedAt(4.0, 4.0, sensorMax))
+    fun `the compensated sub is not clamped to the sensor's stated maximum`() {
+        // The reversal. This used to clamp to `statedMax` on the assumption that the HAL would
+        // truncate anything longer; measured 2026-08-19, it returned 119.999987713 s for a 120 s
+        // request. Clamping refused exposures the hardware was willing to take — and past
+        // dec 81.5 the sky permits longer subs than the stated ceiling does.
+        assertEquals(64.0, ExposureCompensation.apply(4.0, 4.0), 1e-9)
+        assertEquals(16.0, ExposureCompensation.apply(4.0, 2.0), 1e-9)
+        assertEquals(1.0, ExposureCompensation.apply(4.0, -2.0), 1e-9)
     }
 
     @Test
-    fun `a sub inside the sensor's range is left alone`() {
-        assertEquals(16.0, ExposureCompensation.apply(4.0, 2.0, sensorMax), 1e-9)
-        assertFalse(ExposureCompensation.isClampedAt(4.0, 2.0, sensorMax))
+    fun `the solver may go past the stated ceiling but not past the sanity bound`() {
+        // The stated ceiling is a floor on what we will consider, never a cap: the other half of
+        // the solver's `min` is the trailing limit, which is the real constraint.
+        val ceiling = ExposureCompensation.solverCeilingSeconds(statedMax)
+        assertTrue(ceiling > statedMax) { "was $ceiling" }
+        assertEquals(ExposureCompensation.SANITY_CEILING_SECONDS, ceiling, 1e-9)
+    }
+
+    @Test
+    fun `a camera claiming more than the sanity bound keeps its own ceiling`() {
+        // The bound is a floor, not a cap on the hardware — a sensor that genuinely offers ten
+        // minutes should not be talked down to four by a constant of ours.
+        assertEquals(600.0, ExposureCompensation.solverCeilingSeconds(600.0), 1e-9)
     }
 
     @Test
@@ -45,7 +52,7 @@ class ExposureCompensationTest {
 
         val atZero = ExposureCompensation.maxFrames(solved, overhead, hours)
         val atPlusTwo = ExposureCompensation.maxFrames(
-            ExposureCompensation.apply(solved, 2.0, sensorMax), overhead, hours,
+            ExposureCompensation.apply(solved, 2.0), overhead, hours,
         )
         // 9000 s of night at 4.01 s and at 16.01 s a frame.
         assertEquals(2244, atZero)
@@ -56,26 +63,19 @@ class ExposureCompensationTest {
     }
 
     @Test
-    fun `the frame bound respects the clamp too`() {
-        // Past the ceiling the sub stops growing, so the bound stops shrinking. Without the clamp
-        // inside `apply` this would keep falling for exposures the sensor cannot take.
-        val fourStops = ExposureCompensation.apply(8.0, 4.0, sensorMax)
-        val threeStops = ExposureCompensation.apply(8.0, 3.0, sensorMax)
-        assertEquals(sensorMax, fourStops, 1e-9)
-        assertEquals(sensorMax, threeStops, 1e-9)
+    fun `a camera reporting no usable ceiling still gets the sanity bound`() {
+        // `exposureMaxSeconds` can be absent or nonsense. Falling back to 0 would cap every sub at
+        // nothing, which is a far worse failure than not capping at all.
         assertEquals(
-            ExposureCompensation.maxFrames(threeStops, 0.01, 2.5),
-            ExposureCompensation.maxFrames(fourStops, 0.01, 2.5),
+            ExposureCompensation.SANITY_CEILING_SECONDS,
+            ExposureCompensation.solverCeilingSeconds(0.0),
+            1e-9,
         )
-    }
-
-    @Test
-    fun `a camera that reports no ceiling is not clamped to zero`() {
-        // `exposureMaxSeconds` can be absent. Treating a missing ceiling as 0 would clamp every
-        // sub to nothing, which is a worse failure than not clamping at all.
-        assertEquals(64.0, ExposureCompensation.apply(4.0, 4.0, 0.0), 1e-9)
-        assertEquals(64.0, ExposureCompensation.apply(4.0, 4.0, Double.NaN), 1e-9)
-        assertFalse(ExposureCompensation.isClampedAt(4.0, 4.0, 0.0))
+        assertEquals(
+            ExposureCompensation.SANITY_CEILING_SECONDS,
+            ExposureCompensation.solverCeilingSeconds(Double.NaN),
+            1e-9,
+        )
     }
 
     @Test

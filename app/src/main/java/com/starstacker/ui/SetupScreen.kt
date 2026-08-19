@@ -600,18 +600,9 @@ private fun ExposureCompensationControl(controller: SetupController) {
         ),
     )
     StopScale(stops)
-    // The clamp, said out loud. Otherwise the dial keeps moving while the number stops, and the
-    // user cannot tell whether the app or the sensor refused (T-3.35).
-    if (controller.exposureClamped) {
-        Spacer(Modifier.height(4.dp))
-        Mono(
-            "held at the sensor's longest exposure, %s — the dial cannot go past it".format(
-                ExposureSolver.formatSeconds(effective ?: 0.0),
-            ),
-            color = Night.Warn,
-            size = 10.sp,
-        )
-    }
+    // No note about the sensor's stated ceiling. It is advertised rather than enforced (§1.20), so
+    // a line warning about crossing it would be warning about nothing — and the check that matters
+    // is `SequenceSession`'s, which measures what the sensor did rather than predicting it.
     controller.compensatedTrailPx?.takeIf { it > controller.solution!!.trailing.tolerancePx * 1.05 }
         ?.let {
             Mono(
