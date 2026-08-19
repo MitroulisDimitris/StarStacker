@@ -109,14 +109,66 @@ object ExposureCompensation {
         }
 
     /**
+     * How long one frame really costs, wall clock, at this sub length — measured 2026-08-19.
+     *
+     * **A sub past `SENSOR_INFO_MAX_FRAME_DURATION` costs about 2.6× its own exposure**, and one
+     * below it costs exactly its exposure. Measured cadence between consecutive frames:
+     *
+     * | sub | frame duration limit | gap between frames |
+     * |---|---|---|
+     * | 0.951 s | 49.64 s | 1.00× (a real session, 14 lights) |
+     * | 7.399 s | 49.64 s | 1.00× (two real sessions, 105 and 49 lights) |
+     * | 40 s | 49.64 s | 1.00× |
+     * | 60 s | 49.64 s | **2.89×, 2.01×, 2.87×** |
+     *
+     * So `SENSOR_INFO_MAX_FRAME_DURATION` — the sibling of the exposure ceiling that §1.20 showed
+     * is not enforced — turns out to describe something real after all: the sensor sustains a
+     * *repeating* stream up to that frame duration, and past it spends two or three sensor periods
+     * per delivered frame. The exposure ceiling governs one frame; this governs the cadence.
+     *
+     * That distinction matters because the app now lets a user ask for subs past the ceiling
+     * (**D-28**). Without this, a plan at 60 s subs would count 60 s a frame and take 156, and the
+     * session length, the end time and the storage estimate would all be out by the same 2.6× —
+     * exactly the class of defect T-3.35 fixed for the frame-count bound.
+     */
+    fun frameCostSeconds(
+        subSeconds: Double,
+        maxFrameDurationSeconds: Double?,
+        overheadSeconds: Double,
+    ): Double {
+        val limit = maxFrameDurationSeconds?.takeIf { it.isFinite() && it > 0.0 }
+            ?: return subSeconds + overheadSeconds
+        return if (subSeconds > limit) {
+            subSeconds * LONG_SUB_CADENCE_FACTOR
+        } else {
+            subSeconds + overheadSeconds
+        }
+    }
+
+    /**
+     * The measured penalty past the frame-duration limit: 2.89, 2.01 and 2.87 across three
+     * consecutive 60 s frames, so 2.6 is the mean rather than a round number chosen for looks.
+     *
+     * It is deliberately **not** rounded down. The spread is real — the sensor spends two or three
+     * periods per frame and it is not obvious which — and a session planner that under-promises
+     * the clock finishes early, while one that over-promises it runs into the dawn.
+     */
+    const val LONG_SUB_CADENCE_FACTOR = 2.6
+
+    /**
      * The most frames the session-length slider offers: whatever fills [hours] at this sub length,
      * so the right-hand end is always the same amount of *night* rather than the same number.
      *
      * Takes the **compensated** sub. That is the whole fix: the bound has to follow the frame that
      * will actually be shot, or the slider counts one exposure and promises another.
      */
-    fun maxFrames(subSeconds: Double, overheadSeconds: Double, hours: Double): Int {
-        val perFrame = subSeconds + overheadSeconds
+    fun maxFrames(
+        subSeconds: Double,
+        overheadSeconds: Double,
+        hours: Double,
+        maxFrameDurationSeconds: Double? = null,
+    ): Int {
+        val perFrame = frameCostSeconds(subSeconds, maxFrameDurationSeconds, overheadSeconds)
         if (perFrame <= 0.0 || !perFrame.isFinite()) return 2
         return ((hours * 3600.0) / perFrame).toInt().coerceAtLeast(2)
     }

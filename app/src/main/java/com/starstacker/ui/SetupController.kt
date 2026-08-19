@@ -135,6 +135,7 @@ class SetupController(
             subSeconds = effectiveSubSeconds ?: 10.0,
             overheadSeconds = MEASURED_OVERHEAD_SECONDS,
             hours = MAX_SESSION_HOURS,
+            maxFrameDurationSeconds = maxFrameDurationSeconds,
         )
 
     fun chooseFrameCount(frames: Int) {
@@ -175,6 +176,13 @@ class SetupController(
     /** `SENSOR_INFO_EXPOSURE_TIME_RANGE`'s upper bound — advertised, not enforced (§1.20). */
     private val sensorMaxSeconds: Double
         get() = camera?.exposureMaxSeconds ?: DEFAULT_MAX_EXPOSURE_SECONDS
+
+    /**
+     * `SENSOR_INFO_MAX_FRAME_DURATION`, which unlike the exposure ceiling **is** enforced — as a
+     * cadence rather than as a refusal. Past it a frame costs about 2.6× its own exposure (§1.21).
+     */
+    private val maxFrameDurationSeconds: Double?
+        get() = camera?.maxFrameDurationNs?.let { it / 1e9 }
 
     /** How far past the trailing budget the compensated sub goes, in pixels of elongation. */
     val compensatedTrailPx: Double?
@@ -285,9 +293,16 @@ class SetupController(
             batteryPercent = batteryPercent(),
             startEpochMs = System.currentTimeMillis(),
             rotationRateArcsecPerSec = pointing?.fieldRotationArcsecPerSec,
-            // Measured 2026-08-17: 2 ms. The DNG write hides behind the next exposure, so the
-            // planner does not need to reserve time it will not spend (§1.9).
-            overheadSeconds = MEASURED_OVERHEAD_SECONDS,
+            // Measured 2026-08-17: 2 ms, and confirmed at 1.00× cadence on three real sessions
+            // (§1.21). The DNG write hides behind the next exposure, so the planner does not need
+            // to reserve time it will not spend (§1.9) — *below the frame-duration limit*. Past it
+            // the sensor spends two or three periods per frame, so the overhead becomes a
+            // multiple of the sub rather than a constant.
+            overheadSeconds = ExposureCompensation.frameCostSeconds(
+                subSeconds = effectiveSubSeconds ?: chosen.exposureSeconds,
+                maxFrameDurationSeconds = maxFrameDurationSeconds,
+                overheadSeconds = MEASURED_OVERHEAD_SECONDS,
+            ) - (effectiveSubSeconds ?: chosen.exposureSeconds),
         )
     }
 

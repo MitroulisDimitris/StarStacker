@@ -79,6 +79,37 @@ class ExposureCompensationTest {
     }
 
     @Test
+    fun `a sub below the frame-duration limit costs its own exposure`() {
+        // Confirmed on three real sessions at 0.951 s and 7.399 s, and a probe at 40 s: the gap
+        // between consecutive frames is 1.00x the sub (§1.21).
+        assertEquals(7.409, ExposureCompensation.frameCostSeconds(7.399, 49.64, 0.01), 1e-9)
+        assertEquals(40.01, ExposureCompensation.frameCostSeconds(40.0, 49.64, 0.01), 1e-9)
+    }
+
+    @Test
+    fun `a sub past the frame-duration limit costs about 2 point 6 times its exposure`() {
+        // Measured at 60 s against a 49.64 s limit: gaps of 2.89x, 2.01x and 2.87x. Without this
+        // a 60 s plan would count 60 s a frame and take 156 — the session length, the end time
+        // and the storage estimate all out by the same factor.
+        assertEquals(156.0, ExposureCompensation.frameCostSeconds(60.0, 49.64, 0.01), 1e-9)
+    }
+
+    @Test
+    fun `a camera that reports no frame-duration limit keeps the flat overhead`() {
+        // Null is "unknown", and inventing a 2.6x penalty on an unknown limit would inflate every
+        // plan on a device that never told us anything.
+        assertEquals(60.01, ExposureCompensation.frameCostSeconds(60.0, null, 0.01), 1e-9)
+        assertEquals(60.01, ExposureCompensation.frameCostSeconds(60.0, 0.0, 0.01), 1e-9)
+    }
+
+    @Test
+    fun `the frame bound accounts for the long-sub cadence`() {
+        // 2.5 hours of night at 60 s subs is 9000/156 = 57 frames, not 9000/60.01 = 149.
+        assertEquals(57, ExposureCompensation.maxFrames(60.0, 0.01, 2.5, 49.64))
+        assertEquals(149, ExposureCompensation.maxFrames(60.0, 0.01, 2.5, null))
+    }
+
+    @Test
     fun `the range is four stops either way`() {
         assertEquals(4.0, ExposureCompensation.snap(4.0), 1e-9)
         assertEquals(4.0, ExposureCompensation.snap(9.0), 1e-9)

@@ -927,6 +927,52 @@ per-frame rather than per-session, every long-sub plan would be out by a factor 
 
 ---
 
+## 1.21 `maxFrameDuration` is the number that *is* enforced — measured 2026-08-19
+
+**OI-24, answered, and it changes a shipped calculation.** §1.20 found that single-frame probes
+land at roughly twice their own exposure and left open whether that cost is per-session or
+per-frame. It is per-frame — but only past a boundary, and the boundary is a number already in the
+device profile.
+
+Cadence between consecutive frames, from `capturedAt` in `session.json`:
+
+| sub | source | gap between frames |
+|---|---|---|
+| 0.951 s | real session, 14 lights | **1.00×** |
+| 7.399 s | real session, 105 lights | **1.00×** |
+| 7.399 s | real session, 49 lights | **1.00×** |
+| 40 s | probe, 3 frames | **1.00×** |
+| 60 s | probe, 4 frames | **2.89×, 2.01×, 2.87×** |
+
+The crossover sits between 40 s and 60 s, and `SENSOR_INFO_MAX_FRAME_DURATION` is **49.6408 s** —
+squarely inside it.
+
+**So the vendor's numbers were not meaningless after all; they describe two different things.**
+`SENSOR_INFO_EXPOSURE_TIME_RANGE` bounds a *single* exposure and is not enforced — 320 s works
+(§1.20). `SENSOR_INFO_MAX_FRAME_DURATION` bounds a *sustained repeating stream* and is enforced,
+as a cadence rather than a refusal: past it the sensor spends two or three periods per delivered
+frame. One governs whether a frame can be taken; the other governs how often.
+
+### Why this had to be fixed rather than noted
+
+**D-28** lets a user ask for subs past the exposure ceiling, which puts them past the frame-duration
+limit as well. A plan at 60 s subs counted 60 s a frame and would have taken 156 — so the session
+length, the end time, the storage rate and the battery estimate were all out by the same 2.6×. That
+is the same defect T-3.35 fixed for the frame-count bound, arriving through a different door: a
+number that is right in the regime it was measured in and silently wrong outside it.
+
+`ExposureCompensation.frameCostSeconds` now returns `sub + 10 ms` below the limit and
+`sub × 2.6` above it. The factor is the measured mean of 2.89, 2.01 and 2.87 rather than a round
+number, and it is deliberately not rounded down: a planner that under-promises the clock finishes
+early, one that over-promises it runs into the dawn.
+
+**What stays true** is the original measurement it appeared to contradict. §1.9's 2 ms per-frame
+overhead is confirmed, not overturned — three real sessions at 0.951 s and 7.399 s run at exactly
+1.00×, so every session shot so far, and every session anyone will shoot untracked, is unaffected.
+The correction only bites where the app newly allows people to go.
+
+---
+
 ---
 
 ## 2. Decisions
@@ -2159,7 +2205,7 @@ changes whether someone can run one without being surprised.
 ## 14. Open issues
 
 **Needed-by** is the phase that cannot finish without a resolution.
-**Status: 13 resolved · 9 open pending measurement · 2 deferred · 0 blocking.**
+**Status: 14 resolved · 8 open pending measurement · 2 deferred · 0 blocking.**
 An issue is only "open" here if it can actually change the shape of the code. Questions with an
 obvious default and a defined experiment are listed with that default already in force, so they
 never block work.
@@ -2182,7 +2228,6 @@ when the number comes back.
 | **OI-19** | **Will the hidden cameras also *capture*, not just open?** All five IDs open, but only camera 0 has completed a real RAW capture. An ID that opens can still fail session configuration or never deliver a frame | Assume the tele and ultrawide work; verify before promising them to the user | Run the T-1.4 capture against IDs 2, 3 and 4 — cheap now the harness exists | 7 |
 | **OI-20** | **Screen-off capture needs a foreground service, not just a surface-free session.** Measured 2026-08-17: the framing loop is frozen a few seconds after the screen goes off, process still alive. D-22 dissolved the *surface* problem but not the *lifecycle* one (§1.7) | Assume the `camera`-type FGS of D-12 is sufficient — it is what the type exists for | T-3.6's own acceptance: a 45-minute sequence with the screen off and the app backgrounded, then repeated with battery optimisation left on | 1C |
 | **OI-22** | **A configured session occasionally delivers no frames at all.** Measured 2026-08-18 (§1.16): one session in 78 returned 0 of 2 frames inside a 12.4 s budget, immediately after a rapid open/close loop, while the other 77 configured in ~100 ms and delivered at once. It opens, configures and closes cleanly — only the frames never arrive, so nothing throws and nothing downstream is told anything is wrong | Accept and log. At 1 in 78 it costs a framing preview that stays black for a few seconds, not a session | Re-run `--es diag lifecycle --ei sessions 30` several times over and count. If it reproduces, the remedy is a deadline on the first frame and a re-configure, which is a shape change to `FramingSession` rather than a tuning constant | 1B |
-| **OI-24** | **A single-frame capture takes about twice its own exposure.** Measured 2026-08-19 across the ceiling ladder: a 240 s request completed in ~13 minutes, a 150 s one in ~7 (§1.20). At the 7.4 s subs of a real session the measured overhead is 2 ms (§1.9), so this is not steady state | Assume it is a per-*session* startup cost — the first frame after a configuration change discarded, the second kept — which a 150-frame session pays once and a one-frame probe pays in full | Time a 5-frame session at a long sub and see whether the total is 5× or 10× the exposure. If it is per-frame, `SessionPlanner.MEASURED_OVERHEAD_SECONDS` is wrong by an exposure at long subs and every plan built from one is out by 2× | 1C |
 | **OI-4** | Framing preview exposure length | 1 s, boost to 4 s, auto-stop after 2 min idle — **now implemented as the default** (T-2.2), so the experiment is a tuning pass rather than a build | Real-sky trial: shortest exposure at which framing is workable | 1B |
 | **OI-5** | SAF write throughput and root-scan cost | **File baseline measured 2026-08-18: 200 × 24 MiB at 570 MiB/s (0.042 s/file), root scan 0.001 s.** SAF half still unmeasured — it needs a folder picked through the UI, which adb cannot do. The scan figure is from a 2-session root, not the ~12 the issue asks for, so it does not yet test D-5's premise | T-0.5: the same run against `SafSessionStore`, and a root with ~12 sessions. **T-3.27 both makes this bite and takes the measurement**: the session pane reads every `session.json` in the root and sums the bytes under every folder, where everything built so far reads five logs and no sizes — and `SessionCatalogue.all()` times itself on every open, surfacing the figure above 250 ms. So the experiment now runs whenever the pane is used; what is missing is a root with ~12 sessions to run it against | 0 |
 | **OI-9** | Is the OEM `SENSOR_NOISE_PROFILE` good enough to pick a sane ISO at Functional tier? | Yes — use it. **Half-answered 2026-08-17: the profile is a real per-ISO measurement, not a stub** — nine distinct read-noise values across nine ISOs, falling smoothly from 5.64 e⁻ at ISO 50 to 2.07 e⁻ at ISO 3200 (§1.8). No dual-gain step is visible; the decline is the ordinary ADC-noise-over-gain trend. What remains is whether the *absolute* figures are right, which needs the Phase 6 bias series to compare against | **Trigger:** run the T-3.3 solver twice, once on OEM data and once on read noise measured from a quick bias pair. If the chosen ISO differs by more than one stop, promote the §4.1.1 noise model out of Phase 6 into 1C | 1C |
@@ -2197,6 +2242,13 @@ when the number comes back.
 | **OI-16** | **OIS dithering** (§14.8) — depends on whether OIS is controllable at all; the T-1.1 probe answers that. Implement post-v1 regardless. | 8 | **deferred** |
 
 ### Resolved
+
+**OI-24 — is the long-exposure frame cost per-session or per-frame? Closed 2026-08-19: per-frame,
+above `SENSOR_INFO_MAX_FRAME_DURATION` and nowhere else.** Three real sessions at 0.951 s and
+7.399 s and a probe at 40 s all run at exactly 1.00× cadence; a probe at 60 s runs at 2.0–2.9×, and
+the limit is 49.6408 s (§1.21). The planner's per-frame cost is now a function of the sub rather
+than a constant. §1.9's 2 ms overhead is confirmed for every sub below the limit, which is every
+session shot so far.
 
 **OI-23 — where the real exposure ceiling is. Closed 2026-08-19: there isn't one within reach.**
 90, 120, 150, 240 and 320 s were all honoured to within 30 µs against a stated maximum of 49.6406 s
@@ -2309,6 +2361,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-08-19 | **`maxFrameDuration` is the number that *is* enforced (§1.21, OI-24 closed).** The long-exposure frame cost is **per-frame, not per-session** — but only past `SENSOR_INFO_MAX_FRAME_DURATION`, 49.6408 s here. Cadence measured from `capturedAt`: three real sessions at 0.951 s and 7.399 s and a probe at 40 s all run at exactly **1.00×**; a probe at 60 s runs at **2.89×, 2.01×, 2.87×**. So the two vendor numbers describe different things — the exposure range bounds a single frame and is not enforced (320 s works, §1.20), while the frame-duration limit bounds a sustained stream and is enforced as a cadence. This had to be fixed rather than noted, because **D-28** lets a user ask for subs past the ceiling and therefore past this limit too: a 60 s plan counted 60 s a frame and would have taken 156, putting the session length, end time, storage rate and battery estimate all out by 2.6×. `ExposureCompensation.frameCostSeconds` now returns `sub + 10 ms` below the limit and `sub × 2.6` above it, the factor being the measured mean rather than a round number. **§1.9's 2 ms overhead is confirmed, not overturned** — every session shot so far is below the limit and unaffected. 304 JVM tests. |
 | 2026-08-19 | **The real exposure ceiling: there isn't one within reach (§1.20, OI-23 closed).** 90, 120, 150, 240 and **320 s** all honoured to within 30 µs against a stated maximum of 49.6406 s — 6.4× the advertised bound with no wall found. The 320 s frame was rejected `SATURATED` at 1023 ADU, which is 320 s at ISO 800 in a lit room working correctly; the *exposure* was honoured. Two register hypotheses died on the way (2²³ rows = 155.2 s, 2²⁴ rows = 310.4 s), and since the applied values do not sit on the 18.5 µs row quantum, the extended range is governed by something other than the arithmetic behind the stated ceiling. **The app's 240 s sanity bound is therefore below the hardware's capability**, so the operative limit is the one chosen for dark current and aeroplanes rather than one the sensor imposes. One methodological trap recorded: the 240 s probe was first called a failure after 7 minutes of no frame, which was premature — single-frame probes land at ~2× their own exposure, so it needed 13. **OI-24** opened for whether that 2× is per-session or per-frame, because if it is per-frame `SessionPlanner`'s 2 ms overhead is out by an exposure at long subs. Setup's `Solved from your sensor and this pointing` became **`Suggested settings based on measurements.`** — the old line described the app's working rather than the reader's position. |
 | 2026-08-19 | **The sensor's exposure ceiling is advertised, not enforced — clamp removed (§1.20, D-28).** Asked "why is 50 s the limit?", the answer turned out to be "it is not". `SENSOR_INFO_EXPOSURE_TIME_RANGE` reports 49.6406 s; the device returned **119.999987713 s for a 120 s request**, and 89.999999662 s for a 90 s one. T-3.35's clamp rested on an assumption from the Camera2 contract rather than on a measurement, and it was refusing exposures the hardware would take — in **two** places, since `SetupController.resolve` capped the automatic solve as well. That is not academic: the trailing limit scales as 1/cos(dec), so **above dec 81.5° on this lens the sky permits longer subs than the ceiling allowed**, and every circumpolar target was capped by a number the sensor ignores. The clamp is gone; the solver's ceiling becomes `max(stated, 240 s)`, a sanity bound about dark current, aeroplanes and field rotation rather than about the sensor. **What replaces it is verification, not trust**: `nextVerifiedFrame` already checked every frame's metadata against the request (**D-21**), and past the stated ceiling it now fails with `ExposureRefused` instead of skipping — because skipping is right while the sensor settles and catastrophic if it never will, discarding two-minute frames until the session budget is gone and then reporting a *timeout*, which names the wrong problem. The rule lives in `ExposureAttempts`, pure Kotlin, 7 tests, and carries the subtlety that **a frame skipped for its generation is not evidence of refusal** — that path is the darks path, and counting it would abandon every session that takes darks. No warning on screen: a line about crossing a ceiling that is not enforced would warn about nothing. **OI-23** opened for where the real wall is. 300 JVM tests. **T-3.28 ticked** — a probe session was deleted through the pane (`overexposure-probe · 1 light · 24 MB`, gone from the list and from disk) with the four real field sessions untouched. |
 | 2026-08-19 | **Phase 1E walked on the phone, and `KeyValue` fixed (§1.19).** The owner found the defect first: in session setup with the storage warning showing, `Storage` rendered **one letter per line**. The cause is in `KeyValue` and predates Phase 1E by three phases — the value was unweighted, so a `Row` measured it first against the full width and left the weighted label a few pixels. It only ever showed when it mattered, because the strings long enough to trigger it are the ones the storage and battery budgets emit *when the session will not fit*. Both sides are weighted now, 1 : 1.7, value end-aligned; the rule is that the row wraps the value rather than crushing the label. Reproduced and confirmed fixed on device at 17010 × 519 ms wanting 399.9 GB of 46.1 GB free. Two smaller ones of my own in the new pane: an unnamed session printed `started 20:39` under a row titled `20:39`, and the `Captured` badge floated mid-row against a wrapped description — the badge is top-aligned and the redundant line suppressed. **The walk confirmed T-3.33 outright** (arriving at setup takes no frames, `dumpsys media.camera` shows no open device, and the cost is stated before the button) **and T-3.35's substance** (sixths, a −4…+4 scale, and `1 frame to 147 min` proving the length bound follows the compensated sub). **T-3.36 is ticked** — `7.4 s per frame` at zero and `7.4 s → 519 ms per frame` when moved. Nothing was deleted: the confirmation was opened on a real 96 MB capture and cancelled. |
