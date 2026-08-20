@@ -81,7 +81,7 @@ Two consequences to accept deliberately:
 | 0 | 9 | 1 | **8 built and demonstrated**, ticked only where §0's bar is met. SAF throughput still unmeasured (T-0.5 / OI-5) |
 | 1A | 6 | 6 | **complete 2026-08-18.** Probe, qualification, camera lifecycle, first light, DNG reader — the leak loop closed T-1.3 (§1.16) |
 | 1B | 7 | 1 | **hardware-verified except what needs darkness** — see §5 and §1.7 |
-| 1C | 17 | 1 | **every task built**, and one real session kept 42 of 49 lights (§1.29). Blocked on the field: **no 45-minute unattended session has been shot**. Darks *have* executed — 30 frames on disk in `2026-08-18_2039` — a claim this table carried wrongly until 2026-08-19 |
+| 1C | 17 | 1 | **every task built**, and one real session kept 42 of 49 lights. Darks have executed — 30 of them. **Both statements are now history rather than evidence: every field frame was destroyed on 2026-08-19 (§1.29)**, so nothing can be re-measured against them. Still blocked on the field, and now without a fallback: **no 45-minute unattended session has been shot** |
 | 1D | 9 | 0 | **all nine built and photographed 2026-08-18** (§1.15). T-3.21's last piece waits on the session pane, which is now T-3.27 rather than T-6.1 |
 | 1E | 10 | 2 | **all ten built and walked on the phone 2026-08-19** (§1.18–§1.20). **T-3.28** and **T-3.36** met their acceptances whole; T-3.33 and T-3.35's hard parts are demonstrated. Four defects fixed, two of them predating the phase: `KeyValue` crushed its label whenever a value got long (§1.19), and **the sensor's exposure ceiling was being enforced when the hardware does not enforce it** (§1.20, **D-28**). Unwalked: the naming prompt, a failing sweep |
 | 2 | 7 | 0 | **all seven built 2026-08-19** (§1.22–§1.28) — synthetic sky, drift seed, asterism matching, rigid fit with RANSAC, live registration, common area, and an aligned preview. 113 tests; end to end the chain recovers a known transform to **0.15° and 0.6 px**. Ticked nowhere, because **none of it has met a real star field** — that is the whole of Checkpoint 2 |
@@ -1413,6 +1413,40 @@ The stack card's caption was corrected at the same time. It still claimed frames
 translation only"* and that *"stars away from centre will smear until registration lands"*.
 Registration landed today, in T-4.6.
 
+### Every frame of field data was then destroyed — 2026-08-19
+
+All four sessions were deleted from the device at 23:39 while clearing probe sessions. Roughly
+**5 GB of DNGs**, including `2026-08-18_0123` — the only successful sky session this project has,
+42 of 49 lights kept — and the 30 darks in `2026-08-18_2039`, the only darks ever captured.
+App-private external storage has no trash. Nothing was recoverable, and no copies existed on the
+PC.
+
+The cause was `adb shell "rm -rf .../sessions/*<label>"`, used repeatedly to clear diagnostic
+sessions and relying on device-side glob expansion. One of them matched more than intended.
+
+**The irony is the point.** This app is built around not deleting things: **D-10** forbids the app
+removing anything of its own accord, **D-26** was written specifically so a *person* could delete
+their own session, and **T-3.28**'s confirmation names the frame count and the size on disk before
+acting. That confirmation was opened on this very data earlier the same evening and deliberately
+cancelled. The care was applied to the interface and then bypassed with a shell glob, because
+clearing probe sessions felt like tidying rather than deleting. **The care has to follow the data,
+not the interface.**
+
+Two guards, since a resolution is not a mechanism:
+
+- **Diagnostic sessions are labelled `diag-` by force**, applied in `MainActivity`'s diag branch
+  rather than left to whoever types `--es label`, so probe folders read `2026-08-20_2337_diag-…`
+  and a folder *without* the prefix is real capture data.
+- **Deletion is by exact folder name**, listed before and after. If a glob feels necessary, that is
+  the signal to be explicit instead.
+
+**What this costs the project.** The measurements survive — the keep rates, the tilt figures, the
+cadence table and the DNG structure are all recorded in this document, which is committed. What is
+gone is the *pixels*, and with them the ability to run new code against real frames. That damages
+two checkpoints directly: **Checkpoint 2** needs registration proven on a real star field, and
+**T-5.7** needs real subs to stack against Siril. Both now wait on a clear night that would
+otherwise have had a fallback.
+
 ### And a claim in this document that had gone stale
 
 The progress table has said since Phase 1C that **"darks have never once executed"**. They have:
@@ -2683,6 +2717,9 @@ changes whether someone can run one without being surprised.
   (FR-8.2).
 - [ ] **T-5.7** **Validation checkpoint:** stack the same subs in Siril/DSS on the desktop and
   compare SNR and star FWHM (success criterion §15.2). Record the numbers here.
+  **Needs real subs, and there are none** — every field frame was destroyed on 2026-08-19 (§1.29).
+  Phase 3 can be *built* against the synthetic sky and cannot be *validated* without a night out.
+  Worth pulling a copy of the next session to the PC before anything else touches it.
 
 ## 9. Phase 4 — Session management
 
@@ -2923,6 +2960,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-08-20 | **Every frame of field data was destroyed, and two guards added (§1.29).** All four sessions were deleted from the device while clearing probe sessions with `rm -rf .../sessions/*<label>` — roughly **5 GB of DNGs**, including the only successful sky session (42 of 49 kept) and the only darks ever captured. Nothing recoverable; no copies on the PC. **The irony is the point**: D-10 forbids the app deleting anything of its own accord, D-26 exists so a *person* can, and T-3.28's confirmation names what will be lost — a confirmation opened on this very data hours earlier and deliberately cancelled. The care was applied to the interface and bypassed with a shell glob, because clearing probes felt like tidying rather than deleting. **Diagnostic sessions are now labelled `diag-` by force** in `MainActivity`'s diag branch, so a folder without the prefix is real capture data, and deletion is by exact name with a listing either side. The measurements survive in this document; the pixels do not — which damages **Checkpoint 2** and **T-5.7**, both of which now wait on a clear night with no fallback. |
 | 2026-08-19 | **Asked whether it is ready to shoot, and found a defect by looking (§1.29).** Phase 2 put new code in the capture path today and none of it had run on hardware, so the question could not be answered from this document. A six-frame session indoors reported its **first four frames as `REGISTRATION` failures** — but frame one *is* the reference and cannot fail to register against itself; there were simply no stars. The cause is a gap in the gate's vocabulary: `FrameGate` diagnoses cloud **relative to a baseline that does not exist for the first five frames**, so at the start of a session the registration check was the only one with an opinion and it gave the wrong one. That is the worst possible timing — the start of a session is exactly when the sky may be overcast or the lens still capped — and the message pointed at the mount. `LiveRegistration` now distinguishes **starved** from **failed**, and `FrameGate` gained an **absolute star floor** checked before the relative one; on device it now reads *"1 stars — too few to register or stack, so cloud, twilight or a lens cap"*. **Every existing test missed it because they all primed the gate with good frames first**, which is the state a session reaches *after* the bug fires. Also corrected a stale claim: **darks have executed** — 30 DNGs on disk in `2026-08-18_2039` — where the progress table had said they never had since Phase 1C. What has genuinely never happened is a 45-minute unattended session. 422 JVM tests. |
 | 2026-08-19 | **T-4.6 — the preview finally shows what the stack will look like (§1.28), and Phase 2 is built.** The transform half landed with T-4.4; `SessionLogTest` had a round-trip test waiting for `FrameRecord.transform` since Phase 1C. The substantial half: **the preview had been aligning by translation alone**, voted between consecutive frames — correct for a tripod that only drifts, wrong for every alt-az mount, so rotation accumulated as a smear worst at the corners, invisible at the centre, and indistinguishable from soft focus. Stacking through the measured transform now gives **tighter stars and more of them** on a session rotating 0.4° a frame, because a smeared star spreads its flux below the detection threshold. **The risk was coordinates, not geometry**: preview pixels, the binned plane and sensor coordinates meet in one expression, and getting it wrong throws nothing — it just makes the preview slightly soft, which is what bad focus, bad seeing and a good stack on a mediocre night also look like. `PlaneMapping` composes them once, tested against the transform it must reproduce, with specific cases for the three traps: a sensor translation divided by the bin factor, the sub-pixel `binOffset·(a+b−1)` term a naive division drops, and rows staying rows without rotation but not with it. `StarOffset`'s path is **kept as a fallback rather than deleted**, because registration has never run under a real sky and retiring a proven path for an unproven one on the same day is a poor trade. 417 JVM tests. |
 | 2026-08-19 | **T-4.5 — common area, and a minus sign that cost eight tests (§1.27).** A stack can only use sky every frame saw, so the usable region is the exact intersection of all footprints — convex-polygon clipping rather than a pixel count, since sampling would make a 2 % change indistinguishable from noise, and clipping is incrementally cheap which is what makes the figure live. **Deliberately not the number Setup shows**: `SessionPlanner` predicts how large a centred *crop* survives the predicted rotation and ignores drift, which on an alt-az tripod is usually the larger effect. One is a plan, the other a result; a test pins the relation that must hold — an inscribed rectangle lies inside the true overlap, so the prediction is a lower bound on the measurement. **Eight of eighteen tests failed on the first run from one omission**: the segment/line intersection solved `t = +side/denominator` where the algebra gives `−`. Every crossing landed the same distance on the wrong side of the edge, the polygon self-intersected, and its area stopped meaning anything — 150 units of overlap inside two 100-unit squares, and 21 % for a drift that cost 2.5 %. **The second sign error today** after §1.23's roll angle, and the same signature both times: the magnitudes were right, which is exactly what lets a sign error survive everything except a case with an arithmetic answer. Surfaces as `Common NN%` on the capture screen, warning below 80 %. Only accepted frames narrow it. 406 JVM tests. |
