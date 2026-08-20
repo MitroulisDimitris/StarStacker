@@ -85,7 +85,8 @@ Two consequences to accept deliberately:
 | 1D | 9 | 0 | **all nine built and photographed 2026-08-18** (§1.15). T-3.21's last piece waits on the session pane, which is now T-3.27 rather than T-6.1 |
 | 1E | 10 | 2 | **all ten built and walked on the phone 2026-08-19** (§1.18–§1.20). **T-3.28** and **T-3.36** met their acceptances whole; T-3.33 and T-3.35's hard parts are demonstrated. Four defects fixed, two of them predating the phase: `KeyValue` crushed its label whenever a value got long (§1.19), and **the sensor's exposure ceiling was being enforced when the hardware does not enforce it** (§1.20, **D-28**). Unwalked: the naming prompt, a failing sweep |
 | 2 | 7 | 0 | **all seven built 2026-08-19** (§1.22–§1.28) — synthetic sky, drift seed, asterism matching, rigid fit with RANSAC, live registration, common area, and an aligned preview. 113 tests; end to end the chain recovers a known transform to **0.15° and 0.6 px**. Ticked nowhere, because **none of it has met a real star field** — that is the whole of Checkpoint 2 |
-| 3+ | outlined | 0 | not started |
+| 3 | 7 | 1 | **T-5.1 accepted on device** (§1.31) and **T-5.2 built** (§1.30). Warp and debayer verified, 13–15 ms/megapixel. T-5.3's tiled accumulator is next; T-5.7 cannot be validated at all until there are real subs again (§1.29) |
+| 4+ | outlined | 0 | not started |
 
 > **The `Ticked` column counts `[x]` only.** §0 ties that to an acceptance demonstrated on a real
 > device, and most of what is built is demonstrated in part — the count understates the app
@@ -1515,6 +1516,49 @@ punching a permanent hole where one dark frame was struck.
 
 ---
 
+## 1.31 What the warp measurement actually says — 2026-08-20
+
+T-5.1's acceptance ran on the device and passed on every count:
+
+```
+OpenCV available: true
+warp: dot placed at frame (98.1, 49.1), recovered at (79.9, 59.9), reference is (80.0, 60.0)
+warp: error 0.13 px — PASS
+warp: uncovered corner reads -1.0 (expected -1.0) — PASS
+debayer: GRBG -> OpenCV code 49, centre reads R=1000 G=500 B=100
+debayer: PASS — channels came back on the channels they went in on
+warp: 3.97 ms per 512x512 tile — 15.1 ms/megapixel
+warp: a 12.6 MP frame is about 191 ms, so a 150-frame stack is about 29 s
+```
+
+The two correctness results are the ones that could have been silently wrong. **0.13 px** says the
+warp direction is right — an inverted transform would have landed the dot at the mirrored offset,
+about 36 px away, with no exception and a stack that merely drifted the wrong way. And
+**R=1000 G=500 B=100** says the DNG-to-OpenCV Bayer mapping is right: `GRBG` really is `BayerGB`,
+red and blue are not swapped, and the consequence of getting that wrong would only have surfaced
+after colour balance looking like a white-balance problem.
+
+### The throughput number, read honestly
+
+**13–15 ms/megapixel** puts a 150-frame stack's warp pass at 25–29 seconds. That is comfortable
+against a stacking service measured in minutes.
+
+It is also, plainly, **not a number that required OpenCV**. The Kotlin bilinear alternative was
+estimated at roughly twice this, which would have been 50–60 seconds — still comfortable. So the
+dependency bought *quality* (bicubic resampling, and a demosaic nobody has to maintain) and
+*margin*, not feasibility. §12.1's rule was "build in Kotlin, profile, and only then consider", and
+the profile now exists: it says either choice would have worked.
+
+That is worth recording rather than glossing, because the 24.8 MB is permanent and the reasoning
+should be too. The choice was made deliberately with the trade-off stated, and the measurement
+neither vindicates nor refutes it — it just removes the last excuse for not knowing.
+
+**What the number is genuinely good for** is T-5.3's budget. A tile of 512×512 costs 4 ms, so the
+tiled accumulator can plan around a real figure rather than a guess, and any future regression in
+the stacking loop has a baseline to be measured against.
+
+---
+
 ---
 
 ## 2. Decisions
@@ -2747,7 +2791,7 @@ changes whether someone can run one without being surprised.
 
 ## 8. Phase 3 — Stacking
 
-- [~] **T-5.1** Add OpenCV Android SDK (D-7); warp/transform primitives only.
+- [x] **T-5.1** Add OpenCV Android SDK (D-7); warp/transform primitives only.
   **Added 2026-08-20** — `org.opencv:opencv:4.14.0` from Maven Central, 4.x rather than 5.0 because
   this is not the place to be first. **Measured cost: 24.8 MB** of the APK (23.5 MB
   `libopencv_java4.so` + 1.2 MB `libc++_shared.so`), against ~27.5 MB for everything else — so it
@@ -2764,10 +2808,13 @@ changes whether someone can run one without being surprised.
   sigma-clipped mean assumes pixels are independent samples. A cleverer demosaic would quietly
   degrade the rejection that does stacking's actual work. Stars are point sources; there are no
   edges here worth being clever about.
-  *Remaining:* **the on-device acceptance has not run** — the phone was unplugged. OpenCV cannot
-  load in a JVM test, so `--es diag warp` (`diag/WarpCheck.kt`) is written and waiting: does the
-  library load, is the warp pointing the right way, and what does it cost per megapixel. That last
-  number is the one that should have decided the dependency, and it is still unmeasured.
+  **Accepted on device 2026-08-20** (`--es diag warp`), all four checks passing:
+  the library **loads**; the warp recovers a dot placed at (98.1, 49.1) back to (79.9, 59.9) against
+  a reference of (80.0, 60.0) — **0.13 px**, so the direction is right; the uncovered border carries
+  the sentinel rather than zero; and **debayer returns R=1000 G=500 B=100 exactly as they went in**,
+  which is the Bayer-naming trap avoided in the one place it could be checked.
+  **Throughput: 13–15 ms/megapixel**, so 168–191 ms for a 12.6 MP frame and **~25–29 s for a
+  150-frame stack**. Comfortable — and honest about what it implies (§1.31).
 - [~] **T-5.2** Calibration application on CFA data **before** debayer (FR-8.1 steps 1–2), with
   every master optional and pass-through when absent.
   **Built 2026-08-20** as `stacking/Calibration.kt`, 18 tests, §1.30. `(light − dark) /
@@ -3042,6 +3089,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-08-20 | **T-5.1 accepted on device, and the throughput read honestly (§1.31).** `--es diag warp` passes on all four counts: OpenCV loads; the warp recovers a placed dot to **0.13 px**, so the direction is right where an inversion would have landed it 36 px away with no exception; the uncovered border carries the sentinel rather than zero; and **debayer returns R=1000 G=500 B=100 exactly as they went in**, confirming `GRBG` really is OpenCV's `BayerGB` and that red and blue are not swapped — an error that would only have surfaced after colour balance, looking like a white-balance problem. **Throughput 13–15 ms/megapixel**, so ~25–29 s for a 150-frame stack's warp pass. Comfortable, and **not a number that required OpenCV**: the Kotlin alternative was estimated at roughly twice this, which would also have been comfortable. The dependency bought quality and margin rather than feasibility, the profile §12.1 asked for now exists, and it says either choice would have worked. Recorded rather than glossed, since the 24.8 MB is permanent and the reasoning should be too. The figure's real use is T-5.3's budget: 4 ms per 512×512 tile is a baseline any future regression can be measured against. **T-5.1 ticked.** |
 | 2026-08-20 | **T-5.2 — calibration, and three ways to be quietly wrong (§1.30).** FR-8.1 steps 1–2 on CFA data before debayer, every master independently optional. The ordering is not stylistic: dark current and flat response are properties of *one photosite*, and debayering first would apply each correction to a blend of sites that never shared either. Three details each have a test, because none of them would be visible in the result — the **black pedestal leaves exactly once** (a dark carries it too, so removing both pushes the background negative by exactly 64 ADU); **negatives are kept**, since clamping biases the mean upward by more where noise is larger and that non-uniform lift survives into the master, which is exactly what FR-8.1 step 5 then has to undo; and a **flat near zero is a hole, not a gain**, so it is marked bad rather than amplified into something indistinguishable from a star. **Hot pixels are repaired from their own colour, two pixels away** — on a Bayer grid the adjacent sites are a different colour, and repairing from them swaps an obviously bad pixel for a plausible wrong one that the gate and the stack would both trust. Medians throughout, since hot pixels cluster and a cosmic ray in one dark would otherwise be subtracted from every light in the session. 445 JVM tests. |
 | 2026-08-20 | **T-5.1 — OpenCV added, and walled off.** `org.opencv:opencv:4.14.0`, sanctioned by **D-7** and confirmed by the owner after weighing what it actually buys: a better warp kernel, and an edge-aware demosaic that astro arguably should not want. **Measured cost 24.8 MB** of APK against ~27.5 MB for everything else — it roughly doubles the app, held to one native library by D-8's arm64-only filter. **`stacking/Resample.kt` is the only file importing `org.opencv`**, which is what turns T-5.1's "warp/transform primitives only" from a sentence into a boundary; the reversal cost the plan claims is then real. Loaded **lazily**, so a 45-minute capture never maps a library it has no use for. Debayer is **bilinear on purpose**: the edge-aware variants correlate noise between neighbouring pixels, and T-5.4's sigma-clipped mean assumes independent samples. **The on-device acceptance has not run** — the phone was unplugged, and OpenCV cannot load in a JVM test, so `--es diag warp` is written and waiting to answer whether it loads, whether the warp points the right way, and what it costs per megapixel. 5 JVM tests cover the one thing reachable off-device: the **DNG-to-OpenCV Bayer naming offset**, where GRBG is `BayerGB` rather than `BayerGR` because the two conventions name different corners of the 2×2 cell. |
 | 2026-08-20 | **Every frame of field data was destroyed, and two guards added (§1.29).** All four sessions were deleted from the device while clearing probe sessions with `rm -rf .../sessions/*<label>` — roughly **5 GB of DNGs**, including the only successful sky session (42 of 49 kept) and the only darks ever captured. Nothing recoverable; no copies on the PC. **The irony is the point**: D-10 forbids the app deleting anything of its own accord, D-26 exists so a *person* can, and T-3.28's confirmation names what will be lost — a confirmation opened on this very data hours earlier and deliberately cancelled. The care was applied to the interface and bypassed with a shell glob, because clearing probes felt like tidying rather than deleting. **Diagnostic sessions are now labelled `diag-` by force** in `MainActivity`'s diag branch, so a folder without the prefix is real capture data, and deletion is by exact name with a listing either side. The measurements survive in this document; the pixels do not — which damages **Checkpoint 2** and **T-5.7**, both of which now wait on a clear night with no fallback. |

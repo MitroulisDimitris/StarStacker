@@ -36,7 +36,69 @@ object WarpCheck {
         }
 
         correctness(log)
+        debayerOrder(log)
         throughput(log)
+    }
+
+    /**
+     * The Bayer naming trap, checked on the device rather than argued about.
+     *
+     * OpenCV names its codes after the **second row's second pixel**; a DNG's `CFAPattern` names the
+     * first row's first. So the sensor's `GRBG` is OpenCV's `BayerGB`, and the obvious-looking
+     * `BayerGR` is wrong. The consequence of getting it wrong is that **red and blue swap**, and
+     * nothing in a linear astro frame makes that obvious — the sky is grey, the stars are white, and
+     * the error only appears after colour balance, by which point it looks like a white-balance
+     * problem rather than a demosaic one.
+     *
+     * So: a synthetic GRBG frame with each colour at a distinct level, and a check that the levels
+     * come back on the channels they went in on.
+     */
+    private fun debayerOrder(log: (String) -> Unit) {
+        val w = 16
+        val h = 16
+        // GRBG: row 0 is G R G R, row 1 is B G B G.
+        val red = 1000
+        val green = 500
+        val blue = 100
+        val cfa = ShortArray(w * h) { i ->
+            val x = i % w
+            val y = i / w
+            when {
+                y % 2 == 0 && x % 2 == 1 -> red
+                y % 2 == 1 && x % 2 == 0 -> blue
+                else -> green
+            }.toShort()
+        }
+
+        val out = FloatArray(w * h * 3)
+        val pattern = Resample.BayerPattern.of(listOf(1, 0, 2, 1))
+        if (pattern == null) {
+            log("FAILED: GRBG did not map to a pattern")
+            return
+        }
+        if (!Resample.debayer(cfa, w, h, pattern, out)) {
+            log("FAILED: debayer returned false")
+            return
+        }
+
+        // A pixel well inside the frame, so every interpolation neighbour exists.
+        val centre = (8 * w + 8) * 3
+        val r = out[centre]
+        val g = out[centre + 1]
+        val b = out[centre + 2]
+        log("debayer: GRBG -> OpenCV code ${pattern.openCvCode}, centre reads R=%.0f G=%.0f B=%.0f".format(r, g, b))
+
+        val correct = abs(r - red) < 120 && abs(g - green) < 120 && abs(b - blue) < 120
+        val swapped = abs(r - blue) < 120 && abs(b - red) < 120
+        log(
+            "debayer: %s".format(
+                when {
+                    correct -> "PASS — channels came back on the channels they went in on"
+                    swapped -> "FAIL — red and blue are swapped, the OpenCV code is the wrong one"
+                    else -> "FAIL — levels do not match what went in"
+                },
+            ),
+        )
     }
 
     /**
