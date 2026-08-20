@@ -95,6 +95,112 @@ object DngReader {
             DngImage(meta, readStrips(tiff, ifd, meta))
         }
 
+    /**
+     * T-5.3 — opens a DNG once and then serves **row ranges** out of it.
+     *
+     * ### Why this exists, and why it is possible at all
+     *
+     * A tiled stack walks the *output* tile by tile and asks every frame for the rows that tile
+     * needs. Done with [read] that would mean decoding a whole 25 MB frame per tile per frame —
+     * for 150 frames over a hundred tiles, sixteen thousand full decodes. Done with row ranges it
+     * is one seek and a few hundred kilobytes each.
+     *
+     * What makes it possible is a measured fact rather than a hopeful one: **`DngCreator` writes
+     * one strip per row on this device** (§1.12 — 3072 strips of 8192 bytes), so the strip table is
+     * an index of rows and any range of them can be reached directly. A file with one enormous
+     * strip would still work here, but it would decode the whole thing to hand back four rows, and
+     * the caller would never know. [rowsPerStrip] is exposed so a caller can tell the difference.
+     *
+     * Holds the strip table and an open descriptor, so it must be closed. The metadata is parsed
+     * once at construction — it does not change between reads and re-parsing it per tile would put
+     * the header back on the hot path this class exists to keep it off.
+     */
+    class Rows(file: File) : java.io.Closeable {
+        private val raf = RandomAccessFile(file, "r")
+        private val tiff = TiffFile(raf)
+        private val ifd = tiff.rawIfd()
+
+        val metadata: DngMetadata = metadataOf(tiff, ifd)
+
+        private val offsets: LongArray = tiff.longsAt(ifd, STRIP_OFFSETS)
+            ?: throw DngParseException("no StripOffsets")
+        private val counts: LongArray = tiff.longsAt(ifd, STRIP_BYTE_COUNTS)
+            ?: throw DngParseException("no StripByteCounts")
+
+        /** Rows covered by one strip. 1 on the reference device, which is what makes this cheap. */
+        val rowsPerStrip: Int get() = metadata.rowsPerStrip
+
+        private val buffer = ByteArray(counts.maxOrNull()?.toInt() ?: 0)
+
+        init {
+            if (offsets.size != counts.size) {
+                throw DngParseException(
+                    "StripOffsets (${offsets.size}) and StripByteCounts (${counts.size}) disagree",
+                )
+            }
+        }
+
+        /**
+         * Decodes rows `[fromRow, fromRow + rowCount)` into [into], packed from index 0.
+         *
+         * Whole strips are decoded and the wanted rows copied out of them, because a strip is the
+         * smallest addressable unit the file offers — asking for row 5 of a 16-row strip still
+         * costs the strip. With one row per strip that distinction vanishes, which is the case
+         * this is built for.
+         *
+         * @return the number of rows actually written, which is fewer than asked at the bottom
+         *   edge. Silently returning a short buffer would leave the caller stacking whatever was
+         *   in it last time.
+         */
+        fun read(fromRow: Int, rowCount: Int, into: ShortArray): Int {
+            require(fromRow >= 0) { "negative row" }
+            require(rowCount >= 0) { "negative row count" }
+            val width = metadata.width
+            val available = (metadata.height - fromRow).coerceAtLeast(0)
+            val rows = minOf(rowCount, available)
+            if (rows == 0) return 0
+            require(into.size >= rows * width) { "buffer holds ${into.size}, needs ${rows * width}" }
+
+            val perStrip = rowsPerStrip.coerceAtLeast(1)
+            val firstStrip = fromRow / perStrip
+            val lastStrip = (fromRow + rows - 1) / perStrip
+
+            for (strip in firstStrip..lastStrip) {
+                if (strip >= offsets.size) break
+                val length = counts[strip].toInt()
+                tiff.readFully(offsets[strip], buffer, length)
+
+                val stripFirstRow = strip * perStrip
+                val samples = length / 2
+                val stripRows = samples / width
+                for (r in 0 until stripRows) {
+                    val row = stripFirstRow + r
+                    if (row < fromRow || row >= fromRow + rows) continue
+                    val src = r * width * 2
+                    val dst = (row - fromRow) * width
+                    if (tiff.littleEndian) {
+                        for (x in 0 until width) {
+                            val lo = buffer[src + x * 2].toInt() and 0xFF
+                            val hi = buffer[src + x * 2 + 1].toInt() and 0xFF
+                            into[dst + x] = ((hi shl 8) or lo).toShort()
+                        }
+                    } else {
+                        for (x in 0 until width) {
+                            val hi = buffer[src + x * 2].toInt() and 0xFF
+                            val lo = buffer[src + x * 2 + 1].toInt() and 0xFF
+                            into[dst + x] = ((hi shl 8) or lo).toShort()
+                        }
+                    }
+                }
+            }
+            return rows
+        }
+
+        override fun close() {
+            raf.close()
+        }
+    }
+
     private fun metadataOf(tiff: TiffFile, ifd: Ifd): DngMetadata {
         val width = tiff.intAt(ifd, IMAGE_WIDTH)
             ?: throw DngParseException("no ImageWidth")

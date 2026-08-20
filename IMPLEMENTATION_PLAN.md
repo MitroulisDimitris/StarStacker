@@ -85,7 +85,7 @@ Two consequences to accept deliberately:
 | 1D | 9 | 0 | **all nine built and photographed 2026-08-18** (§1.15). T-3.21's last piece waits on the session pane, which is now T-3.27 rather than T-6.1 |
 | 1E | 10 | 2 | **all ten built and walked on the phone 2026-08-19** (§1.18–§1.20). **T-3.28** and **T-3.36** met their acceptances whole; T-3.33 and T-3.35's hard parts are demonstrated. Four defects fixed, two of them predating the phase: `KeyValue` crushed its label whenever a value got long (§1.19), and **the sensor's exposure ceiling was being enforced when the hardware does not enforce it** (§1.20, **D-28**). Unwalked: the naming prompt, a failing sweep |
 | 2 | 7 | 0 | **all seven built 2026-08-19** (§1.22–§1.28) — synthetic sky, drift seed, asterism matching, rigid fit with RANSAC, live registration, common area, and an aligned preview. 113 tests; end to end the chain recovers a known transform to **0.15° and 0.6 px**. Ticked nowhere, because **none of it has met a real star field** — that is the whole of Checkpoint 2 |
-| 3 | 7 | 1 | **T-5.1 accepted on device** (§1.31) and **T-5.2 built** (§1.30). Warp and debayer verified, 13–15 ms/megapixel. T-5.3's tiled accumulator is next; T-5.7 cannot be validated at all until there are real subs again (§1.29) |
+| 3 | 7 | 1 | **T-5.1 accepted on device** (§1.31), **T-5.2 and T-5.3 built** (§1.30, §1.32). Calibration, row-range DNG reads and the tiled accumulator, 39 tests. T-5.4's sigma clipping is next; T-5.7 cannot be validated at all until there are real subs again (§1.29) |
 | 4+ | outlined | 0 | not started |
 
 > **The `Ticked` column counts `[x]` only.** §0 ties that to an acceptance demonstrated on a real
@@ -1559,6 +1559,64 @@ the stacking loop has a baseline to be measured against.
 
 ---
 
+## 1.32 The tiled accumulator, and what a stub is allowed to be — 2026-08-21
+
+T-5.3 is where T-5.1 and T-5.2 finally meet: calibrate on CFA, debayer, warp into the reference,
+combine. The interesting content is not the loop but the two constraints that shape it.
+
+**Tiling is forced by arithmetic, not taste.** A finished 12.6 MP master in three channels is 151 MB
+of `FloatArray`. Sigma clipping (T-5.4) needs every frame's value for a pixel *simultaneously* in
+order to decide what to reject, so a whole-frame approach wants `12.6M × 150 × 4` bytes — **7.5 GB**.
+`tileRowsFor` turns that into a budget and makes the governing relationship explicit: the sample
+buffer is `rows × width × channels × frames`, so **more frames means thinner tiles**. A 20-frame
+test session and a 200-frame night genuinely do not stack the same way, and a tile height chosen for
+one silently blows the budget for the other.
+
+**Row-range reading is what makes tiling affordable**, and it rests on a measured fact. A tiled stack
+asks every frame for the rows each tile needs; done with whole-frame decodes that is 25 MB per frame
+per tile — sixteen thousand decodes for a 150-frame night over a hundred tiles. `DngReader.Rows`
+serves ranges instead, which is only possible because §1.12 measured **one strip per row** on this
+device. A file with one enormous strip would still work and would quietly decode everything to hand
+back four rows, so `rowsPerStrip` is exposed and a caller can tell the difference.
+
+**The tile fetches a margin either side of itself.** Under rotation a band of output maps to a
+taller, sheared band of input: a point at the far edge of a 4096-wide frame moves `2048 × sin θ`
+rows, which at the 2–3° a session reaches is over a hundred. So the margin is not a rounding
+allowance, it is the width of the frame times the angle — and a stack built as though rows lined up
+would lose a sliver at every boundary, invisible per tile and a set of faint horizontal seams across
+the master.
+
+### What a stub is allowed to be, and what it must not be
+
+`Resampler` is injected because OpenCV cannot load in a JVM test (§1.31), so the test supplies a
+nearest-neighbour warp and a replicate-the-value debayer. Both are deliberately poor — quality is
+T-5.1's business and was measured on the device. What the stub is *not* allowed to be is **loosely
+specified**: it must honour the same coordinate convention and the same uncovered sentinel, or the
+machinery is being exercised against different rules from the ones it will meet.
+
+That mattered immediately. **The first stub used the inverse transform where the contract says
+forward**, and the test caught it — the same direction confusion `Resample` carries a warning about,
+reproduced in the test file within an hour of the warning being written. The contract is that the
+transform maps reference → frame, so an output pixel takes the frame's value at `T(p)`; OpenCV
+expresses that as `WARP_INVERSE_MAP` over the forward matrix, and the device measurement in §1.31
+confirmed the real one is right. The stub was wrong, not the loop.
+
+A second test failure was more mundane and worth recording anyway: **Kotlin's `Float.compareTo`
+sorts `NaN` above every number**, so a `maxByOrNull` over a row picked an *uncovered* pixel rather
+than the brightest one. Uncovered pixels are NaN by design — a pixel no frame covered has no
+measurement, and writing zero would be a claim that it was dark, which the stretch would believe.
+The trap is that any max, sort or threshold over a master has to exclude them explicitly.
+
+### The property that defines correctness
+
+**The tiling must be invisible in the answer.** The same master at one tile as at twenty, to the
+float. That is the test that would catch a seam, an off-by-one in the margin, or a buffer reused
+without being cleared — and none of those would be visible by looking at the result, because a seam
+in a linear astro frame looks like a gradient, and a gradient is what step 5 of FR-8.1 exists to
+remove anyway.
+
+---
+
 ---
 
 ## 2. Decisions
@@ -2836,8 +2894,22 @@ changes whether someone can run one without being surprised.
   *Remaining:* no file I/O — this is the arithmetic, and loading masters comes with T-5.3's tiled
   reader. Temperature matching (**D-16**) is Phase 6's library problem; the session shooting its own
   darks at the end of the run is what stands in for it.
-- [ ] **T-5.3** Debayer + tiled accumulator (FR-7.6): load tile T across all N frames, combine,
+- [~] **T-5.3** Debayer + tiled accumulator (FR-7.6): load tile T across all N frames, combine,
   write, advance. `FloatArray` only, buffers allocated once (FR-12.2).
+  **Built 2026-08-21** as `stacking/TiledStacker.kt` and `DngReader.Rows`, 21 tests, §1.32.
+  **The arithmetic is why tiling exists**: a 12.6 MP master in three channels is 151 MB before
+  anything else, and sigma clipping needs every frame's value for a pixel at once — `12.6M × 150 × 4`
+  is **7.5 GB**. Tiling turns that into a budget, and `tileRowsFor` makes the relationship explicit:
+  **more frames means thinner tiles**, so a 20-frame test and a 200-frame night do not stack alike.
+  **`DngReader.Rows` is the enabler** — a row-range reader, possible only because §1.12 measured one
+  strip per row on this device. Without it a tiled stack would decode a whole 25 MB frame per tile
+  per frame: sixteen thousand full decodes for a 150-frame night.
+  **Both dependencies are injected** — `Frames` so the loop can be driven by synthetic data, and
+  `Resampler` because **OpenCV cannot load off-device** (§1.31). Without the second, none of this
+  could be tested anywhere but on a phone.
+  *Remaining:* no `DngFrameSource` yet — the loop is proven against synthetic frames and has never
+  read a real DNG, which is partly because there are none (§1.29). The combiner ships as a plain
+  mean; **T-5.4** replaces it with sigma clipping.
 - [ ] **T-5.4** Sigma-clipped mean as default; median / mean / kappa-sigma behind the expert
   affordance. **Build in Kotlin, profile, and only then consider the single sanctioned JNI
   exception** (§12.1).
@@ -3013,7 +3085,7 @@ the driver, and not one that blocks work.
 | **Field** | The phase checkpoints — a tripod, a dark sky, and a completed session | Manual, logged in the changelog |
 | **External** | DNGs open in Siril/RawTherapee (T-1.5); on-device master compared to Siril/DSS on identical subs (T-5.7) | Desktop |
 
-**445 JVM tests as of 2026-08-20** — qualification 21, session naming 17, star detection 14,
+**466 JVM tests as of 2026-08-21** — qualification 21, session naming 17, star detection 14,
 session planner 14, frame gate 14, leak analysis 13, session pane store 12, session log 12, preview
 stack 11, permissions 11, focus sweep 11, exposure solver 11, astro 11, DNG reader 10, camera picker
 10, exposure compensation 10, trailing limit 9, stream planning 8, noise model 8, JSON 8, exposure
@@ -3089,6 +3161,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-08-21 | **T-5.3 — the tiled accumulator, and what a stub is allowed to be (§1.32).** Tiling is forced by arithmetic: a 12.6 MP master in three channels is 151 MB, and sigma clipping needs every frame's value for a pixel at once — **7.5 GB** for 150 frames. `tileRowsFor` makes the governing relationship explicit: **more frames means thinner tiles**, so a 20-frame session and a 200-frame night do not stack alike. **`DngReader.Rows` is the enabler**, serving row ranges instead of whole frames — possible only because §1.12 measured one strip per row, and without it a tiled stack would need sixteen thousand full 25 MB decodes for one night. The tile fetches a **margin either side**, because under rotation a band of output maps to a sheared band of input `2048 × sin θ` rows taller — over a hundred at the angles a session reaches, so a stack built as though rows lined up would seam at every boundary. **Both dependencies injected**, `Resampler` because OpenCV cannot load off-device — and the stub immediately earned its keep by being **wrong in the documented way**: it used the inverse transform where the contract says forward, the same confusion `Resample` warns about, caught by the test within an hour of the warning being written. A second failure recorded because it will recur: **Kotlin sorts `NaN` above every number**, so a `maxByOrNull` over a master picks an uncovered pixel — and uncovered is NaN by design, since writing zero would claim a darkness nobody measured. The defining property has its own test: **the tiling must be invisible in the answer**, one tile or twenty. 466 JVM tests. |
 | 2026-08-20 | **T-5.1 accepted on device, and the throughput read honestly (§1.31).** `--es diag warp` passes on all four counts: OpenCV loads; the warp recovers a placed dot to **0.13 px**, so the direction is right where an inversion would have landed it 36 px away with no exception; the uncovered border carries the sentinel rather than zero; and **debayer returns R=1000 G=500 B=100 exactly as they went in**, confirming `GRBG` really is OpenCV's `BayerGB` and that red and blue are not swapped — an error that would only have surfaced after colour balance, looking like a white-balance problem. **Throughput 13–15 ms/megapixel**, so ~25–29 s for a 150-frame stack's warp pass. Comfortable, and **not a number that required OpenCV**: the Kotlin alternative was estimated at roughly twice this, which would also have been comfortable. The dependency bought quality and margin rather than feasibility, the profile §12.1 asked for now exists, and it says either choice would have worked. Recorded rather than glossed, since the 24.8 MB is permanent and the reasoning should be too. The figure's real use is T-5.3's budget: 4 ms per 512×512 tile is a baseline any future regression can be measured against. **T-5.1 ticked.** |
 | 2026-08-20 | **T-5.2 — calibration, and three ways to be quietly wrong (§1.30).** FR-8.1 steps 1–2 on CFA data before debayer, every master independently optional. The ordering is not stylistic: dark current and flat response are properties of *one photosite*, and debayering first would apply each correction to a blend of sites that never shared either. Three details each have a test, because none of them would be visible in the result — the **black pedestal leaves exactly once** (a dark carries it too, so removing both pushes the background negative by exactly 64 ADU); **negatives are kept**, since clamping biases the mean upward by more where noise is larger and that non-uniform lift survives into the master, which is exactly what FR-8.1 step 5 then has to undo; and a **flat near zero is a hole, not a gain**, so it is marked bad rather than amplified into something indistinguishable from a star. **Hot pixels are repaired from their own colour, two pixels away** — on a Bayer grid the adjacent sites are a different colour, and repairing from them swaps an obviously bad pixel for a plausible wrong one that the gate and the stack would both trust. Medians throughout, since hot pixels cluster and a cosmic ray in one dark would otherwise be subtracted from every light in the session. 445 JVM tests. |
 | 2026-08-20 | **T-5.1 — OpenCV added, and walled off.** `org.opencv:opencv:4.14.0`, sanctioned by **D-7** and confirmed by the owner after weighing what it actually buys: a better warp kernel, and an edge-aware demosaic that astro arguably should not want. **Measured cost 24.8 MB** of APK against ~27.5 MB for everything else — it roughly doubles the app, held to one native library by D-8's arm64-only filter. **`stacking/Resample.kt` is the only file importing `org.opencv`**, which is what turns T-5.1's "warp/transform primitives only" from a sentence into a boundary; the reversal cost the plan claims is then real. Loaded **lazily**, so a 45-minute capture never maps a library it has no use for. Debayer is **bilinear on purpose**: the edge-aware variants correlate noise between neighbouring pixels, and T-5.4's sigma-clipped mean assumes independent samples. **The on-device acceptance has not run** — the phone was unplugged, and OpenCV cannot load in a JVM test, so `--es diag warp` is written and waiting to answer whether it loads, whether the warp points the right way, and what it costs per megapixel. 5 JVM tests cover the one thing reachable off-device: the **DNG-to-OpenCV Bayer naming offset**, where GRBG is `BayerGB` rather than `BayerGR` because the two conventions name different corners of the 2×2 cell. |

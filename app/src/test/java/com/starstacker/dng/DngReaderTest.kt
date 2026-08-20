@@ -3,6 +3,7 @@ package com.starstacker.dng
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.io.TempDir
@@ -151,6 +152,108 @@ class DngReaderTest {
      * payloads, then pixel strips.
      */
     @Suppress("LongParameterList")
+    // ------------------------------------------------------------------ T-5.3 row ranges
+
+    @Test
+    fun `a row range decodes to the same values the whole frame gives`() {
+        // The property the tiled stacker depends on: reading rows 4..7 must be indistinguishable
+        // from reading everything and slicing. If it were not, a stack would be built from frames
+        // that quietly disagreed with themselves at every tile boundary.
+        val w = 6
+        val h = 12
+        val samples = IntArray(w * h) { it * 3 }
+        val file = writeDng(w, h, samples, rowsPerStrip = 1)
+
+        val whole = DngReader.read(file).pixels
+        DngReader.Rows(file).use { rows ->
+            val buffer = ShortArray(4 * w)
+            assertEquals(4, rows.read(fromRow = 4, rowCount = 4, into = buffer))
+            for (i in 0 until 4 * w) {
+                assertEquals(whole[4 * w + i], buffer[i]) { "row range differs at $i" }
+            }
+        }
+    }
+
+    @Test
+    fun `every row range of a frame reassembles into the whole frame`() {
+        // Stronger than the single case: walk the frame in tiles and rebuild it. Off-by-one errors
+        // in the strip arithmetic survive one lucky range and not this.
+        val w = 5
+        val h = 17
+        val samples = IntArray(w * h) { (it * 7) % 900 }
+        val file = writeDng(w, h, samples, rowsPerStrip = 1)
+        val whole = DngReader.read(file).pixels
+
+        DngReader.Rows(file).use { rows ->
+            val rebuilt = ShortArray(w * h)
+            val buffer = ShortArray(4 * w)
+            var row = 0
+            while (row < h) {
+                val got = rows.read(row, 4, buffer)
+                for (i in 0 until got * w) rebuilt[row * w + i] = buffer[i]
+                row += got
+            }
+            assertTrue(whole.contentEquals(rebuilt)) { "the frame did not survive being tiled" }
+        }
+    }
+
+    @Test
+    fun `a range that runs off the bottom returns what exists rather than overrunning`() {
+        // The last tile of every frame hits this. Returning the count rather than filling the
+        // buffer is what stops the caller stacking whatever the buffer held last time.
+        val w = 4
+        val h = 10
+        val file = writeDng(w, h, IntArray(w * h) { it }, rowsPerStrip = 1)
+
+        DngReader.Rows(file).use { rows ->
+            val buffer = ShortArray(6 * w)
+            assertEquals(2, rows.read(fromRow = 8, rowCount = 6, into = buffer))
+            assertEquals(0, rows.read(fromRow = 10, rowCount = 4, into = buffer))
+        }
+    }
+
+    @Test
+    fun `multi-row strips still serve a single row correctly`() {
+        // A file with fatter strips is legal and this device does not write one, but a frame that
+        // came back from a PC might. The strip is decoded whole and the wanted row copied out,
+        // which is correct and merely less efficient — the caller can see rowsPerStrip and judge.
+        val w = 4
+        val h = 12
+        val samples = IntArray(w * h) { it * 2 }
+        val file = writeDng(w, h, samples, rowsPerStrip = 4)
+        val whole = DngReader.read(file).pixels
+
+        DngReader.Rows(file).use { rows ->
+            assertEquals(4, rows.rowsPerStrip)
+            val buffer = ShortArray(w)
+            assertEquals(1, rows.read(fromRow = 6, rowCount = 1, into = buffer))
+            for (x in 0 until w) assertEquals(whole[6 * w + x], buffer[x]) { "row 6 col $x" }
+        }
+    }
+
+    @Test
+    fun `metadata is available without reading any pixels`() {
+        val w = 8
+        val h = 8
+        val file = writeDng(w, h, IntArray(w * h), rowsPerStrip = 1, iso = 1600)
+        DngReader.Rows(file).use { rows ->
+            assertEquals(w, rows.metadata.width)
+            assertEquals(h, rows.metadata.height)
+            assertEquals(1600, rows.metadata.isoSpeed)
+        }
+    }
+
+    @Test
+    fun `a buffer too small for the request is refused rather than half filled`() {
+        val w = 6
+        val file = writeDng(w, 8, IntArray(w * 8), rowsPerStrip = 1)
+        DngReader.Rows(file).use { rows ->
+            assertThrows(IllegalArgumentException::class.java) {
+                rows.read(0, 4, ShortArray(2 * w))
+            }
+        }
+    }
+
     private fun writeDng(
         width: Int,
         height: Int,
