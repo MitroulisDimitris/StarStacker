@@ -42,6 +42,7 @@ import com.starstacker.diag.CameraLifecycleCheck
 import com.starstacker.diag.FieldDiagnostics
 import com.starstacker.diag.FieldLog
 import com.starstacker.diag.StorageBenchmark
+import com.starstacker.diag.WarpCheck
 import com.starstacker.dng.DngReader
 import com.starstacker.focus.FocusSweep
 import com.starstacker.device.Tier
@@ -914,8 +915,11 @@ class MainActivity : ComponentActivity() {
                             log = log,
                         )
 
+                        // T-5.1 — OpenCV cannot run in a JVM test, so its acceptance lives here.
+                        "warp" -> WarpCheck.run(log)
+
                         else ->
-                            log("unknown diag mode '$mode' — expected framing, focus, lens, solve or lifecycle")
+                            log("unknown diag mode '$mode' — expected framing, focus, lens, solve, lifecycle or warp")
                     }
                 }
             }

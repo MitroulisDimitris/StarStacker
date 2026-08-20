@@ -2704,7 +2704,27 @@ changes whether someone can run one without being surprised.
 
 ## 8. Phase 3 — Stacking
 
-- [ ] **T-5.1** Add OpenCV Android SDK (D-7); warp/transform primitives only.
+- [~] **T-5.1** Add OpenCV Android SDK (D-7); warp/transform primitives only.
+  **Added 2026-08-20** — `org.opencv:opencv:4.14.0` from Maven Central, 4.x rather than 5.0 because
+  this is not the place to be first. **Measured cost: 24.8 MB** of the APK (23.5 MB
+  `libopencv_java4.so` + 1.2 MB `libc++_shared.so`), against ~27.5 MB for everything else — so it
+  roughly doubles the app. `abiFilters += "arm64-v8a"` (**D-8**) is what keeps that to one native
+  library instead of four.
+  **`stacking/Resample.kt` is the only file that imports `org.opencv`**, and that is what enforces
+  T-5.1's scope: a sentence in a plan is not a boundary, an import list is. The rest of the codebase
+  speaks `FloatArray`, `ShortArray` and `RigidTransform`, so the reversal really is this file plus
+  its call sites.
+  **Loaded lazily**, on first stacking call rather than at startup, so capture — the part that runs
+  45 minutes on a battery — never maps 24 MB it has no use for.
+  **Debayer is deliberately bilinear, not edge-aware.** OpenCV's `_VNG` and `_EA` interpolate along
+  detected gradients, which *correlates noise between neighbouring pixels* — and T-5.4's
+  sigma-clipped mean assumes pixels are independent samples. A cleverer demosaic would quietly
+  degrade the rejection that does stacking's actual work. Stars are point sources; there are no
+  edges here worth being clever about.
+  *Remaining:* **the on-device acceptance has not run** — the phone was unplugged. OpenCV cannot
+  load in a JVM test, so `--es diag warp` (`diag/WarpCheck.kt`) is written and waiting: does the
+  library load, is the warp pointing the right way, and what does it cost per megapixel. That last
+  number is the one that should have decided the dependency, and it is still unmeasured.
 - [ ] **T-5.2** Calibration application on CFA data **before** debayer (FR-8.1 steps 1–2), with
   every master optional and pass-through when absent.
 - [ ] **T-5.3** Debayer + tiled accumulator (FR-7.6): load tile T across all N frames, combine,
@@ -2884,7 +2904,7 @@ the driver, and not one that blocks work.
 | **Field** | The phase checkpoints — a tripod, a dark sky, and a completed session | Manual, logged in the changelog |
 | **External** | DNGs open in Siril/RawTherapee (T-1.5); on-device master compared to Siril/DSS on identical subs (T-5.7) | Desktop |
 
-**422 JVM tests as of 2026-08-19** — qualification 21, session naming 17, star detection 14,
+**427 JVM tests as of 2026-08-20** — qualification 21, session naming 17, star detection 14,
 session planner 14, frame gate 14, leak analysis 13, session pane store 12, session log 12, preview
 stack 11, permissions 11, focus sweep 11, exposure solver 11, astro 11, DNG reader 10, camera picker
 10, exposure compensation 10, trailing limit 9, stream planning 8, noise model 8, JSON 8, exposure
@@ -2960,6 +2980,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-08-20 | **T-5.1 — OpenCV added, and walled off.** `org.opencv:opencv:4.14.0`, sanctioned by **D-7** and confirmed by the owner after weighing what it actually buys: a better warp kernel, and an edge-aware demosaic that astro arguably should not want. **Measured cost 24.8 MB** of APK against ~27.5 MB for everything else — it roughly doubles the app, held to one native library by D-8's arm64-only filter. **`stacking/Resample.kt` is the only file importing `org.opencv`**, which is what turns T-5.1's "warp/transform primitives only" from a sentence into a boundary; the reversal cost the plan claims is then real. Loaded **lazily**, so a 45-minute capture never maps a library it has no use for. Debayer is **bilinear on purpose**: the edge-aware variants correlate noise between neighbouring pixels, and T-5.4's sigma-clipped mean assumes independent samples. **The on-device acceptance has not run** — the phone was unplugged, and OpenCV cannot load in a JVM test, so `--es diag warp` is written and waiting to answer whether it loads, whether the warp points the right way, and what it costs per megapixel. 5 JVM tests cover the one thing reachable off-device: the **DNG-to-OpenCV Bayer naming offset**, where GRBG is `BayerGB` rather than `BayerGR` because the two conventions name different corners of the 2×2 cell. |
 | 2026-08-20 | **Every frame of field data was destroyed, and two guards added (§1.29).** All four sessions were deleted from the device while clearing probe sessions with `rm -rf .../sessions/*<label>` — roughly **5 GB of DNGs**, including the only successful sky session (42 of 49 kept) and the only darks ever captured. Nothing recoverable; no copies on the PC. **The irony is the point**: D-10 forbids the app deleting anything of its own accord, D-26 exists so a *person* can, and T-3.28's confirmation names what will be lost — a confirmation opened on this very data hours earlier and deliberately cancelled. The care was applied to the interface and bypassed with a shell glob, because clearing probes felt like tidying rather than deleting. **Diagnostic sessions are now labelled `diag-` by force** in `MainActivity`'s diag branch, so a folder without the prefix is real capture data, and deletion is by exact name with a listing either side. The measurements survive in this document; the pixels do not — which damages **Checkpoint 2** and **T-5.7**, both of which now wait on a clear night with no fallback. |
 | 2026-08-19 | **Asked whether it is ready to shoot, and found a defect by looking (§1.29).** Phase 2 put new code in the capture path today and none of it had run on hardware, so the question could not be answered from this document. A six-frame session indoors reported its **first four frames as `REGISTRATION` failures** — but frame one *is* the reference and cannot fail to register against itself; there were simply no stars. The cause is a gap in the gate's vocabulary: `FrameGate` diagnoses cloud **relative to a baseline that does not exist for the first five frames**, so at the start of a session the registration check was the only one with an opinion and it gave the wrong one. That is the worst possible timing — the start of a session is exactly when the sky may be overcast or the lens still capped — and the message pointed at the mount. `LiveRegistration` now distinguishes **starved** from **failed**, and `FrameGate` gained an **absolute star floor** checked before the relative one; on device it now reads *"1 stars — too few to register or stack, so cloud, twilight or a lens cap"*. **Every existing test missed it because they all primed the gate with good frames first**, which is the state a session reaches *after* the bug fires. Also corrected a stale claim: **darks have executed** — 30 DNGs on disk in `2026-08-18_2039` — where the progress table had said they never had since Phase 1C. What has genuinely never happened is a 45-minute unattended session. 422 JVM tests. |
 | 2026-08-19 | **T-4.6 — the preview finally shows what the stack will look like (§1.28), and Phase 2 is built.** The transform half landed with T-4.4; `SessionLogTest` had a round-trip test waiting for `FrameRecord.transform` since Phase 1C. The substantial half: **the preview had been aligning by translation alone**, voted between consecutive frames — correct for a tripod that only drifts, wrong for every alt-az mount, so rotation accumulated as a smear worst at the corners, invisible at the centre, and indistinguishable from soft focus. Stacking through the measured transform now gives **tighter stars and more of them** on a session rotating 0.4° a frame, because a smeared star spreads its flux below the detection threshold. **The risk was coordinates, not geometry**: preview pixels, the binned plane and sensor coordinates meet in one expression, and getting it wrong throws nothing — it just makes the preview slightly soft, which is what bad focus, bad seeing and a good stack on a mediocre night also look like. `PlaneMapping` composes them once, tested against the transform it must reproduce, with specific cases for the three traps: a sensor translation divided by the bin factor, the sub-pixel `binOffset·(a+b−1)` term a naive division drops, and rows staying rows without rotation but not with it. `StarOffset`'s path is **kept as a fallback rather than deleted**, because registration has never run under a real sky and retiring a proven path for an unproven one on the same day is a poor trade. 417 JVM tests. |

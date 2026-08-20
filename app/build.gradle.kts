@@ -57,6 +57,11 @@ dependencies {
     debugImplementation(libs.compose.ui.tooling)
     implementation(libs.compose.ui.tooling.preview)
 
+    // D-7 / T-5.1 — Phase 3 only, and warp/transform primitives only. The arm64-only abiFilter
+    // above (D-8) is what keeps this to a single native library rather than four. Loaded lazily by
+    // `stacking/Resample.kt`, so the capture path never pays for it.
+    implementation(libs.opencv)
+
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly(libs.junit.platform.launcher)
 }
