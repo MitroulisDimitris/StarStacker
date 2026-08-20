@@ -1472,6 +1472,49 @@ gone.
 
 ---
 
+## 1.30 Calibration, and three ways to be quietly wrong — 2026-08-20
+
+T-5.2 is FR-8.1's first two steps, and it is arithmetic rather than algorithm: subtract a dark,
+divide by a flat, repair known-bad photosites. What makes it worth writing carefully is that **every
+way of getting it wrong produces a plausible number**. Nothing throws, nothing looks broken, and the
+damage shows up two stages later as a background the gradient removal has to fight.
+
+**The black pedestal must leave exactly once.** A raw frame sits on 64 ADU so noise can swing below
+the floor without clipping. A *dark* frame carries that pedestal too — so subtracting a dark removes
+the pedestal and the dark current together, and subtracting the black level as well would push the
+whole frame negative by exactly 64 ADU. With no dark, the pedestal must go explicitly instead, or
+the flat division that follows operates on a signal 64 ADU too high everywhere. Both cases are
+handled; what the code will not do is either of them twice.
+
+**Negatives are kept.** After dark subtraction a starless pixel scatters either side of zero.
+Clamping the negative half lifts the mean — and lifts it *more where the noise is larger*, which is
+to say non-uniformly across the frame. That bias survives averaging, so it arrives in the master as
+a raised, uneven background: precisely what FR-8.1 step 5's gradient removal then spends its effort
+undoing. A pipeline that clips here is fighting itself.
+
+**A flat near zero is a hole, not a gain.** Dividing by a photosite that saw almost no light
+manufactures an enormous value out of noise, and an enormous value in a linear frame is
+indistinguishable from a bright star. Those pixels are marked bad rather than amplified. The same
+reasoning applies to the flat's own normalisation: dead pixels are excluded from the mean, or every
+other pixel gets inflated to apologise for them.
+
+### The detail that only exists because this runs on CFA data
+
+Hot pixels are repaired from the **median of their own colour, two pixels away**. On a Bayer grid
+the nearest same-colour neighbours sit at ±2 in x and y; the adjacent pixels are a different colour
+entirely. Repairing a green photosite from the red and blue beside it would replace one obviously
+bad pixel with a plausible-looking wrong one — worse, because the frame gate and the stack would
+then both trust it.
+
+A median rather than a mean for a second reason: hot pixels cluster, so a neighbour is sometimes
+also hot, and a mean would carry that fault into the repair.
+
+The same logic runs through `masterDark`, which combines a session's darks by median. A mean would
+fold a cosmic ray hit into the master and then subtract it from **every light in the session**,
+punching a permanent hole where one dark frame was struck.
+
+---
+
 ---
 
 ## 2. Decisions
@@ -2725,8 +2768,27 @@ changes whether someone can run one without being surprised.
   load in a JVM test, so `--es diag warp` (`diag/WarpCheck.kt`) is written and waiting: does the
   library load, is the warp pointing the right way, and what does it cost per megapixel. That last
   number is the one that should have decided the dependency, and it is still unmeasured.
-- [ ] **T-5.2** Calibration application on CFA data **before** debayer (FR-8.1 steps 1–2), with
+- [~] **T-5.2** Calibration application on CFA data **before** debayer (FR-8.1 steps 1–2), with
   every master optional and pass-through when absent.
+  **Built 2026-08-20** as `stacking/Calibration.kt`, 18 tests, §1.30. `(light − dark) /
+  normalised_flat`, then hot pixel repair; each master independently absent-able, because FR-3.1.1's
+  Functional tier shoots with no calibration at all and Phase 6 is where the library arrives.
+  **Three things that decide whether the numbers mean anything**, each with a test because none of
+  them would be visible in the result: the **black pedestal is removed exactly once** (a dark
+  carries it too, so subtracting both pushes the background negative by exactly the black level);
+  **negatives are kept**, since clamping them biases the mean upward by more where the noise is
+  larger, and that non-uniform lift survives averaging into the master; and a **flat pixel near zero
+  is a hole, not a gain**, so it is marked bad rather than amplified into something that looks like
+  a star.
+  **Hot pixels are repaired from their own colour, two pixels away** — on a Bayer grid the nearest
+  same-colour neighbours are at ±2, and repairing from the adjacent sites would mix red into a green
+  photosite and produce a plausible wrong value, which is worse than leaving it hot. A median, not a
+  mean, because clusters are common.
+  `masterDark` combines a session's darks by **median**, so a cosmic ray in one frame does not get
+  subtracted from every light in the session.
+  *Remaining:* no file I/O — this is the arithmetic, and loading masters comes with T-5.3's tiled
+  reader. Temperature matching (**D-16**) is Phase 6's library problem; the session shooting its own
+  darks at the end of the run is what stands in for it.
 - [ ] **T-5.3** Debayer + tiled accumulator (FR-7.6): load tile T across all N frames, combine,
   write, advance. `FloatArray` only, buffers allocated once (FR-12.2).
 - [ ] **T-5.4** Sigma-clipped mean as default; median / mean / kappa-sigma behind the expert
@@ -2904,7 +2966,7 @@ the driver, and not one that blocks work.
 | **Field** | The phase checkpoints — a tripod, a dark sky, and a completed session | Manual, logged in the changelog |
 | **External** | DNGs open in Siril/RawTherapee (T-1.5); on-device master compared to Siril/DSS on identical subs (T-5.7) | Desktop |
 
-**427 JVM tests as of 2026-08-20** — qualification 21, session naming 17, star detection 14,
+**445 JVM tests as of 2026-08-20** — qualification 21, session naming 17, star detection 14,
 session planner 14, frame gate 14, leak analysis 13, session pane store 12, session log 12, preview
 stack 11, permissions 11, focus sweep 11, exposure solver 11, astro 11, DNG reader 10, camera picker
 10, exposure compensation 10, trailing limit 9, stream planning 8, noise model 8, JSON 8, exposure
@@ -2980,6 +3042,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-08-20 | **T-5.2 — calibration, and three ways to be quietly wrong (§1.30).** FR-8.1 steps 1–2 on CFA data before debayer, every master independently optional. The ordering is not stylistic: dark current and flat response are properties of *one photosite*, and debayering first would apply each correction to a blend of sites that never shared either. Three details each have a test, because none of them would be visible in the result — the **black pedestal leaves exactly once** (a dark carries it too, so removing both pushes the background negative by exactly 64 ADU); **negatives are kept**, since clamping biases the mean upward by more where noise is larger and that non-uniform lift survives into the master, which is exactly what FR-8.1 step 5 then has to undo; and a **flat near zero is a hole, not a gain**, so it is marked bad rather than amplified into something indistinguishable from a star. **Hot pixels are repaired from their own colour, two pixels away** — on a Bayer grid the adjacent sites are a different colour, and repairing from them swaps an obviously bad pixel for a plausible wrong one that the gate and the stack would both trust. Medians throughout, since hot pixels cluster and a cosmic ray in one dark would otherwise be subtracted from every light in the session. 445 JVM tests. |
 | 2026-08-20 | **T-5.1 — OpenCV added, and walled off.** `org.opencv:opencv:4.14.0`, sanctioned by **D-7** and confirmed by the owner after weighing what it actually buys: a better warp kernel, and an edge-aware demosaic that astro arguably should not want. **Measured cost 24.8 MB** of APK against ~27.5 MB for everything else — it roughly doubles the app, held to one native library by D-8's arm64-only filter. **`stacking/Resample.kt` is the only file importing `org.opencv`**, which is what turns T-5.1's "warp/transform primitives only" from a sentence into a boundary; the reversal cost the plan claims is then real. Loaded **lazily**, so a 45-minute capture never maps a library it has no use for. Debayer is **bilinear on purpose**: the edge-aware variants correlate noise between neighbouring pixels, and T-5.4's sigma-clipped mean assumes independent samples. **The on-device acceptance has not run** — the phone was unplugged, and OpenCV cannot load in a JVM test, so `--es diag warp` is written and waiting to answer whether it loads, whether the warp points the right way, and what it costs per megapixel. 5 JVM tests cover the one thing reachable off-device: the **DNG-to-OpenCV Bayer naming offset**, where GRBG is `BayerGB` rather than `BayerGR` because the two conventions name different corners of the 2×2 cell. |
 | 2026-08-20 | **Every frame of field data was destroyed, and two guards added (§1.29).** All four sessions were deleted from the device while clearing probe sessions with `rm -rf .../sessions/*<label>` — roughly **5 GB of DNGs**, including the only successful sky session (42 of 49 kept) and the only darks ever captured. Nothing recoverable; no copies on the PC. **The irony is the point**: D-10 forbids the app deleting anything of its own accord, D-26 exists so a *person* can, and T-3.28's confirmation names what will be lost — a confirmation opened on this very data hours earlier and deliberately cancelled. The care was applied to the interface and bypassed with a shell glob, because clearing probes felt like tidying rather than deleting. **Diagnostic sessions are now labelled `diag-` by force** in `MainActivity`'s diag branch, so a folder without the prefix is real capture data, and deletion is by exact name with a listing either side. The measurements survive in this document; the pixels do not — which damages **Checkpoint 2** and **T-5.7**, both of which now wait on a clear night with no fallback. |
 | 2026-08-19 | **Asked whether it is ready to shoot, and found a defect by looking (§1.29).** Phase 2 put new code in the capture path today and none of it had run on hardware, so the question could not be answered from this document. A six-frame session indoors reported its **first four frames as `REGISTRATION` failures** — but frame one *is* the reference and cannot fail to register against itself; there were simply no stars. The cause is a gap in the gate's vocabulary: `FrameGate` diagnoses cloud **relative to a baseline that does not exist for the first five frames**, so at the start of a session the registration check was the only one with an opinion and it gave the wrong one. That is the worst possible timing — the start of a session is exactly when the sky may be overcast or the lens still capped — and the message pointed at the mount. `LiveRegistration` now distinguishes **starved** from **failed**, and `FrameGate` gained an **absolute star floor** checked before the relative one; on device it now reads *"1 stars — too few to register or stack, so cloud, twilight or a lens cap"*. **Every existing test missed it because they all primed the gate with good frames first**, which is the state a session reaches *after* the bug fires. Also corrected a stale claim: **darks have executed** — 30 DNGs on disk in `2026-08-18_2039` — where the progress table had said they never had since Phase 1C. What has genuinely never happened is a 45-minute unattended session. 422 JVM tests. |
