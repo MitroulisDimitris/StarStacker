@@ -2164,6 +2164,85 @@ same blind spot §1.34 recorded, showing up a second time in a different disguis
 
 ---
 
+## 1.39 Warp once — and the first master from real sky — 2026-09-02
+
+§1.38's fix, built and run. **Phase 3 has produced a linear master from a real session.**
+
+    stack: 1144.5 s for 114 frames
+    stack: rejection — 0.847% rejected · 37748736 px · 496104 below floor
+    stack: master min -3.7 mean 12.0 max 839.1
+    stack: wrote .../2026-08-23_0006/master/stack_linear.tif
+    stack: 131.9 MB · 3887x2828 at (168, 209)
+
+**Nineteen minutes, down from the sixty-one §1.38 projected**, and it finishes.
+
+### The shape
+
+Two passes. **Register** calibrates, debayers and warps every frame into reference coordinates
+exactly once, into `RegisteredFrames` — one raw float file per frame beside the session, deleted
+whatever happens. **Combine** then tiles the output and reads row `y` of every registered frame,
+**with no margin at all**, because by then every frame is in the same coordinate system.
+
+That is what breaks §1.38's coupling: the margin no longer multiplies the tile count. On this
+session 43 776 band-warps became 114 frame-warps.
+
+**The margin is now measured, not assumed.** `marginRowsFor` carries the frame's four corners
+through every transform and takes the largest row displacement. The old constant was 160; this
+session needs **224**. Worth recording *why* the constant was wrong, because the reasoning in §1.32
+looked sound: rotation alone at 3.72° displaces 136 rows, comfortably inside 160. The other 84 rows
+are **drift**, which §1.32's "width of the frame times the angle" ignored entirely.
+
+**Float intermediates, not 16-bit.** Half the space, and T-5.2 keeps negatives on purpose — an
+integer intermediate is exactly the clamp FR-8.1 step 5 then has to undo. The saving is thirty
+seconds on a nineteen-minute job; the cost would be a bias nothing downstream could detect.
+
+### Three defects, all found by running it
+
+**A band one row taller than its buffer.** `IllegalArgumentException: buffer holds 7426048, needs
+7430144` on frame 1. `sourceRowsFor` snaps a band's first row *down* to keep the CFA phase, so a
+band can be one row taller than `rows + 2 × margin`. It never fired while both numbers were even —
+tiles were 8 rows and the margin 160 — and fired at once when `registerRowsFor` returned 1365.
+Register rows are now even and the buffer carries two rows of slack.
+
+**`Trim to overlap` was answering the wrong question**, and the first run said so plainly:
+`0.00% uncovered` on a session with 3.72° of rotation, keeping the full 4096×3072 frame. The crop
+tested for `NaN`, and a pixel is only NaN when **no** frame reached it — but the reference frame
+covers the whole reference by definition, so nothing is ever NaN. What the mode's name promises is
+*every* frame, which needs the per-pixel **frame count**, not a NaN mask. `TiledStacker` now emits
+a coverage map (25 MB against a 151 MB master) and the crop trims to full coverage: **3887×2828**,
+which is the ~220-row displacement showing up as a border, exactly as it should.
+
+The evidence was in the run all along: **496 104 pixels combined below the five-sample floor** —
+the partial-depth border, being averaged from one to four frames while the middle had 114.
+
+**17 GB unpacked a byte at a time.** The intermediate reader shifted four bytes into a float per
+sample: 4.3 billion iterations. Now a bulk `FloatBuffer` copy. It bought less than expected — about
+60 s — which is itself the finding: **the combine is genuinely compute-bound**, as the profile said.
+
+### Where the nineteen minutes goes
+
+Register ≈ 290 s, combine ≈ 855 s. §1.38's profile predicts ~353 s of pure combining at this frame
+count, so roughly 500 s is intermediate I/O and the gather loop. **Threading the combine is the next
+lever** and remains the one §1.33 named: the loop is per-pixel independent and the phone has eight
+cores.
+
+### What the master says about the session, which is not all good news
+
+- **122 375 hot pixels** from the master dark — 1% of the sensor, at 8σ above the dark's own MAD.
+  High enough to be worth checking against a second session before trusting the threshold.
+- **The black level differs per channel**: `[64.75, 64.75, 64.75, 64.0]`. §1.34 predicted this exact
+  case and averages it; the note fired for real.
+- **Mean 12.0 ADU above the dark, max 839.** A dark sky and a short sub, and not obviously wrong —
+  but nothing has *looked* at the image yet, which is the whole of T-5.7.
+
+### T-5.7 is now a desktop job
+
+`stack_linear.tif` verified tag by tag: 3887×2828, `BitsPerSample [32,32,32]`, **`SampleFormat
+[3,3,3]`**, RGB, uncompressed, byte counts exact, provenance in `ImageDescription`, and the 17 GB
+of scratch cleaned up behind it. It needs opening in Siril next to the same 114 subs.
+
+---
+
 ## 2. Decisions
 
 | ID | Decision | Rationale | Reversal cost |
@@ -3474,10 +3553,13 @@ changes whether someone can run one without being surprised.
   are discarded. Worse, the margin is also **too small**: the session rotates 3.72°, displacing
   **219.5 rows**, so tiles are missing rows they need — the seam the margin exists to prevent.
   **Neither is tunable**: the margin grows with session length and the tile shrinks with frame
-  count, so both worsen as a session improves. **The fix is to warp each frame once into an
-  intermediate and tile only the combine**, where the margin is zero because everything is already
-  registered — ~7–8 minutes on this session, dominated by the combine. Invisible to the JVM tests,
-  whose 24-row fixture is smaller than the margin, which is §1.34's blind spot in a new disguise. The combiner ships as **T-5.4**'s sigma clipping since
+  count, so both worsen as a session improves.
+  **Rewritten 2026-09-02 (§1.39) to warp once**: a register pass puts every frame into reference
+  coordinates a single time (`RegisteredFrames`, one float file per frame, deleted whatever
+  happens), and the combine then tiles over already-registered data **with no margin at all**.
+  43 776 band-warps became 114. **61 minutes became 19, and it completes.** The margin is now
+  measured from the transforms rather than assumed — the constant 160 was too small because §1.32's
+  formula counted rotation and ignored drift. The combiner ships as **T-5.4**'s sigma clipping since
   2026-09-01 (§1.33), leaving the mean available as an explicit choice.
 - [~] **T-5.4** Sigma-clipped mean as default; median / mean / kappa-sigma behind the expert
   affordance. **Build in Kotlin, profile, and only then consider the single sanctioned JNI
@@ -3555,8 +3637,14 @@ changes whether someone can run one without being surprised.
   intersection cannot represent. Largest all-covered rectangle by histogram scan, `O(w x h)`.
   Provenance goes in the file's `ImageDescription` as well as `session.json`, because the audit
   trail is in the wrong place once one TIFF is copied to a PC.
-  *Remaining:* **151 MB per master**, unmeasured against a real session, and the write has never
-  run on a device. FR-9.1's `stack_stretched.jpg`/`.tif` are Phase 5's, not this.
+  **Written from real sky 2026-09-02** (§1.39): 3887×2828, 131.9 MB, verified tag by tag with
+  `SampleFormat [3,3,3]` and the session's provenance in `ImageDescription`.
+  **`Trim to overlap` was answering the wrong question and is fixed.** It tested for `NaN`, and a
+  pixel is only NaN when *no* frame reached it — the reference covers everything by definition, so
+  nothing was ever NaN and the crop kept the whole frame (`0.00% uncovered` on a session with 3.72°
+  of rotation). It now takes a per-pixel **coverage count** from the stacker and trims to where
+  *every* frame reached, which is what the name promises.
+  *Remaining:* FR-9.1's `stack_stretched.jpg`/`.tif` are Phase 5's, not this.
 - [~] **T-5.6a** *(new)* **The crop mode is a setting**, in Settings under `Stacking output`.
   `Trim to overlap` or `Keep full frame`, defaulting to trimming, because the border is not faint
   data — it is **fewer frames**, at a fraction of the depth with none of the rejection working, and
@@ -3576,8 +3664,9 @@ changes whether someone can run one without being surprised.
   on the phone since 2026-08-23: 119 of 120 lights accepted, 18 darks, **14.7 minutes of
   integration**, transforms and quality metrics complete. §1.29's claim went stale four days after
   it was written and this document did not notice.
-  T-5.6 writes `stack_linear.tif`, so the desktop half is ready. **T-5.7 is now blocked on the
-  stack finishing in a sitting**, which is §1.38's architectural fix — not on the weather.
+  **Everything now exists for it (§1.39).** `master/stack_linear.tif` is on the phone: 3887×2828
+  linear float, 114 frames, 881 s of integration. What is left is genuinely a desktop afternoon —
+  pull it, stack the same 114 subs in Siril, and compare SNR and star FWHM per §15.2.
   Phase 3 can be *built* against the synthetic sky and cannot be *validated* without a night out.
   Worth pulling a copy of the next session to the PC before anything else touches it.
 
@@ -3835,6 +3924,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-09-02 | **Warp once, and the first master from real sky (§1.39).** §1.38's fix built and run: a register pass puts every frame into reference coordinates once, into one float file per frame, and the combine then tiles over already-registered data **with no margin at all**. 43 776 band-warps became 114, and **61 minutes became 19 — and it finishes**. The margin is now measured from the transforms; the old constant of 160 was too small because §1.32's formula counted rotation and ignored drift, and rotation alone is only 136 of the 220 rows this session needed. **Three defects, all found by running it.** A band one row taller than its buffer, because the CFA parity snap rounds a band's start *down* — invisible while tile and margin were both even. **`Trim to overlap` was answering the wrong question**: it tested for NaN, and a pixel is only NaN when *no* frame reached it, but the reference covers everything by definition — so nothing was ever NaN and the crop kept the whole frame, reporting `0.00% uncovered` on a session with 3.72° of rotation. It now takes a per-pixel coverage count and trims to where every frame reached: **3887x2828**, the displacement showing up as a border. The evidence had been in the run all along — 496 104 pixels combined below the five-sample floor, the partial-depth border averaged from one to four frames. And 17 GB unpacked a byte at a time, now a bulk FloatBuffer copy, which bought less than expected and so confirmed the combine is compute-bound. **`stack_linear.tif` verified tag by tag** — 32-bit, `SampleFormat [3,3,3]`, provenance embedded, scratch cleaned up. **T-5.7 is now a desktop afternoon rather than a clear night.** 595 JVM tests. |
 | 2026-09-02 | **On the phone at last — four findings, one architectural (§1.38).** **There is field data**: `2026-08-23_0006` has sat on the device since 2026-08-23 with 119 of 120 lights accepted, 18 darks and 14.7 minutes of integration, and this document has said since §1.29 that none existed — stale four days after it was written. **T-5.4's profile ran** and §1.33's estimate was low by five times: 471.7 s of combining for a 150-frame master on one core, sixteen times the warp pass rather than several times it; §12.1's JNI exception stays shut because the loop is per-pixel independent and threading turns 7.9 minutes into one or two. **The heap does not fit a stack** — 151 MB master plus 50 MB dark plus 96 MB samples against a 256 MB growth limit, every number written down in a doc comment and never added up; `largeHeap` fixes it. **And the tiled loop is the wrong shape**: 114 frames give an 8-row tile against a 160-row margin, so every band reads, calibrates, debayers and warps 328 rows to produce 8 — a 41x amplification, ~61 minutes for one stack, 117 GB read to write 151 MB. The margin is simultaneously **too small**, since the session rotates 3.72° and displaces 219.5 rows, so tiles miss rows they need. Neither is tunable: the margin grows with session length and the tile shrinks with frame count. The fix is to warp each frame once into an intermediate and tile only the combine, where the margin is zero — ~7-8 minutes. Invisible to the JVM tests, whose 24-row fixture is smaller than the margin: §1.34's blind spot in a new disguise. |
 | 2026-09-02 | **T-5.5 — frame weighting, and the two places it quietly does not apply (§1.37).** The last unbuilt task in Phase 3, and two features from one score: weighting asks how much a frame counts, the keep-best cut asks whether it counts at all. **The exponents are physics rather than tuning** — weight is `1 / variance`, so sharpness enters as `1 / HFR²` since a star's flux spreads over an area proportional to `HFR²`, background as its inverse since sky shot noise variance is the background, and star count linearly, deliberately not squared, because haze raises the sky *and* hides stars and a frame should not be punished twice for one cause. **The property that mattered most is the boring one: with no metrics, nothing changes** — every session so far has a partial log, and a scheme that reweighted a night by which fields happened to be populated would be worse than no weighting. **Keeping the weights attached to their samples is what made this more than arithmetic**: the combiner reorders its scratch array and compacts survivors in place, so by the time there is a set to average nothing knows which frame each value came from — the weighted path carries a parallel index array through every quickselect swap and every compaction step, which halves the tile height, while the unweighted path allocates nothing because weighting is decided once per stack. **Rejection stays unweighted**, since a satellite is an outlier whatever frame it crossed. **Two places the weights quietly do not apply**, found by a test that failed for the right reason: `SigmaClip` returns the median below its five-sample floor, so a session of four frames or fewer is unweighted whatever the setting says, as is every pixel at the edge of the common area; and the median ignores weights by nature. The cut rounds up, so 95% of twenty drops one and 95% of three drops none, and the panel says the consequence in frames rather than percent. Phase 3 is now built in full; only T-5.7 remains, and it needs a night. 582 JVM tests. |
 | 2026-09-02 | **T-6.4 — the button, and a Cancel that did not cancel (§1.36).** Everything in Phase 3 worked and none of it was reachable: `TiledStacker` had no call site outside a test and a diagnostic, and §1.35's crop setting configured something nobody could trigger. A session now has **Stack**, running in its own foreground service — `mediaProcessing` on API 35+ and `dataSync` below, both declared because which applies depends on the API level the app runs on. FR-10.3.3 is load-bearing twice: it is the product rule, and the platform independently grants the full 6 h budget to a service started from a tap. **The defect: Cancel did not cancel.** The first version checked the flag in the progress callback and discarded the result at the end — but `stack` could not be stopped, so cancelling ground through every remaining tile first. On a 150-frame stack that is minutes of work after the request, and the reason someone cancels is usually that the phone is hot. It passed its test, because the test asserted the returned state and not the work done; the new tests count tiles. **`StackJob` holds the pipeline with no Android in it**, so the whole chain from a folder of DNGs to a written TIFF runs in a JVM test, and the diagnostic and the button cannot drift into two pipelines. **T-5.4's expert affordance finally has a home** after being specified since §1.33: an Advanced disclosure, collapsed, because the defaults are answers rather than placeholders and expanding should be opting into an argument. Three places now hold a stacking choice and they are three different questions — Settings is what a new stack starts with, the panel is what this run uses and does not write back, `session.json` is what produced an existing master. Nothing has been tapped. 557 JVM tests. |

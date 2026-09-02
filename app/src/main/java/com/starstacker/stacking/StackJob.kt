@@ -170,24 +170,42 @@ class StackJob(
             val master = try {
                 FloatArray(frames.width * frames.height * TiledStacker.CHANNELS)
             } catch (t: OutOfMemoryError) {
+
                 // 151 MB for a 12.6 MP master, and a real constraint rather than a bug. Reported
                 // rather than thrown, because the queue behind this should carry on.
                 return failed(name, "not enough memory for a ${frames.width}x${frames.height} master", onProgress, notes)
             }
 
             onProgress(
-                Progress(State.STACKING, name, message = "Stacking ${frames.count} frames"),
+                Progress(State.STACKING, name, message = "Registering ${frames.count} frames"),
             )
 
+            val coverageMap = if (settings.crop == LinearMaster.Crop.COMMON_AREA) {
+                runCatching { ShortArray(frames.width * frames.height) }.getOrNull()
+            } else {
+                null
+            }
             val combiner = settings.combiner()
             val started = System.nanoTime()
-            val completed = TiledStacker(frames, resampler, combiner).stack(
+            val completed = TiledStacker(
+                frames = frames,
+                resampler = resampler,
+                combiner = combiner,
+                // §1.38's registered intermediate lives beside the frames it came from, so the
+                // space it takes is visible rather than hidden in app-private storage.
+                scratchDirectory = sessionDir,
+            ).stack(
                 master = master,
+                // Per-pixel frame counts, so the crop can mean "every frame reached this" rather
+                // than "something did" — 25 MB against a 151 MB master.
+                coverage = coverageMap,
                 cancelled = cancelled,
             ) { p ->
-                onProgress(
-                    Progress(State.STACKING, name, p.tile, p.tiles, "Tile ${p.tile} of ${p.tiles}"),
-                )
+                val what = when (p.phase) {
+                    TiledStacker.Phase.REGISTER -> "Registering frame ${p.tile} of ${p.tiles}"
+                    TiledStacker.Phase.COMBINE -> "Combining tile ${p.tile} of ${p.tiles}"
+                }
+                onProgress(Progress(State.STACKING, name, p.tile, p.tiles, what))
             }
             val elapsed = (System.nanoTime() - started) / 1e9
 
@@ -202,7 +220,9 @@ class StackJob(
             onProgress(Progress(State.WRITING, name, message = "Writing the master"))
 
             val stats = MasterStats.of(master)
-            val region = LinearMaster.regionFor(master, frames.width, frames.height, settings.crop)
+            val region = LinearMaster.regionFor(
+                master, frames.width, frames.height, settings.crop, coverageMap, frames.count,
+            )
             val target = File(File(sessionDir, SessionLayout.MASTER), LinearMaster.FILE_NAME)
             val written = runCatching {
                 LinearMaster.write(

@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -22,6 +23,10 @@ import kotlin.math.roundToInt
  * twenty. Anything else is a seam, and a seam in a linear astro frame looks like a gradient.
  */
 class TiledStackerTest {
+
+    /** 1.38's register pass writes an intermediate; the tests give it somewhere disposable. */
+    @TempDir
+    lateinit var scratch: java.io.File
 
     private val w = 16
     private val h = 24
@@ -82,9 +87,11 @@ class TiledStackerTest {
         override fun warpBand(
             src: FloatArray,
             width: Int,
-            height: Int,
+            srcRows: Int,
+            srcTop: Int,
             channels: Int,
-            rowOffset: Int,
+            dstRows: Int,
+            dstTop: Int,
             transform: RigidTransform,
             out: FloatArray,
         ): Boolean {
@@ -92,13 +99,17 @@ class TiledStackerTest {
             // confusion Resample's own note warns about. The contract is: the transform maps
             // reference -> frame, so an output pixel p takes the frame's value at T(p). OpenCV
             // expresses that as WARP_INVERSE_MAP over the forward matrix; here it is just T.
-            for (y in 0 until height) {
+            //
+            // Since 1.38 the source band and the output band are different heights and start at
+            // different rows, so the two origins are applied separately: dstTop to reach the
+            // whole-frame coordinate, srcTop to index back into the band that was read.
+            for (y in 0 until dstRows) {
                 for (x in 0 until width) {
-                    val (sx, sy) = transform.apply(x.toDouble(), (y + rowOffset).toDouble())
+                    val (sx, sy) = transform.apply(x.toDouble(), (y + dstTop).toDouble())
                     val ix = sx.roundToInt()
-                    val iy = sy.roundToInt() - rowOffset
+                    val iy = sy.roundToInt() - srcTop
                     val to = (y * width + x) * channels
-                    if (ix in 0 until width && iy in 0 until height) {
+                    if (ix in 0 until width && iy in 0 until srcRows) {
                         val from = (iy * width + ix) * channels
                         for (c in 0 until channels) out[to + c] = src[from + c]
                     } else {
@@ -132,7 +143,7 @@ class TiledStackerTest {
         }
         val master = FloatArray(w * h * 3)
 
-        assertTrue(TiledStacker(frames, StubResampler(), mean).stack(master))
+        assertTrue(TiledStacker(frames, StubResampler(), mean, scratchDirectory = scratch).stack(master))
 
         for (y in 0 until h) {
             for (x in 0 until w) {
@@ -149,7 +160,7 @@ class TiledStackerTest {
             100 * (f + 1)
         }
         val master = FloatArray(w * h * 3)
-        TiledStacker(frames, StubResampler(), mean).stack(master)
+        TiledStacker(frames, StubResampler(), mean, scratchDirectory = scratch).stack(master)
 
         // (100 + 200 + 300 + 400) / 4
         assertEquals(250f, master[0], 1e-3f)
@@ -169,8 +180,8 @@ class TiledStackerTest {
         val manyTiles = FloatArray(w * h * 3)
 
         // A budget large enough for the whole frame, and one so small each tile is a single row.
-        TiledStacker(make(), StubResampler(), mean, memoryBudgetBytes = 64L * 1024 * 1024).stack(oneTile)
-        TiledStacker(make(), StubResampler(), mean, memoryBudgetBytes = w * 3L * 6 * 4).stack(manyTiles)
+        TiledStacker(make(), StubResampler(), mean, memoryBudgetBytes = 64L * 1024 * 1024, scratchDirectory = scratch).stack(oneTile)
+        TiledStacker(make(), StubResampler(), mean, memoryBudgetBytes = w * 3L * 6 * 4, scratchDirectory = scratch).stack(manyTiles)
 
         for (i in oneTile.indices) {
             assertEquals(oneTile[i], manyTiles[i], 1e-3f) { "tiling changed the master at $i" }
@@ -265,7 +276,7 @@ class TiledStackerTest {
         // Small enough to force many tiles, so most bands are genuinely partial.
         val budget = narrow * 3L * 2 * 4 * 100
         assertTrue(
-            TiledStacker(frames, StubResampler(), mean, memoryBudgetBytes = budget).stack(master),
+            TiledStacker(frames, StubResampler(), mean, memoryBudgetBytes = budget, scratchDirectory = scratch).stack(master),
         )
 
         // Every pixel is (1000 + y) - y = 1000, whatever tile it landed in.
@@ -299,7 +310,7 @@ class TiledStackerTest {
             if (x == 8 && y in 8..15) 900 else 100
         }
         val master = FloatArray(w * h * 3)
-        TiledStacker(frames, StubResampler()).stack(master)
+        TiledStacker(frames, StubResampler(), scratchDirectory = scratch).stack(master)
 
         val row = 12
         // Finite only. Kotlin's Float.compareTo sorts NaN *above* every number, so a plain
@@ -323,7 +334,7 @@ class TiledStackerTest {
             transforms = { far },
         ) { _, _, _ -> 500 }
         val master = FloatArray(w * h * 3)
-        TiledStacker(frames, StubResampler()).stack(master)
+        TiledStacker(frames, StubResampler(), scratchDirectory = scratch).stack(master)
 
         assertTrue(master.any { it.isNaN() }) { "uncovered pixels were filled in" }
     }
@@ -339,7 +350,7 @@ class TiledStackerTest {
             transforms = { i -> if (i == 0) null else half },
         ) { f, _, _ -> if (f == 0) 100 else 300 }
         val master = FloatArray(w * h * 3)
-        TiledStacker(frames, StubResampler(), mean).stack(master)
+        TiledStacker(frames, StubResampler(), mean, scratchDirectory = scratch).stack(master)
 
         val left = master[(5 * w + 1) * 3]
         val right = master[(5 * w + w - 2) * 3]
@@ -360,7 +371,7 @@ class TiledStackerTest {
             masters = Calibration.Masters.of(w, h, dark = dark),
         ) { _, _, _ -> 340 }
         val master = FloatArray(w * h * 3)
-        TiledStacker(frames, StubResampler(), mean).stack(master)
+        TiledStacker(frames, StubResampler(), mean, scratchDirectory = scratch).stack(master)
 
         assertEquals(300f, master[0], 1e-3f) { "the dark was not subtracted: ${master[0]}" }
     }
@@ -378,11 +389,11 @@ class TiledStackerTest {
         // T-5.4 seen from the outside. The mean keeps a twelfth of it — 166.7 against a background
         // of 100, which after the stretch is a sharp bright line and unmistakably not sky.
         val averaged = FloatArray(w * h * 3)
-        TiledStacker(framesWithASatellite(), StubResampler(), mean).stack(averaged)
+        TiledStacker(framesWithASatellite(), StubResampler(), mean, scratchDirectory = scratch).stack(averaged)
         assertEquals(166.667f, averaged[(9 * w + 4) * 3], 1e-2f)
 
         val clipped = FloatArray(w * h * 3)
-        TiledStacker(framesWithASatellite(), StubResampler(), Combine.SigmaClip()).stack(clipped)
+        TiledStacker(framesWithASatellite(), StubResampler(), Combine.SigmaClip(), scratchDirectory = scratch).stack(clipped)
         assertEquals(100f, clipped[(9 * w + 4) * 3], 1e-3f) { "the streak survived the clip" }
 
         // And the sky either side of it is untouched — a clip that flattened everything would pass
@@ -400,10 +411,12 @@ class TiledStackerTest {
         TiledStacker(
             framesWithASatellite(), StubResampler(), Combine.SigmaClip(),
             memoryBudgetBytes = 64L * 1024 * 1024,
+            scratchDirectory = scratch,
         ).stack(oneTile)
         TiledStacker(
             framesWithASatellite(), StubResampler(), Combine.SigmaClip(),
             memoryBudgetBytes = w * 3L * 12 * 4,
+            scratchDirectory = scratch,
         ).stack(manyTiles)
 
         for (i in oneTile.indices) {
@@ -416,7 +429,7 @@ class TiledStackerTest {
         // A stack that cannot report its rejection rate has to be trusted instead, and FR-9.2 wants
         // the figure in session.json so a restack is comparable rather than merely similar.
         val clip = Combine.SigmaClip()
-        TiledStacker(framesWithASatellite(), StubResampler(), clip).stack(FloatArray(w * h * 3))
+        TiledStacker(framesWithASatellite(), StubResampler(), clip, scratchDirectory = scratch).stack(FloatArray(w * h * 3))
 
         // Four rows of the frame, three channels, one frame in twelve.
         assertEquals(w * 4L * 3, clip.stats.rejected)
@@ -428,38 +441,54 @@ class TiledStackerTest {
     @Test
     fun `no frames is a failure rather than an empty master`() {
         val frames = FakeFrames(count = 0, width = w, height = h, masters = masters()) { _, _, _ -> 0 }
-        assertFalse(TiledStacker(frames, StubResampler()).stack(FloatArray(w * h * 3)))
+        assertFalse(TiledStacker(frames, StubResampler(), scratchDirectory = scratch).stack(FloatArray(w * h * 3)))
     }
 
     @Test
-    fun `progress is reported once per tile and reaches the last row`() {
+    fun `progress covers both passes and reaches the last row`() {
         val frames = FakeFrames(count = 3, width = w, height = h, masters = masters()) { _, _, _ -> 100 }
         val seen = mutableListOf<TiledStacker.Progress>()
-        TiledStacker(frames, StubResampler(), memoryBudgetBytes = w * 3L * 3 * 4 * 4)
+        TiledStacker(frames, StubResampler(), memoryBudgetBytes = w * 3L * 3 * 4 * 4, scratchDirectory = scratch)
             .stack(FloatArray(w * h * 3)) { seen += it }
 
         assertTrue(seen.isNotEmpty())
-        assertEquals(h, seen.last().rowsDone)
-        assertEquals(seen.size, seen.last().tile)
+        // Since 1.38 there are two passes, and a bar that only knew about one would sit at zero
+        // through the whole register pass.
+        assertTrue(seen.any { it.phase == TiledStacker.Phase.REGISTER }, "no register progress")
+        assertTrue(seen.any { it.phase == TiledStacker.Phase.COMBINE }, "no combine progress")
+        // Register counts frames; every frame should be announced.
+        assertEquals(3, seen.count { it.phase == TiledStacker.Phase.REGISTER })
+
+        val combine = seen.filter { it.phase == TiledStacker.Phase.COMBINE }
+        assertEquals(h, combine.last().rowsDone)
+        assertEquals(combine.size, combine.last().tile)
     }
 
     @Test
-    fun `every frame is asked for rows in every tile`() {
-        // The loop's shape: tiles outermost, frames within. Getting it inverted would need the
-        // whole accumulator in memory, which is the thing tiling exists to avoid.
+    fun `each frame is read once, however many tiles the combine takes`() {
+        // 1.38's whole point, as a regression test. The old loop read every frame once per *tile*,
+        // so a thin tile multiplied every read, calibration, debayer and warp by the tile count —
+        // measured at 41x on a real session, about 61 minutes for one stack. Registering first
+        // decouples them: the source is read once and the combine reads the intermediate.
         val frames = FakeFrames(count = 4, width = w, height = h, masters = masters()) { _, _, _ -> 100 }
-        val tiny = w * 3L * 4 * 4 * 2 // two rows a tile
-        TiledStacker(frames, StubResampler(), memoryBudgetBytes = tiny).stack(FloatArray(w * h * 3))
+        val tiny = w * 3L * 4 * 4 * 2 // two rows a combine tile, so there are many of them
+        TiledStacker(frames, StubResampler(), memoryBudgetBytes = tiny, scratchDirectory = scratch)
+            .stack(FloatArray(w * h * 3))
 
-        val tiles = (h + 1) / 2
-        assertEquals(tiles * 4, frames.rowRequests) { "expected one read per frame per tile" }
+        val combineTiles = (h + 1) / 2
+        assertTrue(combineTiles > 4, "the budget should have forced several tiles")
+        // One read per frame: this fixture is short enough for a single register band.
+        assertEquals(4, frames.rowRequests) {
+            "reads must not scale with the tile count — got ${frames.rowRequests} " +
+                "for 4 frames over $combineTiles tiles"
+        }
     }
 
     @Test
     fun `a master smaller than the frame is refused`() {
         val frames = FakeFrames(count = 1, width = w, height = h, masters = masters()) { _, _, _ -> 0 }
         val tooSmall = FloatArray(w * h)
-        val error = runCatching { TiledStacker(frames, StubResampler()).stack(tooSmall) }
+        val error = runCatching { TiledStacker(frames, StubResampler(), scratchDirectory = scratch).stack(tooSmall) }
         assertTrue(error.isFailure && error.exceptionOrNull() is IllegalArgumentException)
     }
 
@@ -474,7 +503,7 @@ class TiledStackerTest {
         var tilesRun = 0
         val budget = w * 3L * 2 * 4 * 2 // two rows a tile, so there are plenty of them
 
-        val completed = TiledStacker(frames, StubResampler(), mean, memoryBudgetBytes = budget)
+        val completed = TiledStacker(frames, StubResampler(), mean, memoryBudgetBytes = budget, scratchDirectory = scratch)
             .stack(FloatArray(w * h * 3), cancelled = { tilesRun >= 2 }) { tilesRun++ }
 
         assertFalse(completed, "a cancelled stack has not completed")
@@ -485,7 +514,7 @@ class TiledStackerTest {
     fun `a stack cancelled before it starts does no work at all`() {
         val frames = FakeFrames(count = 2, width = w, height = h, masters = masters()) { _, _, _ -> 100 }
         var tilesRun = 0
-        val completed = TiledStacker(frames, StubResampler(), mean)
+        val completed = TiledStacker(frames, StubResampler(), mean, scratchDirectory = scratch)
             .stack(FloatArray(w * h * 3), cancelled = { true }) { tilesRun++ }
 
         assertFalse(completed)

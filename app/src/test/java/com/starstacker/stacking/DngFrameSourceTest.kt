@@ -330,13 +330,18 @@ class DngFrameSourceTest {
         override fun warpBand(
             src: FloatArray,
             width: Int,
-            height: Int,
+            srcRows: Int,
+            srcTop: Int,
             channels: Int,
-            rowOffset: Int,
+            dstRows: Int,
+            dstTop: Int,
             transform: RigidTransform,
             out: FloatArray,
         ): Boolean {
-            src.copyInto(out, 0, 0, width * height * channels)
+            // No warp, but the offsets still have to be honoured: output row k is whole-frame row
+            // dstTop + k, which sits at (dstTop + k - srcTop) inside the source band.
+            val skip = (dstTop - srcTop) * width * channels
+            src.copyInto(out, 0, skip, skip + dstRows * width * channels)
             return true
         }
     }

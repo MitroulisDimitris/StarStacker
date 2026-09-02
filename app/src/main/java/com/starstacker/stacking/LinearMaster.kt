@@ -114,13 +114,27 @@ object LinearMaster {
      * actually happened rather than to what the transforms predicted, and it catches interior gaps
      * that a footprint intersection cannot see at all.
      *
+     * **[coverage] is what makes this mean what it says.** Without it the test is "was this pixel
+     * NaN", and a pixel is only NaN when *no* frame reached it — but the reference frame covers the
+     * whole reference by definition, so nothing is ever NaN and the crop keeps everything. The
+     * first real session proved it: 3.72° of rotation, and `0.00% uncovered`. With the per-pixel
+     * frame count the test becomes "did every frame reach this", which is the sentence the mode's
+     * own name makes.
+     *
      * Falls back to the full frame if nothing was covered, because a zero-pixel TIFF helps nobody
      * and the caller is told either way.
      */
-    fun regionFor(master: FloatArray, width: Int, height: Int, crop: Crop): Region {
+    fun regionFor(
+        master: FloatArray,
+        width: Int,
+        height: Int,
+        crop: Crop,
+        coverage: ShortArray? = null,
+        frames: Int = 0,
+    ): Region {
         val whole = Region(0, 0, width, height)
         if (crop == Crop.FULL_FRAME) return whole
-        return largestCoveredRectangle(master, width, height) ?: whole
+        return largestCoveredRectangle(master, width, height, coverage, frames) ?: whole
     }
 
     /**
@@ -131,8 +145,18 @@ object LinearMaster {
      * `O(width × height)` overall — one pass over a 12.6 MP mask, against the alternative of
      * testing candidate rectangles, which is not affordable at this size.
      */
-    private fun largestCoveredRectangle(master: FloatArray, width: Int, height: Int): Region? {
+    private fun largestCoveredRectangle(
+        master: FloatArray,
+        width: Int,
+        height: Int,
+        coverage: ShortArray?,
+        frames: Int,
+    ): Region? {
         if (width <= 0 || height <= 0) return null
+        // Full coverage where it is known. A pixel one frame reached is not uncovered — it is a
+        // hundred times shallower than the rest of the master, with none of the rejection working,
+        // and it is exactly the partial-depth border this mode exists to remove.
+        val required = if (coverage != null && frames > 0) frames else 0
         val heights = IntArray(width + 1)
         // One extra slot, held at height 0, so the stack is guaranteed to drain at the end of every
         // row without a second loop saying so.
@@ -144,9 +168,14 @@ object LinearMaster {
         for (y in 0 until height) {
             val rowBase = y.toLong() * width * TiledStacker.CHANNELS
             for (x in 0 until width) {
-                // Channel 0 speaks for the pixel: coverage is decided per pixel, before the
-                // debayer splits it into three.
-                val covered = !master[(rowBase + x.toLong() * TiledStacker.CHANNELS).toInt()].isNaN()
+                val covered = if (required > 0) {
+                    coverage!![y * width + x].toInt() >= required
+                } else {
+                    // No coverage map: fall back to "some frame reached it", which is all a NaN
+                    // mask can say. Channel 0 speaks for the pixel, since coverage is decided
+                    // before the debayer splits it into three.
+                    !master[(rowBase + x.toLong() * TiledStacker.CHANNELS).toInt()].isNaN()
+                }
                 heights[x] = if (covered) heights[x] + 1 else 0
             }
 

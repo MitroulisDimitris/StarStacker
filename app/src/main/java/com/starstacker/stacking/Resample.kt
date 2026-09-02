@@ -131,56 +131,71 @@ object Resample : TiledStacker.Resampler {
     }
 
     /**
-     * [warpToReference] for one band of a frame, and for interleaved channels.
+     * [warpToReference] for one band of a frame, into a separate output band.
      *
-     * ### The row offset, which is the whole of the difference
+     * ### Two row offsets, not one, and that is the fix from §1.38
+     *
+     * The source band has to be *taller* than the output: under rotation the rows feeding output
+     * row `k` come from a range spread across `width × sin θ` rows. While a tile warped its own
+     * band into itself the two origins were the same number, and the destination was as tall as
+     * the source — so a loop producing 8 output rows warped all 328 rows of the band it had read
+     * and threw away 320 of them. Measured at 41× the necessary work.
+     *
+     * Separating them makes the warp cost proportional to the **output**, which is what it should
+     * always have been.
+     *
+     * ### The row offsets, worked through
      *
      * A transform is expressed against the **whole frame**; a band does not know where it sits.
      * Warping a band with the frame's matrix unchanged would treat the band's first row as row
      * zero, so every tile but the first would be shifted by its own offset — a master built out of
      * bands that each drifted a different distance.
      *
-     * Both sides move together, because the source band and the destination band cover the same
-     * rows. For output row `y` within a band starting at `r`, the whole-frame row is `y + r`, and
-     * the source row wanted from the band is `T_y(x, y + r) − r`. Expanding the affine form:
+     * Output row `k` is whole-frame row `k + dstTop`; the value it wants sits at `T` of that, and
+     * within the source band that is `T_y(...) − srcTop`. Expanding the affine form:
      *
      * ```
-     * T_x(x, y + r) = a·x + b·y + (tx + b·r)
-     * T_y(x, y + r) = c·x + d·y + (ty + (d − 1)·r)
+     * T_x(x, k + dstTop) = a·x + b·k + (tx + b·dstTop)
+     * T_y(x, k + dstTop) = c·x + d·k + (ty + d·dstTop − srcTop)
      * ```
      *
-     * So only the translation changes, by `b·r` and `(d − 1)·r`. Note `(d − 1)`, not `d`: the `−r`
-     * that brings the answer back into band coordinates is the easy half to forget, and forgetting
-     * it leaves a stack that looks right at the top of every tile and slides towards the bottom.
+     * So only the translation moves, and **the two offsets enter differently**: `dstTop` through
+     * the rotation, `srcTop` as a plain subtraction. Setting them equal recovers the old
+     * `(d − 1)·r` form, which is why that expression looked like a typo and was not. Getting either
+     * wrong leaves a stack that is right at the top of every tile and slides towards the bottom.
      */
     override fun warpBand(
         src: FloatArray,
         width: Int,
-        height: Int,
+        srcRows: Int,
+        srcTop: Int,
         channels: Int,
-        rowOffset: Int,
+        dstRows: Int,
+        dstTop: Int,
         transform: RigidTransform,
         out: FloatArray,
     ): Boolean {
-        val samples = width * height * channels
-        require(src.size >= samples) { "source smaller than ${width}x${height}x$channels" }
-        require(out.size >= samples) { "destination smaller than ${width}x${height}x$channels" }
+        require(src.size >= width * srcRows * channels) { "source smaller than ${width}x$srcRows" }
+        require(out.size >= width * dstRows * channels) { "destination smaller than ${width}x$dstRows" }
         if (!available) return false
 
         val type = CvType.CV_32FC(channels)
-        val source = Mat(height, width, type)
-        val warped = Mat(height, width, type)
+        val source = Mat(srcRows, width, type)
+        val warped = Mat(dstRows, width, type)
         val matrix = Mat(2, 3, CvType.CV_64F)
         try {
             source.put(0, 0, src)
-            val m = bandMatrix(transform, rowOffset)
+            val m = bandMatrix(transform, dstTop, srcTop)
             matrix.put(0, 0, m[0], m[1], m[2], m[3], m[4], m[5])
 
             Imgproc.warpAffine(
                 source,
                 warped,
                 matrix,
-                source.size(),
+                // The *destination* size, which is the whole point: the source band is tall enough
+                // to cover the rotation and the output is only the rows being produced. Passing
+                // the source size here is what made the old loop warp 328 rows to use 8.
+                warped.size(),
                 Imgproc.INTER_CUBIC or Imgproc.WARP_INVERSE_MAP,
                 org.opencv.core.Core.BORDER_CONSTANT,
                 Scalar(UNCOVERED, UNCOVERED, UNCOVERED, UNCOVERED),
@@ -207,12 +222,17 @@ object Resample : TiledStacker.Resampler {
      * translation absorbs `b·r` in x and `(d − 1)·r` in y — the `−1` being the step back into band
      * coordinates, and the half that a reader will assume is a typo.
      */
-    fun bandMatrix(transform: RigidTransform, rowOffset: Int): DoubleArray {
+    fun bandMatrix(transform: RigidTransform, dstTop: Int, srcTop: Int = dstTop): DoubleArray {
         val m = transform.toMatrix()
-        val r = rowOffset.toDouble()
+        val d = dstTop.toDouble()
+        val srcRow = srcTop.toDouble()
+        // Output row k is whole-frame row (dstTop + k); the value wanted lives at T(that), which
+        // in the source band sits at T_y(...) - srcTop. The two offsets were the same number while
+        // a tile warped its own band into itself; the warp-once pass reads a tall source band and
+        // writes a short output tile, so they part company.
         return doubleArrayOf(
-            m[0], m[1], m[4] + m[1] * r,
-            m[2], m[3], m[5] + (m[3] - 1.0) * r,
+            m[0], m[1], m[4] + m[1] * d,
+            m[2], m[3], m[5] + m[3] * d - srcRow,
         )
     }
 

@@ -40,6 +40,11 @@ class TiledStacker(
     // rejection counters. A shared default would have every stack writing into one set of stats.
     private val combiner: Combiner = Combine.SigmaClip(),
     private val memoryBudgetBytes: Long = DEFAULT_MEMORY_BUDGET,
+    /**
+     * Where §1.38's registered intermediate is written. The session's own folder by default, so
+     * the space it takes is visible next to the frames rather than hidden in app-private storage.
+     */
+    private val scratchDirectory: java.io.File? = null,
 ) {
     /** Where frames come from. One implementation reads DNGs; the test's makes them up. */
     interface Frames {
@@ -86,16 +91,25 @@ class TiledStacker(
         fun debayer(cfa: ShortArray, width: Int, height: Int, cfaCodes: List<Int>, out: FloatArray): Boolean
 
         /**
-         * Carries [src] back into reference coordinates. [rowOffset] is the band's first row in
-         * whole-frame coordinates, because a transform is expressed against the frame and a band
-         * does not know where it sits.
+         * Carries [src] back into reference coordinates, from a source band into a **separate,
+         * shorter output band**.
+         *
+         * The two origins are given separately because they are genuinely different: the source
+         * band must be tall enough to cover the rotation, and the output is only the rows being
+         * produced. Warping a whole tall band to use a few of its rows is what §1.38 measured at
+         * 41× the necessary work.
+         *
+         * @param srcTop the source band's first row, in whole-frame coordinates.
+         * @param dstTop the output band's first row, in whole-frame coordinates.
          */
         fun warpBand(
             src: FloatArray,
             width: Int,
-            height: Int,
+            srcRows: Int,
+            srcTop: Int,
             channels: Int,
-            rowOffset: Int,
+            dstRows: Int,
+            dstTop: Int,
             transform: RigidTransform,
             out: FloatArray,
         ): Boolean
@@ -139,23 +153,47 @@ class TiledStacker(
         }
     }
 
-    data class Progress(val tile: Int, val tiles: Int, val rowsDone: Int, val rows: Int)
+    /** Which of the two passes is running — see [stack]. */
+    enum class Phase { REGISTER, COMBINE }
+
+    data class Progress(
+        val tile: Int,
+        val tiles: Int,
+        val rowsDone: Int,
+        val rows: Int,
+        val phase: Phase = Phase.COMBINE,
+    )
 
     /**
      * Stacks everything into [master], three interleaved channels at full frame size.
      *
-     * @return false if any tile failed. A partial master is worse than none: it looks like an
-     *   image and is wrong in a band.
+     * ### Two passes, since §1.38
      *
-     * @param cancelled consulted **before each tile**, so a stack stops within one tile of being
-     *   asked rather than at the end. That distinction is the whole value of the parameter: a
-     *   150-frame stack is minutes, and the reason someone presses cancel is usually that the
-     *   phone is hot — finishing the work and then discarding it answers neither the request nor
-     *   the reason for it. A cancelled stack returns false, like any other incomplete one; the
-     *   caller knows which it asked for.
+     * **Register**, then **combine**. Every frame is calibrated, debayered and warped into
+     * reference coordinates exactly once and parked in [RegisteredFrames]; the combine then walks
+     * the output in tiles, reading row `y` of every registered frame — with **no margin**, because
+     * by then every frame is in the same coordinate system.
+     *
+     * The first version did both inside the tile loop, and that is quadratic in the wrong way. A
+     * source band must be taller than its tile to cover the rotation, so with a 220-row margin and
+     * an 8-row tile — which is what 114 frames and the sample budget actually produced — each of
+     * 384 tiles read, calibrated, debayered and warped 328 rows to yield 8. **41× amplification,
+     * about 61 minutes for one stack.** The margin grows with session length and the tile shrinks
+     * with frame count, so no constant fixes it.
+     *
+     * The cost is [RegisteredFrames]' scratch: 151 MB a frame, 17 GB for a long session. That buys
+     * `frames × tiles` warps becoming `frames`.
+     *
+     * @return false if any tile failed, if the scratch could not be made, or if [cancelled]. A
+     *   partial master is worse than none: it looks like an image and is wrong in a band.
+     * @param cancelled consulted between frames and between tiles, so a stack stops within one
+     *   unit of work of being asked rather than at the end — the reason someone presses cancel is
+     *   usually that the phone is hot, and finishing first answers neither the request nor the
+     *   reason for it.
      */
     fun stack(
         master: FloatArray,
+        coverage: ShortArray? = null,
         cancelled: () -> Boolean = { false },
         onProgress: (Progress) -> Unit = {},
     ): Boolean {
@@ -172,16 +210,129 @@ class TiledStacker(
         weights = FloatArray(frames.count) { frames.weight(it) }
         weighted = combiner is Combine.Weighted && weights.any { it != 1f }
 
-        val tileRows = tileRowsFor(w, frames.count, memoryBudgetBytes, weighted)
-        val margin = marginFor()
-        val bandRows = tileRows + 2 * margin
+        val registered = scratch.let { RegisteredFrames.create(it, w, h, frames.count) }
+            ?: return false
 
-        // Every buffer this loop will ever need, allocated once (FR-12.2). Nothing below allocates.
+        coverage?.let {
+            require(it.size >= w * h) { "coverage needs ${w * h} entries" }
+        }
+
+        return registered.use {
+            register(registered, cancelled, onProgress) &&
+                combine(registered, master, coverage, cancelled, onProgress)
+        }
+    }
+
+    /**
+     * Pass one: every frame into reference coordinates, once.
+     *
+     * The band here is sized for *throughput* rather than for the sample budget — nothing is being
+     * accumulated, so the only constraint is the working buffers. A tall band amortises the margin,
+     * which is the cost this pass exists to pay only once.
+     */
+    private fun register(
+        registered: RegisteredFrames,
+        cancelled: () -> Boolean,
+        onProgress: (Progress) -> Unit,
+    ): Boolean {
+        val w = frames.width
+        val h = frames.height
+        val margin = marginFor()
+        val outRows = registerRowsFor(w, margin)
+        // Plus the row the parity snap can add: sourceRowsFor rounds the band's first row *down*
+        // to an even one, so a band can be one row taller than `outRows + 2 * margin`. That never
+        // fired while both numbers were even; it fires the moment either is odd, and it fires as
+        // an IllegalArgumentException from the reader rather than as anything diagnosable.
+        val bandRows = outRows + 2 * margin + BAND_SLACK_ROWS
+
+        // Allocated once for the whole pass (FR-12.2).
         val cfa = ShortArray(w * bandRows)
         val calibrated = FloatArray(w * bandRows)
         val calibratedShorts = ShortArray(w * bandRows)
         val colour = FloatArray(w * bandRows * CHANNELS)
-        val warped = FloatArray(w * bandRows * CHANNELS)
+        val warped = FloatArray(w * outRows * CHANNELS)
+
+        for (f in 0 until frames.count) {
+            if (cancelled()) return false
+            onProgress(Progress(f + 1, frames.count, 0, h, Phase.REGISTER))
+
+            val transform = frames.transform(f)
+            registered.writer(f).use { out ->
+                var top = 0
+                while (top < h) {
+                    val rows = minOf(outRows, h - top)
+                    val band = sourceRowsFor(top, rows, margin, h)
+                    val got = frames.rows(f, band.first, band.second, cfa)
+                    if (got <= 0) return false
+
+                    // 1-2. Calibrate on CFA, before debayer (FR-8.1, T-5.2). The band's origin goes
+                    // with it: the masters are whole-frame and this is one band of the light.
+                    Calibration.apply(
+                        cfa, frames.masters, frames.blackLevel, calibrated, frames.cfaCodes,
+                        band.first, got,
+                    )
+                    // The debayer takes integers; calibration produced floats that may be negative.
+                    // Rounding back is lossy by well under an ADU and keeps the CFA path honest.
+                    for (i in 0 until w * got) {
+                        calibratedShorts[i] = calibrated[i].toInt().coerceIn(0, 65535).toShort()
+                    }
+
+                    // 3. Debayer.
+                    if (!resampler.debayer(calibratedShorts, w, got, frames.cfaCodes, colour)) {
+                        return false
+                    }
+
+                    // 4. Into reference coordinates — only the rows being produced, which is
+                    // §1.38's fix. The reference frame has no transform and needs no warp.
+                    val produced: FloatArray = if (transform == null) {
+                        // Its own rows sit at `top - band.first` inside the band.
+                        val skip = (top - band.first) * w * CHANNELS
+                        colour.copyInto(warped, 0, skip, skip + rows * w * CHANNELS)
+                        warped
+                    } else {
+                        if (!resampler.warpBand(
+                                src = colour,
+                                width = w,
+                                srcRows = got,
+                                srcTop = band.first,
+                                channels = CHANNELS,
+                                dstRows = rows,
+                                dstTop = top,
+                                transform = transform,
+                                out = warped,
+                            )
+                        ) {
+                            return false
+                        }
+                        warped
+                    }
+
+                    registered.write(f, out, produced, rows)
+                    top += rows
+                }
+            }
+        }
+        return true
+    }
+
+    /**
+     * Pass two: combine the registered frames, tile by tile.
+     *
+     * **No margin anywhere in here.** Every frame is already in reference coordinates, so output
+     * row `y` is row `y` of every input, and a tile reads exactly the rows it writes.
+     */
+    private fun combine(
+        registered: RegisteredFrames,
+        master: FloatArray,
+        coverage: ShortArray?,
+        cancelled: () -> Boolean,
+        onProgress: (Progress) -> Unit,
+    ): Boolean {
+        val w = frames.width
+        val h = frames.height
+        val tileRows = tileRowsFor(w, frames.count, memoryBudgetBytes, weighted)
+
+        val band = FloatArray(w * tileRows * CHANNELS)
         val samples = FloatArray(frames.count)
         val sampleFrames = if (weighted) IntArray(frames.count) else null
 
@@ -191,34 +342,28 @@ class TiledStacker(
         while (top < h) {
             if (cancelled()) return false
             val rows = minOf(tileRows, h - top)
-            if (!stackTile(top, rows, margin, bandRows, cfa, calibrated, calibratedShorts, colour, warped, samples, sampleFrames, master)) {
+            if (!combineTile(registered, top, rows, band, samples, sampleFrames, master, coverage)) {
                 return false
             }
             tile++
             top += rows
-            onProgress(Progress(tile, tiles, top, h))
+            onProgress(Progress(tile, tiles, top, h, Phase.COMBINE))
         }
         return true
     }
 
-    private fun stackTile(
+    private fun combineTile(
+        registered: RegisteredFrames,
         top: Int,
         rows: Int,
-        margin: Int,
-        bandRows: Int,
-        cfa: ShortArray,
-        calibrated: FloatArray,
-        calibratedShorts: ShortArray,
-        colour: FloatArray,
-        warped: FloatArray,
+        band: FloatArray,
         samples: FloatArray,
         sampleFrames: IntArray?,
         master: FloatArray,
+        coverage: ShortArray?,
     ): Boolean {
         val w = frames.width
-        val h = frames.height
 
-        // Per-pixel sample lists for this tile, one entry per frame that covered it.
         val tilePixels = rows * w * CHANNELS
         // `tileStore` has already bounded `tilePixels * frames` to fit an Int, so the flat index
         // below cannot overflow — the check lives there rather than in this loop, which runs once
@@ -231,54 +376,16 @@ class TiledStacker(
         val origin = if (weighted) tileOrigin(tilePixels) else null
 
         for (f in 0 until frames.count) {
-            val band = sourceRowsFor(top, rows, margin, h)
-            val got = frames.rows(f, band.first, band.second, cfa)
-            if (got <= 0) continue
-
-            // 1-2. Calibrate on CFA, before debayer (FR-8.1, T-5.2). The band's origin goes with
-            // it: the masters are whole-frame and this is one band of the light.
-            Calibration.apply(
-                cfa,
-                frames.masters,
-                frames.blackLevel,
-                calibrated,
-                frames.cfaCodes,
-                band.first,
-                got,
-            )
-            // The debayer takes integers; calibration produced floats that may be negative. Rounding
-            // back is lossy by well under an ADU and keeps the CFA path honest — the alternative is
-            // a float demosaic this app does not have.
-            for (i in 0 until w * got) {
-                calibratedShorts[i] = calibrated[i].toInt().coerceIn(0, 65535).toShort()
-            }
-
-            // 3. Debayer.
-            if (!resampler.debayer(calibratedShorts, w, got, frames.cfaCodes, colour)) return false
-
-            // 4. Into reference coordinates.
-            val source: FloatArray = frames.transform(f)?.let { t ->
-                if (!resampler.warpBand(colour, w, got, CHANNELS, band.first, t, warped)) {
-                    return false
-                }
-                warped
-            } ?: colour
-
-            // Gather this frame's contribution to the tile's rows.
-            val skip = top - band.first
-            for (r in 0 until rows) {
-                val srcRow = r + skip
-                if (srcRow < 0 || srcRow >= got) continue
-                for (c in 0 until w * CHANNELS) {
-                    val v = source[srcRow * w * CHANNELS + c]
-                    if (!v.isFinite() || v == Resample.UNCOVERED.toFloat()) continue
-                    val p = r * w * CHANNELS + c
-                    val n = counts[p]
-                    if (n < frames.count) {
-                        store[p * frames.count + n] = v
-                        origin?.set(p * frames.count + n, f)
-                        counts[p] = n + 1
-                    }
+            val got = registered.rows(f, top, rows, band)
+            if (got <= 0) return false
+            for (c in 0 until got * w * CHANNELS) {
+                val v = band[c]
+                if (!v.isFinite() || v == Resample.UNCOVERED.toFloat()) continue
+                val n = counts[c]
+                if (n < frames.count) {
+                    store[c * frames.count + n] = v
+                    origin?.set(c * frames.count + n, f)
+                    counts[c] = n + 1
                 }
             }
         }
@@ -295,8 +402,46 @@ class TiledStacker(
                 combiner.combine(samples, n)
             }
         }
+
+        // How many frames actually reached each pixel. Channel 0 speaks for the pixel — coverage
+        // is decided before the debayer splits it — and this is what a crop needs: a pixel one
+        // frame reached is not uncovered, it is a hundred times shallower than the rest of the
+        // master, and nothing about its value says so.
+        if (coverage != null) {
+            for (y in 0 until rows) {
+                val src = y * w * CHANNELS
+                val dst = (top + y) * w
+                for (x in 0 until w) {
+                    coverage[dst + x] = counts[src + x * CHANNELS].toShort()
+                }
+            }
+        }
         return true
     }
+
+    /**
+     * Extra source rows fetched either side of an output band, so rotation cannot shear a seam.
+     *
+     * **Measured from the session's own transforms, not assumed.** It was a constant 160, sized in
+     * §1.32 for "the 2–3° a session reaches" — and the first real session reached **3.72°**,
+     * displacing **219.5 rows**. A margin smaller than the displacement does not degrade, it drops
+     * rows a tile needed, which is exactly the seam the margin exists to prevent.
+     *
+     * The exact answer is the largest row displacement anywhere in the frame, so the frame's four
+     * corners are carried through every transform and the worst is taken. Corners suffice because
+     * an affine map is monotonic along each axis: the extreme is always at a corner.
+     *
+     * Plus [INTERPOLATION_SLACK], because cubic resampling reaches beyond the pixel it lands on.
+     */
+    private fun marginFor(): Int = marginRowsFor(
+        frames.width,
+        frames.height,
+        (0 until frames.count).map { frames.transform(it) },
+    )
+
+    /** Where the intermediate goes. Defaults beside the frames it came from. */
+    private val scratch: java.io.File
+        get() = scratchDirectory ?: java.io.File(System.getProperty("java.io.tmpdir") ?: ".")
 
     // Lazily sized once, then reused across every tile (FR-12.2).
     private var store: FloatArray = FloatArray(0)
@@ -361,18 +506,40 @@ class TiledStacker(
         }
 
         /**
-         * Extra source rows fetched either side of a tile, so rotation cannot shear a seam into it.
+         * The margin a set of transforms actually needs, in rows.
          *
-         * A band of output rows maps, under rotation, to a band of input that is taller and
-         * sheared: a point at the far edge of a 4096-wide frame moves `2048 × sin θ` rows for a
-         * rotation of θ. At the 2–3° a session reaches that is over a hundred rows, so the margin
-         * is not a rounding allowance — it is the width of the frame times the angle.
+         * **Measured rather than assumed, since §1.38.** It was the constant 160, sized in §1.32
+         * for "the 2–3° a session reaches" — and the first real session reached **3.72°**,
+         * displacing **219.5 rows**. A margin below the displacement does not degrade gracefully:
+         * it drops rows a tile needed, which is precisely the seam the margin exists to prevent.
          *
-         * Fixed here rather than computed per tile because the transforms are not known to this
-         * function, and a margin that is too generous costs a little I/O while one that is too
-         * small costs a seam in every tile. The asymmetry decides it.
+         * The answer is the largest row displacement anywhere in the frame. The four corners
+         * suffice, because an affine map is monotonic along each axis and the extreme of a linear
+         * function over a rectangle is always at a corner.
+         *
+         * Pure, and a companion function rather than a method, because the only fixture that could
+         * exercise it through the loop would have to be thousands of rows tall — which is the
+         * blind spot §1.34 and §1.38 were both found in.
          */
-        private fun marginFor(): Int = DEFAULT_MARGIN_ROWS
+        fun marginRowsFor(width: Int, height: Int, transforms: List<RigidTransform?>): Int {
+            var worst = 0.0
+            val w = width.toDouble()
+            val h = height.toDouble()
+            for (t in transforms) {
+                if (t == null) continue
+                for (x in doubleArrayOf(0.0, w)) {
+                    for (y in doubleArrayOf(0.0, h)) {
+                        val (_, sy) = t.apply(x, y)
+                        val shift = kotlin.math.abs(sy - y)
+                        if (shift > worst) worst = shift
+                    }
+                }
+            }
+            return (kotlin.math.ceil(worst).toInt() + INTERPOLATION_SLACK)
+                .coerceIn(MIN_MARGIN_ROWS, MAX_MARGIN_ROWS)
+        }
+
+        private const val MIN_MARGIN_ROWS = 4
 
         /**
          * The source band a tile needs: the tile's rows plus [margin] either side, clipped to the
@@ -396,6 +563,45 @@ class TiledStacker(
         }
 
         private const val MAX_TILE_ROWS = 512
-        private const val DEFAULT_MARGIN_ROWS = 160
+
+        /**
+         * A ceiling on the measured margin. A session that rotates far enough to need more than
+         * this has bigger problems than a seam, and an unbounded margin would let one wild
+         * transform in a log make every band the whole frame.
+         */
+        private const val MAX_MARGIN_ROWS = 512
+
+        /** Cubic resampling reaches two pixels beyond where it lands; four is cheap insurance. */
+        private const val INTERPOLATION_SLACK = 4
+
+        /**
+         * One row for [sourceRowsFor]'s even-row snap, one for luck.
+         *
+         * The snap moves a band's first row *down*, so the band can be a row taller than
+         * `rows + 2 × margin`. Cheaper to allocate than to reason about at every call site.
+         */
+        private const val BAND_SLACK_ROWS = 2
+
+        /**
+         * Output rows produced per band in the register pass.
+         *
+         * Chosen so the margin is amortised rather than to fit a budget — nothing accumulates in
+         * that pass, so the only constraint is the working buffers, and a band of `rows + 2×margin`
+         * at 4096 wide is a few tens of megabytes. Kept to a multiple of the margin so the
+         * amplification stays near 1: at 8× the margin, a band does 1.25 rows of work per row
+         * produced.
+         */
+        fun registerRowsFor(width: Int, margin: Int): Int {
+            val wanted = (margin * 8).coerceAtLeast(64)
+            // Bounded so a huge margin cannot ask for a band larger than the buffers can hold.
+            val affordable = (REGISTER_BAND_BUDGET / (width.toLong() * CHANNELS * 4)).toInt()
+            // Even, so the band it produces starts on an even row and the debayer sees the frame's
+            // own CFA phase — the same requirement sourceRowsFor enforces for tiles.
+            val rows = wanted.coerceIn(1, affordable.coerceAtLeast(1))
+            return (rows and 1.inv()).coerceAtLeast(2)
+        }
+
+        /** 64 MB of working buffers for the register pass, which accumulates nothing. */
+        private const val REGISTER_BAND_BUDGET = 64L * 1024 * 1024
     }
 }

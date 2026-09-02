@@ -262,3 +262,61 @@ class LinearMasterTest {
         }
     }
 }
+
+/**
+ * The crop's coverage test, which the first real session showed was answering the wrong question.
+ */
+class CropCoverageTest {
+
+    private val w = 8
+    private val h = 6
+    private val frames = 10
+
+    private fun master() = FloatArray(w * h * 3) { 100f }
+
+    @Test
+    fun `without coverage the crop can only ask whether anything reached a pixel`() {
+        // And the reference frame reaches everything by definition, so nothing is ever NaN and the
+        // crop keeps the whole frame. That is what "0.00% uncovered" meant on a session with 3.72
+        // degrees of rotation.
+        val region = LinearMaster.regionFor(master(), w, h, LinearMaster.Crop.COMMON_AREA)
+        assertEquals(LinearMaster.Region(0, 0, w, h), region)
+    }
+
+    @Test
+    fun `with coverage it trims to the rows every frame reached`() {
+        // The border pixels were reached by one frame of ten: not uncovered, just ten times
+        // shallower, with none of the rejection working.
+        val coverage = ShortArray(w * h) { i ->
+            val x = i % w
+            val y = i / w
+            if (x == 0 || y == 0 || x == w - 1 || y == h - 1) 1 else frames.toShort()
+        }
+
+        val region = LinearMaster.regionFor(
+            master(), w, h, LinearMaster.Crop.COMMON_AREA, coverage, frames,
+        )
+        assertEquals(LinearMaster.Region(1, 1, w - 2, h - 2), region)
+    }
+
+    @Test
+    fun `a pixel one frame short of full coverage is still trimmed`() {
+        // "Every frame" is the sentence the mode's name makes, so it is the test applied.
+        val coverage = ShortArray(w * h) { frames.toShort() }
+        coverage[2 * w + 3] = (frames - 1).toShort()
+
+        val region = LinearMaster.regionFor(
+            master(), w, h, LinearMaster.Crop.COMMON_AREA, coverage, frames,
+        )
+        assertTrue(region.pixels < w.toLong() * h, "the shallow pixel should have cost something")
+    }
+
+    @Test
+    fun `full frame ignores coverage entirely`() {
+        val coverage = ShortArray(w * h) { 1 }
+        val region = LinearMaster.regionFor(
+            master(), w, h, LinearMaster.Crop.FULL_FRAME, coverage, frames,
+        )
+        assertEquals(LinearMaster.Region(0, 0, w, h), region)
+    }
+}
