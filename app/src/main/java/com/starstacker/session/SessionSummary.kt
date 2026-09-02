@@ -33,6 +33,8 @@ data class SessionSummary(
      * deletion confirmation, which is the one place the figure changes what someone does.
      */
     val sizeBytes: Long = 0L,
+    /** T-5.6 — whether a master has been produced from this session. */
+    val stacked: Boolean = false,
 ) {
     /** `9 Aug · 142/150 · 28m 24s` — the prototype's second line. */
     fun describe(): String = "${DATE.format(Date(startedAtEpochMs))} · ${counts()}"
@@ -86,13 +88,15 @@ data class SessionSummary(
     /**
      * The badge.
      *
-     * The prototype's is an **action** — `Stack now` — which it cannot be yet: stacking is Phase 3,
-     * and a button that does nothing is worse than a word that is true. Until then it states where
-     * the session got to, and T-5.x turns it back into the action it was designed as.
+     * The prototype's is an **action** — `Stack now` — and it is one again as of T-6.4, now that
+     * tapping a captured session leads somewhere that stacks it. A finished session says
+     * **Stacked**, because the list saying `Captured` beside a session with a master in it was the
+     * list being out of date about its own contents — noticed on the phone the first time a real
+     * stack finished.
      */
     val badge: String
         get() = when (state) {
-            SessionState.DONE -> "Captured"
+            SessionState.DONE -> if (stacked) "Stacked" else "Stack now"
             SessionState.FAILED -> "Failed"
             SessionState.CAPTURING, SessionState.DARKS, SessionState.FINALISING -> "Running"
             SessionState.PAUSED, SessionState.AWAITING_DARKS -> "Unfinished"
@@ -146,6 +150,9 @@ data class SessionSummary(
             integrationSeconds = log.acceptedIntegrationSeconds,
             state = log.info.state,
             sizeBytes = sizeBytes,
+            // The log is the source of truth (D-5), so a folder that has been to a PC and back
+            // still reports what was done to it.
+            stacked = log.info.stacking.isNotEmpty(),
         )
     }
 }

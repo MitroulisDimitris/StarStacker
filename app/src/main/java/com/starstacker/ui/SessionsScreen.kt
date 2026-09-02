@@ -398,6 +398,7 @@ private fun StackingSection(
     onSettingsChange: (StackSettings) -> Unit,
     onStack: () -> Unit,
     onCancel: () -> Unit,
+    onViewResult: () -> Unit,
 ) {
     // Only this session's progress. The service is a singleton and may be working on another one.
     val mine = progress.active && progress.sessionName == folderName
@@ -437,6 +438,9 @@ private fun StackingSection(
                 KeyValue("Method", StackSettings.fromMap(stacked).describe())
                 stacked["rejection"]?.let { KeyValue("Rejected", it) }
             }
+            Spacer(Modifier.height(8.dp))
+            // FR-9.4: never make them hunt for the output. This is the route to seeing it.
+            HotButton(text = "View and adjust the picture", onClick = onViewResult)
             Spacer(Modifier.height(8.dp))
         }
 
@@ -595,6 +599,7 @@ fun SessionDetailScreen(
     stackDefaults: StackSettings,
     onStack: (StackSettings) -> Unit,
     onCancelStack: () -> Unit,
+    onViewResult: () -> Unit,
     onDelete: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -736,6 +741,7 @@ fun SessionDetailScreen(
                 onSettingsChange = { settings = it },
                 onStack = { onStack(settings) },
                 onCancel = onCancelStack,
+                onViewResult = onViewResult,
             )
         }
 

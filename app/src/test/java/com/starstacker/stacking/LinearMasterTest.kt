@@ -1,6 +1,7 @@
 package com.starstacker.stacking
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -318,5 +319,76 @@ class CropCoverageTest {
             master(), w, h, LinearMaster.Crop.FULL_FRAME, coverage, frames,
         )
         assertEquals(LinearMaster.Region(0, 0, w, h), region)
+    }
+}
+
+/**
+ * Reading a master back, which is what makes FR-8.3's slider affordable — the auto-edit re-runs
+ * from the linear data rather than from the frames, so moving it costs seconds not a restack.
+ */
+class LinearMasterReadTest {
+
+    @org.junit.jupiter.api.io.TempDir
+    lateinit var tempDir: java.nio.file.Path
+
+    private val w = 40
+    private val h = 24
+
+    private fun written(name: String = "m.tif"): java.io.File {
+        val master = FloatArray(w * h * 3) { it * 0.5f - 3f }
+        val file = java.io.File(tempDir.toFile(), name)
+        LinearMaster.write(file, master, w, h, description = "read me")
+        return file
+    }
+
+    @Test
+    fun `a master round-trips through write and read`() {
+        val expected = FloatArray(w * h * 3) { it * 0.5f - 3f }
+        val image = LinearMaster.read(written())!!
+
+        assertEquals(w, image.width)
+        assertEquals(h, image.height)
+        assertEquals(1, image.step)
+        for (i in expected.indices) assertEquals(expected[i], image.pixels[i], 0f, "sample $i")
+    }
+
+    @Test
+    fun `negative values survive the round trip`() {
+        // T-5.2 keeps them on purpose, so a reader that clamped would undo it silently.
+        val image = LinearMaster.read(written())!!
+        assertTrue(image.pixels.any { it < 0f }, "the negatives were lost")
+    }
+
+    @Test
+    fun `decimation takes every nth pixel and reports the step`() {
+        val full = LinearMaster.read(written())!!
+        val small = LinearMaster.read(written(), maxWidth = 10)!!
+
+        assertEquals(4, small.step)
+        assertEquals(10, small.width)
+        assertEquals(6, small.height)
+        // Sample (2,1) of the decimated image is sample (8,4) of the original.
+        for (c in 0 until 3) {
+            assertEquals(
+                full.pixels[(4 * w + 8) * 3 + c],
+                small.pixels[(1 * small.width + 2) * 3 + c],
+                0f,
+            )
+        }
+    }
+
+    @Test
+    fun `asking for more width than there is leaves it alone`() {
+        val image = LinearMaster.read(written(), maxWidth = 4000)!!
+        assertEquals(1, image.step)
+        assertEquals(w, image.width)
+    }
+
+    @Test
+    fun `a file that is not one of ours is refused rather than guessed at`() {
+        val junk = java.io.File(tempDir.toFile(), "junk.tif")
+        junk.writeBytes(ByteArray(2048) { 0x7F })
+        assertNull(LinearMaster.read(junk))
+        assertNull(LinearMaster.read(java.io.File(tempDir.toFile(), "absent.tif")))
     }
 }

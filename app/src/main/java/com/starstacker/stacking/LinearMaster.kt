@@ -3,6 +3,7 @@ package com.starstacker.stacking
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.OutputStream
+import java.io.RandomAccessFile
 
 /**
  * T-5.6 / FR-8.2 — the linear master, written to disk as a 32-bit float TIFF.
@@ -381,6 +382,125 @@ object LinearMaster {
         }
         return bytes
     }
+
+    /** A linear master read back off disk, possibly decimated — see [read]. */
+    class Image(val pixels: FloatArray, val width: Int, val height: Int, val step: Int) {
+        val description: String get() = "${width}x$height" + if (step > 1) " (1 in $step)" else ""
+    }
+
+    /**
+     * Reads a master this object wrote.
+     *
+     * ### Why the app reads its own output
+     *
+     * FR-8.3 wants the auto-edit re-runnable from the linear master at any time, so that moving a
+     * slider costs seconds rather than the thirteen minutes of a restack. That only works if the
+     * linear data can be got back without the frames it came from — which is the whole point of
+     * FR-8.2 keeping it, and it is no use kept if nothing can open it.
+     *
+     * ### Decimated, because the slider has to keep up
+     *
+     * At full size this is 132 MB and every re-render walks all of it. [maxWidth] takes every
+     * *n*-th pixel instead, and a 970-pixel-wide copy is 8 MB and re-renders in a blink — ample for
+     * a phone screen, and the full-size render is done once when the answer is settled.
+     *
+     * **Decimation, not averaging.** Averaging would be a better image and a worse *preview*: it
+     * would quietly reduce the noise, so the stretch measured on it would not be the stretch the
+     * full-size render needs, and the slider would lie about what it was setting.
+     *
+     * @return null if the file is not a master this object wrote. Deliberately strict — there is
+     *   exactly one producer, and a tolerant reader here would be inventing support for files that
+     *   do not exist.
+     */
+    fun read(file: File, maxWidth: Int = 0): Image? {
+        if (!file.isFile) return null
+        return RandomAccessFile(file, "r").use { raf ->
+            val header = ByteArray(HEADER_SCAN.coerceAtMost(raf.length().toInt()))
+            raf.readFully(header)
+            val buffer = java.nio.ByteBuffer.wrap(header).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            if (buffer.getShort(0).toInt() != 0x4949 || buffer.getShort(2).toInt() != 42) return null
+
+            val ifd = buffer.getInt(4)
+            if (ifd + 2 > header.size) return null
+            val entries = buffer.getShort(ifd).toInt()
+            val tags = HashMap<Int, Long>()
+            val counts = HashMap<Int, Int>()
+            for (i in 0 until entries) {
+                val at = ifd + 2 + i * 12
+                if (at + 12 > header.size) return null
+                val tag = buffer.getShort(at).toInt() and 0xFFFF
+                val type = buffer.getShort(at + 2).toInt()
+                counts[tag] = buffer.getInt(at + 4)
+                tags[tag] = if (type == SHORT) {
+                    (buffer.getShort(at + 8).toInt() and 0xFFFF).toLong()
+                } else {
+                    buffer.getInt(at + 8).toLong() and 0xFFFFFFFFL
+                }
+            }
+
+            val width = tags[TAG_IMAGE_WIDTH]?.toInt() ?: return null
+            val height = tags[TAG_IMAGE_LENGTH]?.toInt() ?: return null
+            val start = tags[TAG_STRIP_OFFSETS] ?: return null
+            if (width <= 0 || height <= 0) return null
+            // The three that say this is ours: uncompressed, three channels, and — the one that
+            // matters — IEEE float rather than the integers TIFF assumes by default.
+            if (tags[TAG_COMPRESSION]?.toInt() != COMPRESSION_NONE.toInt()) return null
+            if (tags[TAG_SAMPLES_PER_PIXEL]?.toInt() != TiledStacker.CHANNELS) return null
+            if (!isFloat(buffer, tags, counts, header.size)) return null
+
+            val step = stepFor(width, maxWidth)
+            val outW = (width + step - 1) / step
+            val outH = (height + step - 1) / step
+            val rowBytes = width.toLong() * TiledStacker.CHANNELS * 4
+            val row = ByteArray(rowBytes.toInt())
+            val floats = FloatArray(width * TiledStacker.CHANNELS)
+            val out = FloatArray(outW * outH * TiledStacker.CHANNELS)
+
+            for (oy in 0 until outH) {
+                raf.seek(start + (oy.toLong() * step) * rowBytes)
+                raf.readFully(row)
+                java.nio.ByteBuffer.wrap(row)
+                    .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                    .asFloatBuffer()
+                    .get(floats)
+                for (ox in 0 until outW) {
+                    val from = ox * step * TiledStacker.CHANNELS
+                    val to = (oy * outW + ox) * TiledStacker.CHANNELS
+                    out[to] = floats[from]
+                    out[to + 1] = floats[from + 1]
+                    out[to + 2] = floats[from + 2]
+                }
+            }
+            Image(out, outW, outH, step)
+        }
+    }
+
+    /** `SampleFormat = 3` on every channel — the tag [write] exists to get right. */
+    private fun isFloat(
+        buffer: java.nio.ByteBuffer,
+        tags: Map<Int, Long>,
+        counts: Map<Int, Int>,
+        headerSize: Int,
+    ): Boolean {
+        val count = counts[TAG_SAMPLE_FORMAT] ?: return false
+        val value = tags[TAG_SAMPLE_FORMAT] ?: return false
+        // Three SHORTs do not fit in the entry, so the value is an offset into the payload.
+        if (count * 2 <= 4) return value.toInt() == FLOAT_SAMPLES
+        val at = value.toInt()
+        if (at + count * 2 > headerSize) return false
+        for (i in 0 until count) {
+            if ((buffer.getShort(at + i * 2).toInt() and 0xFFFF) != FLOAT_SAMPLES) return false
+        }
+        return true
+    }
+
+    private fun stepFor(width: Int, maxWidth: Int): Int {
+        if (maxWidth <= 0 || width <= maxWidth) return 1
+        return (width + maxWidth - 1) / maxWidth
+    }
+
+    /** Enough for the header and its payload; the pixels start a few hundred bytes in. */
+    private const val HEADER_SCAN = 4096
 
     // TIFF tag numbers and the handful of type codes used here.
     private const val TAG_IMAGE_WIDTH = 256

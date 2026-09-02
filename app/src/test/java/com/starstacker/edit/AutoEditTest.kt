@@ -243,3 +243,52 @@ class AutoEditTest {
         return Triple(median(0), median(1), median(2))
     }
 }
+
+/**
+ * The session list telling the truth about its own contents — noticed on the phone, where a
+ * session with a master in it still read `Captured`.
+ */
+class StackedBadgeTest {
+
+    private fun log(state: com.starstacker.session.SessionState, stacking: Map<String, String>) =
+        com.starstacker.session.SessionLog(
+            com.starstacker.session.SessionInfo(
+                sessionId = "s",
+                startedAtEpochMs = 1L,
+                deviceModel = "d",
+                cameraId = "0",
+                plannedIso = 3200,
+                plannedExposureNs = 1L,
+                plannedLightCount = 1,
+                plannedDarkCount = 0,
+                state = state,
+                stacking = stacking,
+            ),
+        )
+
+    @Test
+    fun `a captured session invites the action the prototype asked for`() {
+        val summary = com.starstacker.session.SessionSummary.of(
+            "f", log(com.starstacker.session.SessionState.DONE, emptyMap()),
+        )
+        assertTrue(summary.badge == "Stack now", summary.badge)
+        assertTrue(!summary.stacked)
+    }
+
+    @Test
+    fun `a stacked session says so`() {
+        val summary = com.starstacker.session.SessionSummary.of(
+            "f", log(com.starstacker.session.SessionState.DONE, mapOf("master" to "stack_linear.tif")),
+        )
+        assertTrue(summary.badge == "Stacked", summary.badge)
+        assertTrue(summary.stacked)
+    }
+
+    @Test
+    fun `an unfinished session is not offered a stack`() {
+        val summary = com.starstacker.session.SessionSummary.of(
+            "f", log(com.starstacker.session.SessionState.PAUSED, emptyMap()),
+        )
+        assertTrue(summary.badge == "Unfinished", summary.badge)
+    }
+}

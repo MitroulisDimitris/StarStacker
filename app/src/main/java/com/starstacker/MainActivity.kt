@@ -83,6 +83,8 @@ import com.starstacker.ui.Permissions
 import com.starstacker.ui.SettingsScreen
 import com.starstacker.ui.SetupScreen
 import com.starstacker.ui.ProbeScreen
+import com.starstacker.ui.ResultController
+import com.starstacker.ui.ResultScreen
 import com.starstacker.ui.theme.StarStackerTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -127,6 +129,9 @@ class MainActivity : ComponentActivity() {
 
     /** T-3.27 — the session pane's scan, selection targets and deletions. */
     private val sessionsController by lazy { SessionsController(this, lifecycleScope) }
+
+    /** T-7.5 — the auto-edit screen's state: the decimated master and the current settings. */
+    private val resultController by lazy { ResultController(this, lifecycleScope) }
 
     private val requestCamera = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -704,6 +709,15 @@ class MainActivity : ComponentActivity() {
                                     )
                                 },
                                 onCancelStack = { StackingService.cancel(this@MainActivity) },
+                                onViewResult = {
+                                    resultController.open(
+                                        File(
+                                            SessionRoot.fileRoot(this@MainActivity),
+                                            detail.summary.folderName,
+                                        ),
+                                    )
+                                    nav = nav.push(Screen.RESULT)
+                                },
                                 onDelete = {
                                     sessionsController.askDelete(listOf(detail.summary))
                                     nav = nav.pop()
@@ -751,6 +765,20 @@ class MainActivity : ComponentActivity() {
                             CaptureService.send(this@MainActivity, CaptureService.ACTION_SKIP_DARKS)
                         },
                         onDone = { nav = nav.toRoot() },
+                    )
+
+                    Screen.RESULT -> ResultScreen(
+                        state = resultController.state,
+                        onStrength = { resultController.setStrength(it) },
+                        onGradientDegree = { resultController.setGradientDegree(it) },
+                        onSaturation = { resultController.setSaturation(it) },
+                        onToggleBefore = { resultController.toggleBefore() },
+                        onToggleAdvanced = { resultController.toggleAdvanced() },
+                        onSave = { resultController.save() },
+                        onBack = {
+                            resultController.close()
+                            nav = nav.pop()
+                        },
                     )
 
                     Screen.SETTINGS -> SettingsScreen(

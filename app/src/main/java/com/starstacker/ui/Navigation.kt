@@ -14,7 +14,7 @@ package com.starstacker.ui
  * folder icon stays — a file manager is a different job, for when the answer really is "give me
  * the files".
  */
-enum class Screen { MAIN, FRAMING, SETUP, CAPTURE, SETTINGS, PROBE, SESSIONS, SESSION_DETAIL }
+enum class Screen { MAIN, FRAMING, SETUP, CAPTURE, SETTINGS, PROBE, SESSIONS, SESSION_DETAIL, RESULT }
 
 /**
  * T-0.3's back stack, as plain data so the rules can be tested rather than clicked.

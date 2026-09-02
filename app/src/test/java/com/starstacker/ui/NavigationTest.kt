@@ -70,6 +70,9 @@ class NavigationTest {
             // screen, then a row.
             BackStack().push(Screen.SESSIONS).current,
             BackStack().push(Screen.SESSIONS).push(Screen.SESSION_DETAIL).current,
+            // T-7.5's result screen, reached from a stacked session's detail — the only place a
+            // master exists to look at.
+            BackStack().push(Screen.SESSIONS).push(Screen.SESSION_DETAIL).push(Screen.RESULT).current,
         )
 
         assertEquals(Screen.entries.toSet(), reached)

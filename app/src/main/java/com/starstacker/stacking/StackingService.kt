@@ -155,6 +155,13 @@ class StackingService : Service() {
                     notify(p)
                 },
             )
+            // T-7.6 / FR-9.3: the picture goes where the phone keeps pictures. Only from the
+            // service, not from StackJob — the diagnostic has no business writing to the gallery,
+            // and a JVM test has no MediaStore to write to.
+            result.previewFile?.let { jpeg ->
+                com.starstacker.edit.Gallery.publish(this, jpeg, folder)
+                    ?: Log.w(TAG, "could not publish $folder to the gallery")
+            }
             _results.value = _results.value + result
             Log.i(TAG, "$folder: ${result.state}${result.error?.let { " — $it" } ?: ""}")
         }
