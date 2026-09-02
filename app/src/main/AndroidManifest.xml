@@ -42,8 +42,15 @@
         </intent>
     </queries>
 
+    <!-- T-6.4, measured 2026-09-02. A stack does not fit in the default heap: the master is
+         12.6 MP x 3 channels x 4 bytes = 151 MB, the master dark another 50 MB, and the tiled
+         sample buffer up to 96 MB more. Against this device's 256 MB growth limit that is an
+         OutOfMemoryError partway through the first tile, which is exactly what happened on the
+         first real 119-frame session. The arithmetic was written down in three separate files and
+         never added up. -->
     <application
         android:name=".StarStackerApp"
+        android:largeHeap="true"
         android:allowBackup="false"
         android:icon="@android:drawable/ic_menu_camera"
         android:label="@string/app_name"
