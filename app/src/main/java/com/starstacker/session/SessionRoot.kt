@@ -108,10 +108,19 @@ object SessionRoot {
      * The app-private store, used directly by diagnostics that must not depend on a picker having
      * been run.
      */
-    fun fallbackStore(context: Context): SessionStore = FileSessionStore(
+    fun fallbackStore(context: Context): SessionStore = FileSessionStore(fileRoot(context))
+
+    /**
+     * The app-private root as a real [File].
+     *
+     * Stacking needs this rather than a [SessionStore], because `DngReader.Rows` seeks inside a
+     * file descriptor and a SAF document is not one — T-0.5's outstanding `ParcelFileDescriptor`
+     * piece. Exposed here rather than rebuilt by each caller so there is one definition of where
+     * app-private sessions live.
+     */
+    fun fileRoot(context: Context): File =
         File(context.getExternalFilesDir(null) ?: context.filesDir, FALLBACK_DIRECTORY)
-            .apply { mkdirs() },
-    )
+            .apply { mkdirs() }
 
     /**
      * One line for the UI. Says where frames will go *and* whether that place survives uninstall,

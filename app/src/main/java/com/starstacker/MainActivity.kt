@@ -53,6 +53,7 @@ import com.starstacker.pointing.PointingFix
 import com.starstacker.session.SessionPointing
 import com.starstacker.session.SessionRoot
 import com.starstacker.stacking.LinearMaster
+import com.starstacker.stacking.StackingService
 import com.starstacker.stacking.StackingSettings
 import com.starstacker.session.toSessionPointing
 import com.starstacker.session.SessionRecovery
@@ -407,6 +408,9 @@ class MainActivity : ComponentActivity() {
                 val current = profile ?: return@StarStackerTheme
                 val qualification = remember(current) { Qualification.qualifyDevice(current) }
                 var exportedPath by remember { mutableStateOf<String?>(null) }
+                // T-6.4 — the stack belongs to the service, not to this Activity (D-6), so the
+                // screen is a pure function of its progress and survives being recreated.
+                val stackProgress by StackingService.progress.collectAsStateWithLifecycle()
                 // T-5.6's crop mode. Read from the store once and then held here, so the button
                 // reflects the tap immediately rather than after a recomposition that re-reads
                 // preferences.
@@ -688,6 +692,18 @@ class MainActivity : ComponentActivity() {
                         when {
                             detail != null -> SessionDetailScreen(
                                 detail = detail,
+                                stacking = stackProgress,
+                                stackDefaults = StackingSettings.defaults(this@MainActivity),
+                                onStack = { chosen ->
+                                    // FR-10.3.3: only ever from this tap, which is also what buys
+                                    // the service its full six-hour budget.
+                                    StackingService.start(
+                                        this@MainActivity,
+                                        listOf(detail.summary.folderName),
+                                        chosen,
+                                    )
+                                },
+                                onCancelStack = { StackingService.cancel(this@MainActivity) },
                                 onDelete = {
                                     sessionsController.askDelete(listOf(detail.summary))
                                     nav = nav.pop()
@@ -946,9 +962,9 @@ class MainActivity : ComponentActivity() {
                         // JVM test can reach: OpenCV, a strip table DngCreator wrote, and the cost
                         // of the whole chain on a phone that is warming up while it runs.
                         "stack" -> StackCheck.run(
-                            root = File(getExternalFilesDir(null) ?: filesDir, "sessions"),
+                            root = SessionRoot.fileRoot(this@MainActivity),
                             sessionName = sessionName,
-                            crop = StackingSettings.crop(this@MainActivity),
+                            settings = StackingSettings.defaults(this@MainActivity),
                             log = log,
                         )
 

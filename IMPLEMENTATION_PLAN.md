@@ -86,7 +86,8 @@ Two consequences to accept deliberately:
 | 1E | 10 | 2 | **all ten built and walked on the phone 2026-08-19** (§1.18–§1.20). **T-3.28** and **T-3.36** met their acceptances whole; T-3.33 and T-3.35's hard parts are demonstrated. Four defects fixed, two of them predating the phase: `KeyValue` crushed its label whenever a value got long (§1.19), and **the sensor's exposure ceiling was being enforced when the hardware does not enforce it** (§1.20, **D-28**). Unwalked: the naming prompt, a failing sweep |
 | 2 | 7 | 0 | **all seven built 2026-08-19** (§1.22–§1.28) — synthetic sky, drift seed, asterism matching, rigid fit with RANSAC, live registration, common area, and an aligned preview. 113 tests; end to end the chain recovers a known transform to **0.15° and 0.6 px**. Ticked nowhere, because **none of it has met a real star field** — that is the whole of Checkpoint 2 |
 | 3 | 7 | 1 | **T-5.1 accepted on device** (§1.31), **T-5.2, T-5.3 and T-5.4 built** (§1.30, §1.32, §1.33), and **the chain now reads real files** (§1.34). `DngFrameSource`, the production `Resampler` and `RigidTransform.fromMatrix` closed the plumbing gap — and doing so surfaced **two defects in shipped code that 466 tests could not see**, because the stacking fixture is a 24-row frame and the band margin is 160 rows, so every test band was the whole frame. What is left is **a device and a night**: **T-5.6 now writes `stack_linear.tif`** (§1.35), so the pipeline produces something a person can open and T-5.7's only remaining blocker is a night. `--es diag stack` joins `warp` and `combine` in the queue waiting on a phone |
-| 4+ | outlined | 0 | not started |
+| 4 | 8 | 0 | **T-6.4 built 2026-09-02** (§1.36) — the stacking service, the Stack button and T-5.4's expert panel, which is the first time any of Phase 3 is reachable without a laptop. Building it found a **Cancel that did not cancel**: the stack loop could not be stopped, so cancelling ran every remaining tile and then discarded the result. Nothing has been tapped |
+| 5+ | outlined | 0 | not started |
 
 > **The `Ticked` column counts `[x]` only.** §0 ties that to an acceptance demonstrated on a real
 > device, and most of what is built is demonstrated in part — the count understates the app
@@ -1892,6 +1893,97 @@ hand over something Siril can open, which is the whole of **T-5.7**.
 
 ---
 
+## 1.36 The button, and a Cancel that did not cancel — 2026-09-02
+
+Everything in Phase 3 worked and none of it was reachable. `TiledStacker` had no call site outside
+its own test and a diagnostic; the crop setting added in §1.35 configured something no one could
+trigger. T-6.4 closes that: a session's detail screen now has **Stack**, and the work runs in its
+own foreground service.
+
+### Two services, because the types are not interchangeable
+
+**D-12** splits capture from stacking and the reason is the foreground service *type*. Capture uses
+`camera`, the only type with **no time limit** — an all-night session needs that. Stacking uses
+`mediaProcessing` on API 35+ and `dataSync` below, which carry a **6 h budget and a mandatory
+`onTimeout()`**: a service that does not stop itself when called there is killed with a
+`RemoteServiceException`, which is a crash in the user's face rather than a graceful stop. Both are
+declared in the manifest, because which one applies depends on the API level the app is *running*
+on.
+
+FR-10.3.3's "never stack unprompted" turns out to be load-bearing twice over. It is a product rule
+— a stack is minutes of a warm phone on battery, and one nobody asked for is the app misbehaving —
+and the platform independently gives a service started from direct user interaction the full six
+hours. The rule that makes the app polite is the same rule that makes it capable.
+
+### The defect this phase produced: Cancel did not cancel
+
+The first version wired cancellation the obvious way — check the flag in the progress callback,
+and discard the result at the end. It passed its test, because the test asserted the *state* that
+came back.
+
+It was wrong in the way that matters. `TiledStacker.stack` had no way to be stopped, so pressing
+Cancel ground through every remaining tile and then threw the answer away. On a 150-frame stack
+that is minutes of work after the request, and **the reason someone presses Cancel is usually that
+the phone is hot** — so the implementation answered neither the request nor the reason for it.
+
+`stack` now takes a `cancelled` predicate and consults it **before each tile**, and the tests
+assert the thing that was actually wrong: that fewer tiles run, and that a stack cancelled before
+it starts reads no frames at all. A test that checks the returned state and not the work done is a
+test that would have passed forever.
+
+**Cancellation is checked at a boundary rather than thrown.** A stack holds a 151 MB master and a
+hundred open descriptors; unwinding that from an exception at an arbitrary point is how a cancelled
+job leaves a half-written TIFF that looks real. A cancelled or failed run writes nothing at all,
+and an earlier master survives a cancelled restack — both have tests, because "wrote nothing" is
+the kind of guarantee that quietly stops being true.
+
+### `StackJob` exists so that the diagnostic and the button cannot drift
+
+`--es diag stack` shipped in §1.34 with the pipeline inline. Building the service would have meant
+a second copy, and the two would have diverged the first time either was fixed — the failure mode
+where *the thing you measured is not the thing that ships*. The pipeline moved into `StackJob`,
+which has no Android in it and takes an injected `Resampler`, so the whole chain from a folder of
+DNGs to a written TIFF **runs in a JVM test**. The diagnostic is now a reporting wrapper.
+
+`MasterStats` came out of the same move: the master is 151 MB, so summarising it is done in one
+pass inside the job rather than by handing the array back. It still has to exclude NaN explicitly,
+for §1.32's reason — Kotlin orders NaN above every number, so the uncovered sentinel would
+otherwise be reported as the brightest thing in the frame.
+
+### The expert panel, and what a default is for
+
+T-5.4's combiner choice has had nowhere to live since §1.33 and now does: an **Advanced** disclosure
+under the Stack button, collapsed, showing the four combination methods and the two crop modes.
+
+Collapsed is the design rather than a space saving. The defaults are *answers* — sigma clipping and
+trimming to the overlap, argued out in §1.33 and §1.35 — so someone who does not know what a
+kappa-sigma clip is should never have to find out. The collapsed row names what is currently
+selected, so expanding is opting into an argument rather than discovering one.
+
+There are now three places a stacking choice can live, and they are three different questions.
+**Settings** holds what a new stack starts with. **The panel** holds what this run uses, and
+deliberately does not write back — changing your mind about one session is not changing your mind
+about all of them. **`session.json`** holds what actually produced an existing master, because both
+of the others can change afterwards and FR-10.4's restack has to reproduce rather than approximate.
+
+### What "resumable" means here, stated rather than implied
+
+T-6.4's acceptance is that a timeout mid-queue **resumes rather than restarts**, and that is what
+is built: the queue survives in the service, `onTimeout` abandons what is in flight and keeps the
+rest. Checkpointing *inside* a single stack is not done, so an interrupted session restacks from
+the beginning. That is a limit rather than an oversight — a stack is minutes against a six-hour
+budget, and partial masters are the exact thing §1.32 refuses to write.
+
+### What has not happened
+
+**Nothing has been tapped.** The button, the panel, the progress bar, the notification and the
+cancel path have never run on a phone, and `--es diag stack` still has not either. FR-10.3.4's
+queue is built and only ever exercised with one session. And a SAF-rooted session still cannot be
+stacked at all — `DngReader.Rows` needs a `File` — which is T-0.5's outstanding piece; the service
+now says *that* rather than "not found", because the two send you looking in very different places.
+
+---
+
 ## 2. Decisions
 
 | ID | Decision | Rationale | Reversal cost |
@@ -3223,8 +3315,8 @@ changes whether someone can run one without being surprised.
   *Remaining:* **the profile has not run** — `--es diag combine` is written and waiting on a device,
   and until it does, §12.1's JNI question is not open. The estimate is ~85 G operations for a
   150-frame master, and **if that is uncomfortable the first lever is threads, not JNI**. The expert
-  affordance itself has nothing to attach to until there is a stacking screen — though since
-  §1.34 the combiner does at least have a call site on real data, through `--es diag stack`.
+  affordance **landed 2026-09-02** (§1.36): the Advanced panel under the Stack button offers all
+  four methods, and the choice is recorded in `session.json` so a restack reproduces the master.
 - [ ] **T-5.5** Frame weighting by star count, HFR and background level.
 - [~] **T-5.6** Linear master out: 32-bit float TIFF, saved separately and treated as sacred
   (FR-8.2).
@@ -3280,13 +3372,28 @@ changes whether someone can run one without being surprised.
   **The detail screen and its frame log are T-3.27.** What is left here is **manual
   include/exclude**, which is meaningless until something reads the flags — that is T-6.4's
   stacking queue.
-- [ ] **T-6.4** Deferred stacking service — a **separate** FGS from capture, per **D-12**:
+- [~] **T-6.4** Deferred stacking service — a **separate** FGS from capture, per **D-12**:
   `mediaProcessing` on API 35+, `dataSync` on API 34. Must implement `onTimeout()` → `stopSelf()`
   or the system throws `RemoteServiceException` at the 6 h budget. Progress, cancellable,
   resumable, queueable (FR-10.3).
   *Note the happy accident:* FR-10.3.3's "never stack unprompted" also satisfies the platform's
   rule that a service started from direct user interaction gets the full 6 h budget.
   *Accept:* checkpointed progress means a timeout-stop mid-queue resumes rather than restarts.
+  **Built 2026-09-02** as `StackingService` over `StackJob`, §1.36 — **the first time anything in
+  Phase 3 is reachable without a laptop.** Both foreground types declared, since which applies
+  depends on the API level the app runs on rather than what it was built against.
+  **The defect worth recording: Cancel did not cancel.** `TiledStacker.stack` could not be stopped,
+  so cancelling ground through every remaining tile and discarded the answer — minutes of work
+  after the request, and the reason for the request is usually that the phone is hot. `stack` now
+  takes a `cancelled` predicate checked **before each tile**. The first test passed because it
+  asserted the state that came back rather than the work done.
+  **`StackJob` holds the pipeline and has no Android in it**, so the whole chain from a folder of
+  DNGs to a written TIFF runs in a JVM test — and so `--es diag stack` and the button cannot drift
+  into two pipelines, which is the failure mode where what was measured is not what ships.
+  *Remaining:* **never tapped.** The queue (FR-10.3.4) is built and only exercised with one
+  session; mid-*stack* checkpointing is deliberately not done, so an interrupted session restacks
+  from the start. SAF-rooted sessions still cannot be stacked (T-0.5), and the service now says so
+  by name.
 - [ ] **T-6.5** Restacking with versioned, non-destructive outputs and side-by-side comparison
   (FR-10.4).
 - [ ] **T-6.6** `Stale` detection when calibration masters change (FR-10.4.2). Never auto-restack.
@@ -3507,6 +3614,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-09-02 | **T-6.4 — the button, and a Cancel that did not cancel (§1.36).** Everything in Phase 3 worked and none of it was reachable: `TiledStacker` had no call site outside a test and a diagnostic, and §1.35's crop setting configured something nobody could trigger. A session now has **Stack**, running in its own foreground service — `mediaProcessing` on API 35+ and `dataSync` below, both declared because which applies depends on the API level the app runs on. FR-10.3.3 is load-bearing twice: it is the product rule, and the platform independently grants the full 6 h budget to a service started from a tap. **The defect: Cancel did not cancel.** The first version checked the flag in the progress callback and discarded the result at the end — but `stack` could not be stopped, so cancelling ground through every remaining tile first. On a 150-frame stack that is minutes of work after the request, and the reason someone cancels is usually that the phone is hot. It passed its test, because the test asserted the returned state and not the work done; the new tests count tiles. **`StackJob` holds the pipeline with no Android in it**, so the whole chain from a folder of DNGs to a written TIFF runs in a JVM test, and the diagnostic and the button cannot drift into two pipelines. **T-5.4's expert affordance finally has a home** after being specified since §1.33: an Advanced disclosure, collapsed, because the defaults are answers rather than placeholders and expanding should be opting into an argument. Three places now hold a stacking choice and they are three different questions — Settings is what a new stack starts with, the panel is what this run uses and does not write back, `session.json` is what produced an existing master. Nothing has been tapped. 557 JVM tests. |
 | 2026-09-02 | **T-5.6 — the linear master, and a boundary question with two right answers (§1.35).** The first thing this app produces that a person can open, and T-5.7's last prerequisite. **`SampleFormat = 3` is the tag it all turns on**: without it a float TIFF is not rejected, it is read as unsigned integers and displayed as noise, so the test parses the IFD and asserts the tag rather than checking that something opens. Two more of that shape were caught building it — the writer declared twelve tags and emitted thirteen, the missing one being the `SampleFormat` entry its own doc comment was describing; and a TIFF value of four bytes or fewer must live *inside* the tag entry, so a short `ImageDescription` written the general way parses and carries garbage. **The crop is a user choice rather than a decision** — `Trim to overlap` or `Keep full frame`, in Settings, defaulting to trimming, because the border is not faint data but **fewer frames**, at a fraction of the depth with none of the rejection working, and it survives the autostretch as a bright noisy frame. The mode is also the answer to what uncovered pixels contain, which is otherwise a second and worse question. **The region comes from the master's own NaN mask, not from T-4.5's `CommonArea`**: that intersection is a convex polygon and a TIFF is a rectangle, so it would need a largest-inscribed-rectangle step anyway, while the mask is free, exact with respect to what happened rather than what was predicted, and sees interior gaps a footprint intersection cannot represent. It is a **default, not a lock** — a new `stacking` block in `session.json` records what actually made each master, **and is where T-5.4's combiner method finally lands** after being specified since §1.33 with nowhere to go; the same provenance goes in the TIFF's `ImageDescription`, because the audit trail is in the wrong place once one file is copied to a PC. 151 MB per master, streamed a row at a time. Also fixed: a **literal NUL byte in `DngReader.kt`** that made ripgrep skip the entire file as binary. 541 JVM tests. |
 | 2026-09-02 | **`DngFrameSource` — the chain reads real files, and two defects a 24-row fixture could not see (§1.34).** The piece T-5.2, T-5.3 and T-5.4 each ended by naming: a session folder as `TiledStacker.Frames`. Writing it was small; what it collided with was not. **The tiled loop could not apply calibration at all** — `Calibration.apply` was written frame-at-a-time and the loop hands it a band, so it throws on the first real frame and, past the size check, would have subtracted row 0's dark current from row 900. **A band starting on an odd row debayers as the wrong pattern**, GRBG read as RGGB, red and blue swapped on alternate tiles, because `tileRowsFor` returns an odd tile height about half the time. **Neither was reachable by 466 tests, for one reason:** the stacking fixture is 24 rows and the band margin is 160, so every test band was the whole frame starting at row 0 — the un-banded special case, reporting success. §1.22 warned that a small frame tests the pipeline's failure mode rather than the pipeline; it was not applied thoroughly enough. Also built: **`RigidTransform.fromMatrix`**, since `toMatrix` had no reader and a restack has to recover what registration measured at 03:00 — it returns the centre as the origin, which is *exact* because the matrix is a complete affine map, and it **refuses a matrix that is not a rotation** rather than flattening a scale into a misregistration that grows towards the edges. And the **production `Resampler`**, which did not exist: `Resample.warpBand` folds the band's origin into the translation as `b·r` and `(d − 1)·r`, the `−1` being the half that looks like a typo and the fourth appearance of this class of error. Memory forced the shape of the master build — twenty 12.6 MP darks at once is half a gigabyte, so it is banded too. **Nothing has run on a phone**: `--es diag stack` joins `warp` and `combine` in the queue, and T-5.7 still waits on a clear night. 523 JVM tests. |
 | 2026-09-01 | **T-5.4 — sigma clipping, and a threshold that is arithmetic rather than taste (§1.33).** The placeholder mean is replaced by the rejection that does stacking's actual work: a satellite in one frame of 150 survives a mean at 1/150th of its brightness, which after the stretch is a sharp bright line and obviously not sky. **The default is seeded from the median and MAD because of an exact result, not a preference** — a mean/SD clip rejects a lone outlier only when `(n − 1) > κ√n`, crossing at **n = 11** at κ = 3 and **independent of the outlier's brightness**, so a ten-frame stack cannot remove a satellite that way however bright it is (120, 1 000 and 60 000 ADU are all kept at n = 10, and there is a test for each). After the first pass the roles reverse and the iterations use mean and SD of the survivors, since robustness is only wanted while the contaminant is present. **A zero MAD is the ordinary case** — quantised background where over half the samples share a value — and the obvious fallback is wrong: the standard deviation about the median reintroduces the same `n ≤ 10` weakness by the back door, so σ comes from the **mean absolute deviation**, which clears an outlier above n = 4. **Two floors, because they are two questions:** five samples before rejection is attempted at all, three survivors before a pass is refused; merging them made the combiner worse, giving 234.5 instead of 101.5 for six frames with two satellites in them. **Clean-data cost measured at 0.88%** of samples rejected over 30 frames of Gaussian noise, which is 0.44% more noise in the master. The rejection reports itself rather than being trusted. **The profile has not run** — `--es diag combine` waits on a device, and until it does §12.1's JNI question is not open; the estimate is ~85 G operations per 150-frame master, and the first lever if that hurts is **threads, not JNI**. 491 JVM tests. |

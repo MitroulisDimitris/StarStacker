@@ -20,6 +20,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -30,6 +34,11 @@ import com.starstacker.exposure.ExposureSolver
 import com.starstacker.session.FrameKind
 import com.starstacker.session.SessionState
 import com.starstacker.session.SessionSummary
+import com.starstacker.stacking.Combine
+import com.starstacker.stacking.LinearMaster
+import com.starstacker.stacking.StackJob
+import com.starstacker.stacking.StackSettings
+import com.starstacker.stacking.StackingService
 import com.starstacker.ui.theme.Night
 import com.starstacker.ui.theme.NumFamily
 import java.text.SimpleDateFormat
@@ -360,6 +369,143 @@ private fun DeleteConfirmation(describe: String, onConfirm: () -> Unit, onCancel
 }
 
 /**
+ * T-6.4 / FR-10.3.1 — the **Stack** action, its progress, and the expert panel behind it.
+ *
+ * ### Never unprompted, and the button says what it will cost
+ *
+ * FR-10.3.3 and **D-27** agree here: stacking is minutes of a warm phone on battery, so it starts
+ * because someone pressed a button and never because a screen appeared. The button names the frame
+ * count it is about to work through, so the cost is legible before it is spent rather than
+ * discovered from the fan.
+ *
+ * ### The advanced panel is collapsed, and that is the whole design
+ *
+ * The defaults are answers, not placeholders — sigma clipping and trimming to the overlap are what
+ * this app thinks is right, argued out in 1.33 and 1.35. Someone who does not know what a
+ * kappa-sigma clip is should never have to find out, so the choices sit behind one disclosure and
+ * the collapsed state names what is currently selected. Expanding is opting in to an argument.
+ */
+@Composable
+private fun StackingSection(
+    folderName: String,
+    accepted: Int,
+    stacked: Map<String, String>,
+    progress: StackingService.Progress,
+    settings: StackSettings,
+    advanced: Boolean,
+    onToggleAdvanced: () -> Unit,
+    onSettingsChange: (StackSettings) -> Unit,
+    onStack: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    // Only this session's progress. The service is a singleton and may be working on another one.
+    val mine = progress.active && progress.sessionName == folderName
+
+    Column {
+        if (mine) {
+            Card {
+                Mono(progress.message, color = Night.Txt2, size = 11.sp)
+                Spacer(Modifier.height(8.dp))
+                ProgressBar(progress.percent)
+                if (progress.queued > 0) {
+                    Spacer(Modifier.height(6.dp))
+                    Mono("${progress.queued} more queued", color = Night.Txt3, size = 10.sp)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            QuietButton(text = "Cancel", onClick = onCancel)
+            return@Column
+        }
+
+        if (accepted == 0) {
+            Card {
+                Mono(
+                    "Nothing to stack \u2014 no frames were accepted.",
+                    color = Night.Txt3,
+                    size = 11.sp,
+                )
+            }
+            return@Column
+        }
+
+        if (stacked.isNotEmpty()) {
+            // FR-10.4: a session can be restacked at any time, so what produced the existing
+            // master has to be visible before anyone decides to replace it.
+            Card {
+                stacked["region"]?.let { KeyValue("Master", it) }
+                KeyValue("Method", StackSettings.fromMap(stacked).describe())
+                stacked["rejection"]?.let { KeyValue("Rejected", it) }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+
+        HotButton(
+            text = if (stacked.isEmpty()) "Stack $accepted frames" else "Restack $accepted frames",
+            onClick = onStack,
+        )
+
+        Spacer(Modifier.height(8.dp))
+        Text(
+            if (advanced) "Hide advanced" else "Advanced \u00b7 ${settings.describe()}",
+            fontSize = 12.sp,
+            color = Night.Txt3,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onToggleAdvanced)
+                .padding(vertical = 8.dp),
+            textAlign = TextAlign.Center,
+        )
+
+        if (advanced) {
+            Eyebrow("Combination")
+            Spacer(Modifier.height(6.dp))
+            Combine.Method.entries.forEach { method ->
+                QuietButton(
+                    text = method.label,
+                    selected = method == settings.method,
+                    onClick = { onSettingsChange(settings.copy(method = method)) },
+                )
+                Spacer(Modifier.height(6.dp))
+            }
+
+            Spacer(Modifier.height(6.dp))
+            Eyebrow("Edges")
+            Spacer(Modifier.height(6.dp))
+            ButtonRow {
+                LinearMaster.Crop.entries.forEach { option ->
+                    QuietButton(
+                        text = option.label,
+                        selected = option == settings.crop,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onSettingsChange(settings.copy(crop = option)) },
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Card { Mono(settings.crop.summary, color = Night.Txt3, size = 10.5.sp) }
+        }
+    }
+}
+
+/** A bar, in the night palette. Material's has its own opinions about colour and animation. */
+@Composable
+private fun ProgressBar(percent: Int) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(4.dp)
+            .background(Night.Line, RoundedCornerShape(2.dp)),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(percent.coerceIn(0, 100) / 100f)
+                .height(4.dp)
+                .background(Night.Hot, RoundedCornerShape(2.dp)),
+        )
+    }
+}
+
+/**
  * T-3.27 — one session, in full.
  *
  * The frame log is the point. FR-10.2.2 wants every frame listed with the reason it was rejected,
@@ -370,11 +516,19 @@ private fun DeleteConfirmation(describe: String, onConfirm: () -> Unit, onCancel
 @Composable
 fun SessionDetailScreen(
     detail: SessionsController.Detail,
+    stacking: StackingService.Progress,
+    stackDefaults: StackSettings,
+    onStack: (StackSettings) -> Unit,
+    onCancelStack: () -> Unit,
     onDelete: () -> Unit,
     onBack: () -> Unit,
 ) {
     val log = detail.log
     val info = log.info
+    // Per-run, seeded from the Settings default and deliberately not written back: changing your
+    // mind about one session is not changing your mind about all of them.
+    var settings by remember(detail.summary.folderName) { mutableStateOf(stackDefaults) }
+    var advanced by remember(detail.summary.folderName) { mutableStateOf(false) }
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -492,6 +646,22 @@ fun SessionDetailScreen(
                     }
                 }
             }
+        }
+
+        item { Eyebrow("Stacking · FR-10.3") }
+        item {
+            StackingSection(
+                folderName = detail.summary.folderName,
+                accepted = detail.summary.accepted,
+                stacked = info.stacking,
+                progress = stacking,
+                settings = settings,
+                advanced = advanced,
+                onToggleAdvanced = { advanced = !advanced },
+                onSettingsChange = { settings = it },
+                onStack = { onStack(settings) },
+                onCancel = onCancelStack,
+            )
         }
 
         item { Eyebrow("Frame log · ${log.frames.size} frames") }

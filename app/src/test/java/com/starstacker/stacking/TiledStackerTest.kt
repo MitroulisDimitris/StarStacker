@@ -462,4 +462,34 @@ class TiledStackerTest {
         val error = runCatching { TiledStacker(frames, StubResampler()).stack(tooSmall) }
         assertTrue(error.isFailure && error.exceptionOrNull() is IllegalArgumentException)
     }
+
+    // ------------------------------------------------------------------ cancellation
+
+    @Test
+    fun `cancelling stops within a tile rather than at the end`() {
+        // The point of the predicate. Grinding through the remaining tiles and then discarding the
+        // result answers neither the request nor the reason for it — which, on a phone, is usually
+        // that it is hot.
+        val frames = FakeFrames(count = 2, width = w, height = h, masters = masters()) { _, _, _ -> 100 }
+        var tilesRun = 0
+        val budget = w * 3L * 2 * 4 * 2 // two rows a tile, so there are plenty of them
+
+        val completed = TiledStacker(frames, StubResampler(), mean, memoryBudgetBytes = budget)
+            .stack(FloatArray(w * h * 3), cancelled = { tilesRun >= 2 }) { tilesRun++ }
+
+        assertFalse(completed, "a cancelled stack has not completed")
+        assertTrue(tilesRun < h / 2, "ran $tilesRun tiles of ${h / 2} after being cancelled")
+    }
+
+    @Test
+    fun `a stack cancelled before it starts does no work at all`() {
+        val frames = FakeFrames(count = 2, width = w, height = h, masters = masters()) { _, _, _ -> 100 }
+        var tilesRun = 0
+        val completed = TiledStacker(frames, StubResampler(), mean)
+            .stack(FloatArray(w * h * 3), cancelled = { true }) { tilesRun++ }
+
+        assertFalse(completed)
+        assertEquals(0, tilesRun)
+        assertEquals(0, frames.rowRequests, "no frame should have been read")
+    }
 }

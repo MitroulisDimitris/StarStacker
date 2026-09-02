@@ -136,8 +136,19 @@ class TiledStacker(
      *
      * @return false if any tile failed. A partial master is worse than none: it looks like an
      *   image and is wrong in a band.
+     *
+     * @param cancelled consulted **before each tile**, so a stack stops within one tile of being
+     *   asked rather than at the end. That distinction is the whole value of the parameter: a
+     *   150-frame stack is minutes, and the reason someone presses cancel is usually that the
+     *   phone is hot — finishing the work and then discarding it answers neither the request nor
+     *   the reason for it. A cancelled stack returns false, like any other incomplete one; the
+     *   caller knows which it asked for.
      */
-    fun stack(master: FloatArray, onProgress: (Progress) -> Unit = {}): Boolean {
+    fun stack(
+        master: FloatArray,
+        cancelled: () -> Boolean = { false },
+        onProgress: (Progress) -> Unit = {},
+    ): Boolean {
         val w = frames.width
         val h = frames.height
         require(master.size >= w * h * CHANNELS) { "master needs ${w * h * CHANNELS} floats" }
@@ -159,6 +170,7 @@ class TiledStacker(
         var tile = 0
         var top = 0
         while (top < h) {
+            if (cancelled()) return false
             val rows = minOf(tileRows, h - top)
             if (!stackTile(top, rows, margin, bandRows, cfa, calibrated, calibratedShorts, colour, warped, samples, master)) {
                 return false

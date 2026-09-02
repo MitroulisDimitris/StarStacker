@@ -9,6 +9,13 @@
          going off must not suspend the process — measured, see plan §1.7. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+
+    <!-- T-6.4 / D-12. Stacking is a *separate* service from capture and takes a different type:
+         `mediaProcessing` on API 35+, `dataSync` below it. Both carry a 6 h budget and a
+         mandatory onTimeout(), which is fine for a stack measured in minutes and would be fatal
+         for an all-night capture — which is why capture keeps `camera` and these are not shared. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
@@ -58,6 +65,13 @@
             android:name=".capture.CaptureService"
             android:exported="false"
             android:foregroundServiceType="camera" />
+
+        <!-- Both types are declared because the one that applies depends on the API level the app
+             is running on, not on what it was built against. -->
+        <service
+            android:name=".stacking.StackingService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProcessing|dataSync" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
