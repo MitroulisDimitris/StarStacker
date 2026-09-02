@@ -437,7 +437,7 @@ object DngReader {
         fun stringAt(ifd: Ifd, tag: Int): String? {
             val e = ifd.entries[tag] ?: return null
             if (e.type != TYPE_ASCII) return null
-            return String(payload(e), Charsets.US_ASCII).trimEnd(' ')
+            return String(payload(e), Charsets.US_ASCII).trimEnd('\u0000')
         }
 
         private fun u16(b: ByteArray, o: Int): Int {

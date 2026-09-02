@@ -85,7 +85,7 @@ Two consequences to accept deliberately:
 | 1D | 9 | 0 | **all nine built and photographed 2026-08-18** (§1.15). T-3.21's last piece waits on the session pane, which is now T-3.27 rather than T-6.1 |
 | 1E | 10 | 2 | **all ten built and walked on the phone 2026-08-19** (§1.18–§1.20). **T-3.28** and **T-3.36** met their acceptances whole; T-3.33 and T-3.35's hard parts are demonstrated. Four defects fixed, two of them predating the phase: `KeyValue` crushed its label whenever a value got long (§1.19), and **the sensor's exposure ceiling was being enforced when the hardware does not enforce it** (§1.20, **D-28**). Unwalked: the naming prompt, a failing sweep |
 | 2 | 7 | 0 | **all seven built 2026-08-19** (§1.22–§1.28) — synthetic sky, drift seed, asterism matching, rigid fit with RANSAC, live registration, common area, and an aligned preview. 113 tests; end to end the chain recovers a known transform to **0.15° and 0.6 px**. Ticked nowhere, because **none of it has met a real star field** — that is the whole of Checkpoint 2 |
-| 3 | 7 | 1 | **T-5.1 accepted on device** (§1.31), **T-5.2, T-5.3 and T-5.4 built** (§1.30, §1.32, §1.33), and **the chain now reads real files** (§1.34). `DngFrameSource`, the production `Resampler` and `RigidTransform.fromMatrix` closed the plumbing gap — and doing so surfaced **two defects in shipped code that 466 tests could not see**, because the stacking fixture is a 24-row frame and the band margin is 160 rows, so every test band was the whole frame. What is left is **a device and a night**: `--es diag stack` joins `warp` and `combine` in the queue, and T-5.7 cannot be validated at all until there are real subs again (§1.29) |
+| 3 | 7 | 1 | **T-5.1 accepted on device** (§1.31), **T-5.2, T-5.3 and T-5.4 built** (§1.30, §1.32, §1.33), and **the chain now reads real files** (§1.34). `DngFrameSource`, the production `Resampler` and `RigidTransform.fromMatrix` closed the plumbing gap — and doing so surfaced **two defects in shipped code that 466 tests could not see**, because the stacking fixture is a 24-row frame and the band margin is 160 rows, so every test band was the whole frame. What is left is **a device and a night**: **T-5.6 now writes `stack_linear.tif`** (§1.35), so the pipeline produces something a person can open and T-5.7's only remaining blocker is a night. `--es diag stack` joins `warp` and `combine` in the queue waiting on a phone |
 | 4+ | outlined | 0 | not started |
 
 > **The `Ticked` column counts `[x]` only.** §0 ties that to an acceptance demonstrated on a real
@@ -1803,6 +1803,95 @@ instead of reporting "no sessions found", because those are very different probl
 
 ---
 
+## 1.35 The linear master, and a boundary question with two right answers — 2026-09-02
+
+T-5.6 is the first thing this app produces that a person can open. Everything through T-5.4 built a
+`FloatArray`; §1.34 filled it from real files; this writes it somewhere. It is also the last
+prerequisite for **T-5.7** — a stack that cannot leave the phone cannot be compared to Siril.
+
+### The tag that decides whether the file is data or noise
+
+The master is linear ADU with no ceiling at 65 535, and it carries negatives on purpose (T-5.2
+keeps them, because clamping biases the background upward non-uniformly). Neither survives an
+integer format, so the output is IEEE float — `BitsPerSample = 32` and **`SampleFormat = 3`**.
+
+The second is the one a hand-rolled writer forgets, and it fails in the way this document keeps
+cataloguing: a file without it is **not rejected**. The TIFF default is *unsigned integer*, so the
+reader reinterprets float bit patterns as enormous integers and displays noise. It is a wrong
+picture rather than an error, which is why the test parses the IFD and asserts the tag rather than
+checking that something opens.
+
+Two more shapes of the same trap were caught by tests during the build. The writer declared twelve
+tags and wrote thirteen, because the `SampleFormat` entry it was documenting had not actually been
+emitted; and a TIFF value of four bytes or fewer must live **inside** the tag entry rather than at
+an offset, so a short `ImageDescription` written the general way produces a file that parses and
+carries garbage. Both now have tests, and the tag count is a `check`.
+
+### The crop, which is a choice rather than a decision
+
+Every stack has a ragged border where the frames stopped overlapping. There is no answer that suits
+both people who might ask, so **it is a setting** — `Trim to overlap` or `Keep full frame`, in
+Settings under `Stacking output`, defaulting to trimming.
+
+The argument for trimming as the default: the border is not faint data, it is **fewer frames**. A
+strip that one frame in twenty reached is at a twentieth of the depth with none of the rejection
+working, and it survives the autostretch as a bright noisy frame around the image. The argument for
+keeping it: a crop silently changes the coordinate system, which matters to anyone re-registering
+the master against something else later.
+
+**The mode is also the answer to what uncovered pixels contain**, which is otherwise a second and
+worse question. Trimmed has none by construction; full frame keeps them as `NaN`, which is the
+honest marker (§1.32) and exactly what someone choosing that mode is asking for.
+
+### The crop is computed from the master, not from T-4.5's polygon
+
+`CommonArea` tracks the exact intersection of the frame footprints, and the obvious move was to use
+it. It is the wrong tool: the intersection is a **convex polygon** and a TIFF is a rectangle, so it
+would need a largest-inscribed-rectangle step regardless.
+
+The finished master already marks every uncovered pixel `NaN`, so the mask is free — and it is
+better evidence than the polygon in two ways. It is exact with respect to what *happened* rather
+than to what the transforms predicted, and it sees **interior** gaps, which a footprint
+intersection cannot represent at all. The largest all-covered rectangle then falls out of the
+standard histogram scan, `O(width × height)`, one pass over the mask.
+
+### What the setting is, and what it is not
+
+It is a **default**, not a lock. What reproduces a master is the value recorded in that session's
+`session.json` — the setting can be changed afterwards, and FR-9.2's rule is reproduce rather than
+approximate. So a new `stacking` block records the combiner method, the crop mode, the region, the
+frame count, the calibration and the rejection rate. **T-5.4's method finally lands there too**; it
+had been specified since §1.33 and had nowhere to go.
+
+The same provenance is written into the TIFF's own `ImageDescription`, because the audit trail is
+in the wrong place the moment someone copies one file to a PC and opens it a month later.
+
+When the stacking screen exists it offers a per-run override seeded from the setting, in the same
+place as T-5.4's combiner choice.
+
+### Two notes on cost
+
+**151 MB per master**, which is a real number against FR-9.1's storage budget. And the write is
+streamed a row at a time through one reusable buffer: building the bytes beside the `FloatArray`
+they came from would want 300 MB at the moment of writing, on a phone already holding the masters.
+
+### A papercut fixed on the way past
+
+`DngReader.kt` contained a **literal NUL byte** — `trimEnd('␀')` written as the character rather
+than `'\u0000'`. It compiled and behaved correctly, and git still diffed it as text because the
+NUL sits past git's 8 KB sniff window, but **ripgrep classified the file as binary and skipped
+it**: a search for a symbol defined in the DNG reader returned "Binary file … matches" instead of
+the line. Now an escape, and the same escape is used deliberately in the TIFF writer.
+
+### What has not happened
+
+Still no device and still no subs. `--es diag stack` now writes the file, so the queue waiting on a
+phone is unchanged in length and larger in value: it will say whether `DngReader.Rows` walks a real
+strip table, what the chain costs against §1.31's 13–15 ms/megapixel, and — once there are subs —
+hand over something Siril can open, which is the whole of **T-5.7**.
+
+---
+
 ## 2. Decisions
 
 | ID | Decision | Rationale | Reversal cost |
@@ -3137,11 +3226,45 @@ changes whether someone can run one without being surprised.
   affordance itself has nothing to attach to until there is a stacking screen — though since
   §1.34 the combiner does at least have a call site on real data, through `--es diag stack`.
 - [ ] **T-5.5** Frame weighting by star count, HFR and background level.
-- [ ] **T-5.6** Linear master out: 32-bit float TIFF, saved separately and treated as sacred
+- [~] **T-5.6** Linear master out: 32-bit float TIFF, saved separately and treated as sacred
   (FR-8.2).
+  **Built 2026-09-02** as `stacking/LinearMaster.kt`, 14 tests, §1.35. Writes
+  `master/stack_linear.tif`, streamed a row at a time — the bytes beside the `FloatArray` would
+  want 300 MB at the moment of writing.
+  **`SampleFormat = 3` is the tag the whole thing turns on**, and the test parses the IFD to assert
+  it rather than checking that something opens: a file without it is not rejected, it is read as
+  unsigned integers and displayed as noise. Two more of the same shape were caught while building —
+  the writer declared twelve tags and emitted thirteen (the `SampleFormat` entry it was documenting
+  was missing), and a value of four bytes or fewer must sit **inside** the tag entry, so a short
+  `ImageDescription` written the general way parses and carries garbage.
+  **The crop is a user choice, not a decision** (see below), and the mode is also the answer to
+  what uncovered pixels contain — trimmed has none, full frame keeps `NaN`.
+  **The region is computed from the master's own NaN mask**, not from T-4.5's `CommonArea`: that
+  polygon would need a largest-inscribed-rectangle step anyway, and the mask is exact with respect
+  to what happened rather than what the transforms predicted, and sees interior gaps a footprint
+  intersection cannot represent. Largest all-covered rectangle by histogram scan, `O(w x h)`.
+  Provenance goes in the file's `ImageDescription` as well as `session.json`, because the audit
+  trail is in the wrong place once one TIFF is copied to a PC.
+  *Remaining:* **151 MB per master**, unmeasured against a real session, and the write has never
+  run on a device. FR-9.1's `stack_stretched.jpg`/`.tif` are Phase 5's, not this.
+- [~] **T-5.6a** *(new)* **The crop mode is a setting**, in Settings under `Stacking output`.
+  `Trim to overlap` or `Keep full frame`, defaulting to trimming, because the border is not faint
+  data — it is **fewer frames**, at a fraction of the depth with none of the rejection working, and
+  it survives the autostretch as a bright noisy frame. Keeping it is the honest choice for anyone
+  re-registering the master later, since a crop silently changes the coordinate system.
+  It is a **default, not a lock**: what reproduces a master is the value in that session's
+  `session.json`, since the setting can be changed afterwards (FR-9.2). A new `stacking` block
+  records method, crop, region, frames, calibration and rejection — **and is where T-5.4's combiner
+  method finally lands**, having been specified since §1.33 with nowhere to go. The per-run
+  override arrives with the stacking screen, beside T-5.4's.
+  *Remaining:* **not walked on the phone.** The card renders in the same vocabulary as the rest of
+  Settings and has never been tapped in the dark, which is §0's bar and the one this plan keeps
+  insisting on.
 - [ ] **T-5.7** **Validation checkpoint:** stack the same subs in Siril/DSS on the desktop and
   compare SNR and star FWHM (success criterion §15.2). Record the numbers here.
   **Needs real subs, and there are none** — every field frame was destroyed on 2026-08-19 (§1.29).
+  **The other blocker is gone as of 2026-09-02**: T-5.6 writes `stack_linear.tif`, so there is now
+  something to open on the desktop the moment there is something to stack (§1.35).
   Phase 3 can be *built* against the synthetic sky and cannot be *validated* without a night out.
   Worth pulling a copy of the next session to the PC before anything else touches it.
 
@@ -3384,6 +3507,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-09-02 | **T-5.6 — the linear master, and a boundary question with two right answers (§1.35).** The first thing this app produces that a person can open, and T-5.7's last prerequisite. **`SampleFormat = 3` is the tag it all turns on**: without it a float TIFF is not rejected, it is read as unsigned integers and displayed as noise, so the test parses the IFD and asserts the tag rather than checking that something opens. Two more of that shape were caught building it — the writer declared twelve tags and emitted thirteen, the missing one being the `SampleFormat` entry its own doc comment was describing; and a TIFF value of four bytes or fewer must live *inside* the tag entry, so a short `ImageDescription` written the general way parses and carries garbage. **The crop is a user choice rather than a decision** — `Trim to overlap` or `Keep full frame`, in Settings, defaulting to trimming, because the border is not faint data but **fewer frames**, at a fraction of the depth with none of the rejection working, and it survives the autostretch as a bright noisy frame. The mode is also the answer to what uncovered pixels contain, which is otherwise a second and worse question. **The region comes from the master's own NaN mask, not from T-4.5's `CommonArea`**: that intersection is a convex polygon and a TIFF is a rectangle, so it would need a largest-inscribed-rectangle step anyway, while the mask is free, exact with respect to what happened rather than what was predicted, and sees interior gaps a footprint intersection cannot represent. It is a **default, not a lock** — a new `stacking` block in `session.json` records what actually made each master, **and is where T-5.4's combiner method finally lands** after being specified since §1.33 with nowhere to go; the same provenance goes in the TIFF's `ImageDescription`, because the audit trail is in the wrong place once one file is copied to a PC. 151 MB per master, streamed a row at a time. Also fixed: a **literal NUL byte in `DngReader.kt`** that made ripgrep skip the entire file as binary. 541 JVM tests. |
 | 2026-09-02 | **`DngFrameSource` — the chain reads real files, and two defects a 24-row fixture could not see (§1.34).** The piece T-5.2, T-5.3 and T-5.4 each ended by naming: a session folder as `TiledStacker.Frames`. Writing it was small; what it collided with was not. **The tiled loop could not apply calibration at all** — `Calibration.apply` was written frame-at-a-time and the loop hands it a band, so it throws on the first real frame and, past the size check, would have subtracted row 0's dark current from row 900. **A band starting on an odd row debayers as the wrong pattern**, GRBG read as RGGB, red and blue swapped on alternate tiles, because `tileRowsFor` returns an odd tile height about half the time. **Neither was reachable by 466 tests, for one reason:** the stacking fixture is 24 rows and the band margin is 160, so every test band was the whole frame starting at row 0 — the un-banded special case, reporting success. §1.22 warned that a small frame tests the pipeline's failure mode rather than the pipeline; it was not applied thoroughly enough. Also built: **`RigidTransform.fromMatrix`**, since `toMatrix` had no reader and a restack has to recover what registration measured at 03:00 — it returns the centre as the origin, which is *exact* because the matrix is a complete affine map, and it **refuses a matrix that is not a rotation** rather than flattening a scale into a misregistration that grows towards the edges. And the **production `Resampler`**, which did not exist: `Resample.warpBand` folds the band's origin into the translation as `b·r` and `(d − 1)·r`, the `−1` being the half that looks like a typo and the fourth appearance of this class of error. Memory forced the shape of the master build — twenty 12.6 MP darks at once is half a gigabyte, so it is banded too. **Nothing has run on a phone**: `--es diag stack` joins `warp` and `combine` in the queue, and T-5.7 still waits on a clear night. 523 JVM tests. |
 | 2026-09-01 | **T-5.4 — sigma clipping, and a threshold that is arithmetic rather than taste (§1.33).** The placeholder mean is replaced by the rejection that does stacking's actual work: a satellite in one frame of 150 survives a mean at 1/150th of its brightness, which after the stretch is a sharp bright line and obviously not sky. **The default is seeded from the median and MAD because of an exact result, not a preference** — a mean/SD clip rejects a lone outlier only when `(n − 1) > κ√n`, crossing at **n = 11** at κ = 3 and **independent of the outlier's brightness**, so a ten-frame stack cannot remove a satellite that way however bright it is (120, 1 000 and 60 000 ADU are all kept at n = 10, and there is a test for each). After the first pass the roles reverse and the iterations use mean and SD of the survivors, since robustness is only wanted while the contaminant is present. **A zero MAD is the ordinary case** — quantised background where over half the samples share a value — and the obvious fallback is wrong: the standard deviation about the median reintroduces the same `n ≤ 10` weakness by the back door, so σ comes from the **mean absolute deviation**, which clears an outlier above n = 4. **Two floors, because they are two questions:** five samples before rejection is attempted at all, three survivors before a pass is refused; merging them made the combiner worse, giving 234.5 instead of 101.5 for six frames with two satellites in them. **Clean-data cost measured at 0.88%** of samples rejected over 30 frames of Gaussian noise, which is 0.44% more noise in the master. The rejection reports itself rather than being trusted. **The profile has not run** — `--es diag combine` waits on a device, and until it does §12.1's JNI question is not open; the estimate is ~85 G operations per 150-frame master, and the first lever if that hurts is **threads, not JNI**. 491 JVM tests. |
 | 2026-08-21 | **T-5.3 — the tiled accumulator, and what a stub is allowed to be (§1.32).** Tiling is forced by arithmetic: a 12.6 MP master in three channels is 151 MB, and sigma clipping needs every frame's value for a pixel at once — **7.5 GB** for 150 frames. `tileRowsFor` makes the governing relationship explicit: **more frames means thinner tiles**, so a 20-frame session and a 200-frame night do not stack alike. **`DngReader.Rows` is the enabler**, serving row ranges instead of whole frames — possible only because §1.12 measured one strip per row, and without it a tiled stack would need sixteen thousand full 25 MB decodes for one night. The tile fetches a **margin either side**, because under rotation a band of output maps to a sheared band of input `2048 × sin θ` rows taller — over a hundred at the angles a session reaches, so a stack built as though rows lined up would seam at every boundary. **Both dependencies injected**, `Resampler` because OpenCV cannot load off-device — and the stub immediately earned its keep by being **wrong in the documented way**: it used the inverse transform where the contract says forward, the same confusion `Resample` warns about, caught by the test within an hour of the warning being written. A second failure recorded because it will recur: **Kotlin sorts `NaN` above every number**, so a `maxByOrNull` over a master picks an uncovered pixel — and uncovered is NaN by design, since writing zero would claim a darkness nobody measured. The defining property has its own test: **the tiling must be invisible in the answer**, one tile or twenty. 466 JVM tests. |

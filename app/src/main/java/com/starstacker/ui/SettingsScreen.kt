@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.starstacker.stacking.LinearMaster
 import com.starstacker.ui.theme.Night
 import com.starstacker.ui.theme.NumFamily
 
@@ -56,6 +57,8 @@ fun SettingsScreen(
     onShareLog: () -> Unit,
     onExportProfile: () -> Unit,
     exportedPath: String?,
+    crop: LinearMaster.Crop,
+    onCropChange: (LinearMaster.Crop) -> Unit,
     onBack: () -> Unit,
 ) {
     LazyColumn(
@@ -97,6 +100,9 @@ fun SettingsScreen(
 
         item { Eyebrow("Calibration") }
         item { CalibrationStub() }
+
+        item { Eyebrow("Stacking output · FR-8.2") }
+        item { CropSetting(crop, onCropChange) }
 
         item { Eyebrow("Diagnostics · T-0.6") }
         item {
@@ -186,6 +192,35 @@ private fun SessionRootSetting(sessionRoot: String, onPick: () -> Unit, onOpen: 
 }
 
 /** Phase 6 fills this in. Stated as absent rather than hidden — see T-8.7. */
+/**
+ * T-5.6's choice: what to do with the ragged border where the frames did not all overlap.
+ *
+ * Both options carry their consequence underneath, which is this screen's rule (T-0.4): the
+ * trade is a few percent of field against a partial-depth border, and neither half of that is
+ * guessable from a label. Only the selected option's summary is shown — printing both turns a
+ * choice into a comparison table, and the unselected one is one tap away.
+ *
+ * A pair of buttons rather than a switch, because a switch has an implied off state and neither
+ * of these is the absence of the other.
+ */
+@Composable
+private fun CropSetting(crop: LinearMaster.Crop, onChange: (LinearMaster.Crop) -> Unit) {
+    Column {
+        ButtonRow {
+            LinearMaster.Crop.entries.forEach { option ->
+                QuietButton(
+                    text = option.label,
+                    selected = option == crop,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onChange(option) },
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Card { Mono(crop.summary, color = Night.Txt3, size = 11.sp) }
+    }
+}
+
 @Composable
 private fun CalibrationStub() {
     Card { Mono("None — Phase 6.", color = Night.Txt3, size = 11.sp) }

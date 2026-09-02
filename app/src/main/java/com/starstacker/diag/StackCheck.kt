@@ -4,6 +4,7 @@ import com.starstacker.session.SessionLayout
 import com.starstacker.session.SessionLog
 import com.starstacker.stacking.Combine
 import com.starstacker.stacking.DngFrameSource
+import com.starstacker.stacking.LinearMaster
 import com.starstacker.stacking.Resample
 import com.starstacker.stacking.TiledStacker
 import java.io.File
@@ -31,11 +32,14 @@ import java.io.File
  * - **How much of the master no frame covered.** Uncovered pixels are NaN by design (§1.32), and
  *   a large count means the frames drifted further apart than the common area allows.
  *
- * ### What it does not do
+ * ### What it produces
  *
- * **It writes no image.** The linear master out is T-5.6, and inventing a format here would mean
- * inventing it twice. This proves the pipeline runs and says what it produced; looking at the
- * result waits for the TIFF.
+ * **The linear master itself** (T-5.6), written to `master/stack_linear.tif` in the geometry the
+ * user chose in Settings, with the session's provenance in its `ImageDescription` — so the result
+ * is something to open in Siril rather than a column of numbers. The choices that moved pixels go
+ * back into `session.json`, because a restack has to reproduce a master rather than approximate it.
+ *
+ * ### What it does not do
  *
  * **It reads a file-backed session root only.** A SAF-rooted session cannot be opened as a `File`,
  * which is T-0.5's outstanding piece rather than a limitation of this check — and it is reported
@@ -46,8 +50,14 @@ object StackCheck {
     /**
      * @param root the file-backed session root — `getExternalFilesDir(null)/sessions`.
      * @param sessionName the folder to stack, or null for the most recent one that has frames.
+     * @param crop T-5.6's boundary choice, as the user set it in Settings.
      */
-    fun run(root: File, sessionName: String?, log: (String) -> Unit) {
+    fun run(
+        root: File,
+        sessionName: String?,
+        crop: LinearMaster.Crop = LinearMaster.Crop.DEFAULT,
+        log: (String) -> Unit,
+    ) {
         log("stack: Phase 3 against real DNGs, from ${root.path}")
 
         if (!Resample.available) {
@@ -113,7 +123,93 @@ object StackCheck {
             )
             log("stack: rejection — ${combiner.stats.describe()}")
             report(master, log)
+
+            // T-5.6 — the linear master, in whichever geometry the user asked for.
+            val region = LinearMaster.regionFor(master, frames.width, frames.height, crop)
+            log("stack: ${crop.label} — writing ${region.describe()}")
+            val target = File(File(session, SessionLayout.MASTER), LinearMaster.FILE_NAME)
+            val written = runCatching {
+                LinearMaster.write(
+                    file = target,
+                    master = master,
+                    width = frames.width,
+                    height = frames.height,
+                    region = region,
+                    description = provenance(log0, frames, combiner, crop, region),
+                )
+            }.getOrElse {
+                log("stack: could not write the master — ${it.message}")
+                return
+            }
+            log("stack: wrote ${target.path}")
+            log("stack: %.1f MB".format(written / 1_000_000.0))
+
+            record(session, log0, frames, combiner, crop, region, log)
         }
+    }
+
+    /**
+     * Writes what produced this master back into `session.json` (FR-9.2).
+     *
+     * The rule is that a restack must **reproduce** a master rather than approximate it, and the
+     * app's current settings cannot say how one was made — the crop mode is a preference and can
+     * have been changed since. So the choices that moved pixels are recorded against the session
+     * that used them.
+     */
+    private fun record(
+        session: File,
+        log0: SessionLog,
+        frames: DngFrameSource,
+        combiner: Combine.SigmaClip,
+        crop: LinearMaster.Crop,
+        region: LinearMaster.Region,
+        log: (String) -> Unit,
+    ) {
+        val updated = log0.copy(
+            info = log0.info.copy(
+                stacking = mapOf(
+                    "method" to Combine.Method.SIGMA_CLIP.name,
+                    "crop" to crop.name,
+                    "region" to region.describe(),
+                    "frames" to frames.count.toString(),
+                    "calibration" to frames.masters.describe(),
+                    "rejection" to combiner.stats.describe(),
+                    "master" to LinearMaster.FILE_NAME,
+                ),
+            ),
+        )
+        runCatching {
+            File(session, SessionLayout.SESSION_JSON).writeText(updated.encode())
+        }.onFailure {
+            // The TIFF is already on disk and is the thing that matters; a log that would not
+            // update is worth saying out loud and not worth discarding the master for.
+            log("stack: master written but session.json could not be updated — ${it.message}")
+        }
+    }
+
+    /**
+     * What went into this master, written into the file's own `ImageDescription`.
+     *
+     * FR-9.2's audit trail normally lives in `session.json`, which is the right place for it and
+     * the wrong place for it the moment someone copies one TIFF to a PC and opens it a month
+     * later. This is the short version, travelling with the artefact.
+     */
+    private fun provenance(
+        log: SessionLog,
+        frames: DngFrameSource,
+        combiner: Combine.SigmaClip,
+        crop: LinearMaster.Crop,
+        region: LinearMaster.Region,
+    ): String = buildString {
+        append("StarStacker linear master")
+        append(" | session ${log.info.sessionId}")
+        if (log.info.label.isNotBlank()) append(" (${log.info.label})")
+        append(" | ${frames.count} frames")
+        append(" | %.0f s integration".format(log.acceptedIntegrationSeconds))
+        append(" | ISO ${log.info.plannedIso}")
+        append(" | ${frames.masters.describe()}")
+        append(" | ${Combine.Method.SIGMA_CLIP.label}, ${combiner.stats.describe()}")
+        append(" | ${crop.name} ${region.describe()}")
     }
 
     /** What came out, in the only terms available before T-5.6 writes an image. */

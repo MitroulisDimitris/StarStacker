@@ -52,6 +52,8 @@ import com.starstacker.pointing.Astro
 import com.starstacker.pointing.PointingFix
 import com.starstacker.session.SessionPointing
 import com.starstacker.session.SessionRoot
+import com.starstacker.stacking.LinearMaster
+import com.starstacker.stacking.StackingSettings
 import com.starstacker.session.toSessionPointing
 import com.starstacker.session.SessionRecovery
 import com.starstacker.session.SessionState
@@ -405,6 +407,12 @@ class MainActivity : ComponentActivity() {
                 val current = profile ?: return@StarStackerTheme
                 val qualification = remember(current) { Qualification.qualifyDevice(current) }
                 var exportedPath by remember { mutableStateOf<String?>(null) }
+                // T-5.6's crop mode. Read from the store once and then held here, so the button
+                // reflects the tap immediately rather than after a recomposition that re-reads
+                // preferences.
+                var crop by remember {
+                    mutableStateOf(StackingSettings.crop(this@MainActivity))
+                }
                 var nav by rememberSaveable(stateSaver = BackStack.Saver) {
                     mutableStateOf(BackStack())
                 }
@@ -748,6 +756,11 @@ class MainActivity : ComponentActivity() {
                         onShareLog = { shareFieldLog() },
                         onExportProfile = { exportedPath = exportAndShare(current) },
                         exportedPath = exportedPath,
+                        crop = crop,
+                        onCropChange = {
+                            crop = it
+                            StackingSettings.setCrop(this@MainActivity, it)
+                        },
                         onBack = { nav = nav.pop() },
                     )
                 }
@@ -935,6 +948,7 @@ class MainActivity : ComponentActivity() {
                         "stack" -> StackCheck.run(
                             root = File(getExternalFilesDir(null) ?: filesDir, "sessions"),
                             sessionName = sessionName,
+                            crop = StackingSettings.crop(this@MainActivity),
                             log = log,
                         )
 

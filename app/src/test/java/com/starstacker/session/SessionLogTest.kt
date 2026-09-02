@@ -102,6 +102,32 @@ class SessionLogTest {
     }
 
     @Test
+    fun `the stacking record round trips, because a restack must reproduce a master`() {
+        // T-5.6. The crop mode is a preference and can be changed after the fact, so what a master
+        // was made with has to live with the session rather than in Settings (FR-9.2).
+        val stacked = info().copy(
+            stacking = mapOf(
+                "method" to "SIGMA_CLIP",
+                "crop" to "COMMON_AREA",
+                "region" to "4032x3008 at (32, 32)",
+            ),
+        )
+        val restored = SessionLog.decode(SessionLog(stacked, emptyList()).encode())
+
+        assertEquals(stacked.stacking, restored.info.stacking)
+    }
+
+    @Test
+    fun `a log written before stacking existed decodes with an empty record`() {
+        // Every session captured so far has no stacking block at all, and FR-10.6.4 means a folder
+        // can arrive from anywhere. Absent is not the same as unreadable.
+        val without = SessionLog.decode(SessionLog(info(), emptyList()).encode().replace(
+            "\"stacking\": {}", "\"unrelated\": {}",
+        ))
+        assertEquals(emptyMap<String, String>(), without.info.stacking)
+    }
+
+    @Test
     fun `the summary counts accepted lights and their integration, not every frame`() {
         val log = SessionLog(
             info(),

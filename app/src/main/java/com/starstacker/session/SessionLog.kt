@@ -144,6 +144,16 @@ data class SessionInfo(
     val focusHfr: Double? = null,
     /** Null until calibration exists (Phase 6) — recorded so a restack knows what was applied. */
     val calibrationVersions: Map<String, String> = emptyMap(),
+    /**
+     * T-5.6 — how the master was produced: combiner method, crop mode, the region written.
+     *
+     * Written when a stack completes rather than when the session is captured, and separate from
+     * [calibrationVersions] because it describes an *output* and not an input. FR-9.2's rule is
+     * that a restack must reproduce a master rather than approximate it, so every choice that
+     * changes the pixels goes here — the app's current settings are no use, since they can have
+     * been changed since.
+     */
+    val stacking: Map<String, String> = emptyMap(),
     val state: SessionState = SessionState.CAPTURING,
 ) {
     companion object {
@@ -226,6 +236,7 @@ data class SessionLog(
                 "hfr" to info.focusHfr,
             ),
             "calibration" to info.calibrationVersions,
+            "stacking" to info.stacking,
             "summary" to linkedMapOf(
                 "lights" to lights.size,
                 "accepted" to accepted.size,
@@ -280,6 +291,10 @@ data class SessionLog(
                 focusDiopters = focus.float("diopters"),
                 focusHfr = focus.double("hfr"),
                 calibrationVersions = (root["calibration"] as? Map<*, *>)
+                    ?.entries?.mapNotNull { (k, v) ->
+                        if (k is String && v is String) k to v else null
+                    }?.toMap().orEmpty(),
+                stacking = (root["stacking"] as? Map<*, *>)
                     ?.entries?.mapNotNull { (k, v) ->
                         if (k is String && v is String) k to v else null
                     }?.toMap().orEmpty(),
