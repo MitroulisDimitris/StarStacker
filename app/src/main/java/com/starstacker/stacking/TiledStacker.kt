@@ -36,10 +36,18 @@ import com.starstacker.registration.RigidTransform
 class TiledStacker(
     private val frames: Frames,
     private val resampler: Resampler,
-    // T-5.4's sigma-clipped mean, per instance because it carries a scratch buffer and its own
-    // rejection counters. A shared default would have every stack writing into one set of stats.
-    private val combiner: Combiner = Combine.SigmaClip(),
+    /**
+     * Makes a combiner — a **factory**, not an instance, because the combine runs on every core.
+     *
+     * `SigmaClip` carries a scratch buffer and its own counters, so workers cannot share one; each
+     * gets its own and the counters are summed at the end ([Combine.SigmaClip.Stats.add]). The
+     * pixels are independent, so which worker computes which changes nothing about the answer —
+     * the test for this asserts the master is *bit-identical* however many threads run it.
+     */
+    private val combiner: () -> Combiner = { Combine.SigmaClip() },
     private val memoryBudgetBytes: Long = DEFAULT_MEMORY_BUDGET,
+    /** Workers for the combine pass. One is the serial path, and the tests use it as the oracle. */
+    private val threads: Int = defaultThreads(),
     /**
      * Where §1.38's registered intermediate is written. The session's own folder by default, so
      * the space it takes is visible next to the frames rather than hidden in app-private storage.
@@ -208,7 +216,24 @@ class TiledStacker(
         // weight — every stack before T-5.5, and every session whose log has no quality metrics —
         // pays neither the memory nor the branch.
         weights = FloatArray(frames.count) { frames.weight(it) }
-        weighted = combiner is Combine.Weighted && weights.any { it != 1f }
+        // One per worker, made up front so the hot loop never allocates and so the caller can read
+        // their counters back afterwards.
+        workers = List(threads.coerceAtLeast(1)) { combiner() }
+        // A factory that hands the same *stateful* combiner to every worker is a data race on its
+        // scratch buffer and counters, and would show up as a master subtly different every run —
+        // the worst thing on this codebase's list. It is an easy slip (`{ existing }` rather than
+        // `{ Combine.SigmaClip() }`) and free to catch here.
+        //
+        // Only checked for `SigmaClip`, because it is the only combiner that carries state: `Mean`,
+        // `Median` and `WeightedMean` are stateless singletons and sharing one is correct and
+        // cheaper. A future stateful combiner has to be added to this condition.
+        if (workers.any { it is Combine.SigmaClip }) {
+            require(workers.distinctBy { System.identityHashCode(it) }.size == workers.size) {
+                "the combiner factory returned the same stateful instance more than once; " +
+                    "each worker needs its own"
+            }
+        }
+        weighted = workers.first() is Combine.Weighted && weights.any { it != 1f }
 
         val registered = scratch.let { RegisteredFrames.create(it, w, h, frames.count) }
             ?: return false
@@ -333,23 +358,39 @@ class TiledStacker(
         val tileRows = tileRowsFor(w, frames.count, memoryBudgetBytes, weighted)
 
         val band = FloatArray(w * tileRows * CHANNELS)
-        val samples = FloatArray(frames.count)
-        val sampleFrames = if (weighted) IntArray(frames.count) else null
+        // Per-worker scratch, so nothing in the parallel region touches a shared array.
+        val samples = List(workers.size) { FloatArray(frames.count) }
+        val sampleFrames = List(workers.size) { if (weighted) IntArray(frames.count) else null }
 
-        val tiles = (h + tileRows - 1) / tileRows
-        var tile = 0
-        var top = 0
-        while (top < h) {
-            if (cancelled()) return false
-            val rows = minOf(tileRows, h - top)
-            if (!combineTile(registered, top, rows, band, samples, sampleFrames, master, coverage)) {
-                return false
+        val pool = if (workers.size > 1) {
+            java.util.concurrent.Executors.newFixedThreadPool(workers.size) { r ->
+                Thread(r, "stack-combine").apply { isDaemon = true }
             }
-            tile++
-            top += rows
-            onProgress(Progress(tile, tiles, top, h, Phase.COMBINE))
+        } else {
+            null
         }
-        return true
+
+        try {
+            val tiles = (h + tileRows - 1) / tileRows
+            var tile = 0
+            var top = 0
+            while (top < h) {
+                if (cancelled()) return false
+                val rows = minOf(tileRows, h - top)
+                if (!combineTile(
+                        registered, top, rows, band, samples, sampleFrames, master, coverage, pool,
+                    )
+                ) {
+                    return false
+                }
+                tile++
+                top += rows
+                onProgress(Progress(tile, tiles, top, h, Phase.COMBINE))
+            }
+            return true
+        } finally {
+            pool?.shutdown()
+        }
     }
 
     private fun combineTile(
@@ -357,10 +398,11 @@ class TiledStacker(
         top: Int,
         rows: Int,
         band: FloatArray,
-        samples: FloatArray,
-        sampleFrames: IntArray?,
+        samples: List<FloatArray>,
+        sampleFrames: List<IntArray?>,
         master: FloatArray,
         coverage: ShortArray?,
+        pool: java.util.concurrent.ExecutorService?,
     ): Boolean {
         val w = frames.width
 
@@ -390,17 +432,28 @@ class TiledStacker(
             }
         }
 
-        // Combine and write.
-        for (p in 0 until tilePixels) {
-            val n = counts[p]
-            for (i in 0 until n) samples[i] = store[p * frames.count + i]
-            master[(top * w * CHANNELS) + p] = if (origin != null && sampleFrames != null) {
-                for (i in 0 until n) sampleFrames[i] = origin[p * frames.count + i]
-                (combiner as Combine.Weighted)
-                    .combineWeighted(samples, sampleFrames, n, weights)
-            } else {
-                combiner.combine(samples, n)
+        // Combine and write. Every pixel is independent of every other, which is what makes the
+        // split safe and the answer identical however it is divided — see [workers].
+        if (pool == null) {
+            combineRange(0, tilePixels, top, store, counts, origin, samples[0], sampleFrames[0], workers[0], master)
+        } else {
+            val chunk = (tilePixels + workers.size - 1) / workers.size
+            val tasks = workers.indices.map { k ->
+                java.util.concurrent.Callable {
+                    val from = k * chunk
+                    val until = minOf(from + chunk, tilePixels)
+                    if (from < until) {
+                        combineRange(
+                            from, until, top, store, counts, origin,
+                            samples[k], sampleFrames[k], workers[k], master,
+                        )
+                    }
+                    null
+                }
             }
+            // invokeAll blocks until every chunk is done, so the tile is complete before the next
+            // one reuses `store`.
+            pool.invokeAll(tasks).forEach { it.get() }
         }
 
         // How many frames actually reached each pixel. Channel 0 speaks for the pixel — coverage
@@ -417,6 +470,32 @@ class TiledStacker(
             }
         }
         return true
+    }
+
+    /** One worker's slice of a tile. Reads `store`, writes its own disjoint span of `master`. */
+    private fun combineRange(
+        from: Int,
+        until: Int,
+        top: Int,
+        store: FloatArray,
+        counts: IntArray,
+        origin: IntArray?,
+        samples: FloatArray,
+        sampleFrames: IntArray?,
+        combiner: Combiner,
+        master: FloatArray,
+    ) {
+        val base = top * frames.width * CHANNELS
+        for (p in from until until) {
+            val n = counts[p]
+            for (i in 0 until n) samples[i] = store[p * frames.count + i]
+            master[base + p] = if (origin != null && sampleFrames != null) {
+                for (i in 0 until n) sampleFrames[i] = origin[p * frames.count + i]
+                (combiner as Combine.Weighted).combineWeighted(samples, sampleFrames, n, weights)
+            } else {
+                combiner.combine(samples, n)
+            }
+        }
     }
 
     /**
@@ -452,6 +531,15 @@ class TiledStacker(
     private var weights: FloatArray = FloatArray(0)
     private var weighted: Boolean = false
 
+    /**
+     * The combiners the last [stack] used, one per worker.
+     *
+     * Exposed so a caller can sum their counters — the rejection rate is one of the few things a
+     * stack reports about itself, and splitting the work across cores must not split the number.
+     */
+    var workers: List<Combiner> = emptyList()
+        private set
+
     private fun tileStore(tilePixels: Int): FloatArray {
         val needed = tilePixels.toLong() * frames.count
         require(needed <= Int.MAX_VALUE) { "tile too large for one array" }
@@ -481,8 +569,26 @@ class TiledStacker(
     companion object {
         const val CHANNELS = 3
 
-        /** 96 MB of samples. Generous enough for a real stack, small enough to survive one. */
-        const val DEFAULT_MEMORY_BUDGET = 96L * 1024 * 1024
+        /**
+         * 192 MB of samples.
+         *
+         * Was 96 MB, chosen before `largeHeap` existed and before anything had been measured. On
+         * the first real session that gave an **8-row tile**, so the combine did 43 776 reads of
+         * 393 KB — small enough that seek overhead is a real share of the cost. Doubling it halves
+         * the reads and doubles their size, and the heap has the room now (§1.38).
+         */
+        const val DEFAULT_MEMORY_BUDGET = 192L * 1024 * 1024
+
+        /**
+         * Cores to combine on, leaving one for everything else.
+         *
+         * §1.33 predicted this lever and §1.38 measured it: the combine is compute-bound, per-pixel
+         * independent, and was 855 s of a 1145 s stack on one core. Capped at six because the
+         * little cores of a big.LITTLE phone contribute less than they cost in contention, and
+         * because a stack should not make the device unusable while it runs.
+         */
+        fun defaultThreads(): Int =
+            (Runtime.getRuntime().availableProcessors() - 1).coerceIn(1, 6)
 
         /**
          * How many output rows fit in the budget, given the frame count.

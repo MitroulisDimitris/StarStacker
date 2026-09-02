@@ -273,7 +273,7 @@ class DngFrameSourceTest {
         open(dir).use { source ->
             val master = FloatArray(w * h * 3)
             assertTrue(
-                TiledStacker(source!!, PassThroughResampler(), TiledStacker.Combiner.Mean)
+                TiledStacker(source!!, PassThroughResampler(), { TiledStacker.Combiner.Mean })
                     .stack(master),
             )
             // Not 150. With no dark, T-5.2 subtracts the DNG's 64 ADU pedestal explicitly — the
@@ -299,7 +299,7 @@ class DngFrameSourceTest {
         open(dir).use { source ->
             val master = FloatArray(w * h * 3)
             assertTrue(
-                TiledStacker(source!!, PassThroughResampler(), TiledStacker.Combiner.Mean)
+                TiledStacker(source!!, PassThroughResampler(), { TiledStacker.Combiner.Mean })
                     .stack(master),
             )
             // Every row should come back at exactly 490: the row's own dark, not row 0's.

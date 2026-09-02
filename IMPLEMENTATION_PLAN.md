@@ -2243,6 +2243,65 @@ of scratch cleaned up behind it. It needs opening in Siril next to the same 114 
 
 ---
 
+## 1.40 Threads, and what Amdahl had to say about it — 2026-09-02
+
+§1.33 predicted the lever, §1.38 measured the need, §1.39 left it as the next step. Built:
+
+    stack: 776.7 s for 114 frames        (was 1144.5)
+
+**19.1 minutes to 12.9.** Less than the eightfold the core count suggests, and the shortfall is the
+interesting part.
+
+### The property that makes it safe, checked on the real thing
+
+Every pixel of the combine is independent of every other, so which core computes which **cannot**
+change the answer. That makes the test unusually strong — bit-identical, not close — and it was
+worth taking past the fixtures:
+
+    serial   (1 core)  : 4b54ed8cbd6279b1…
+    threaded (7 cores) : 4b54ed8cbd6279b1…
+
+**The same 131 909 712 bytes**, sha256-identical, on the real 114-frame session. Anything less
+would have meant state leaking between pixels, which would be a bug on one thread too.
+
+Each worker gets **its own combiner**, because `SigmaClip` carries a scratch buffer and its own
+counters, and the counters are summed at the end rather than contended for 37.8 million times. The
+factory is guarded: handing every worker the same stateful instance — `{ existing }` instead of
+`{ Combine.SigmaClip() }` — is refused rather than raced, because it would produce a master subtly
+different on every run. Only `SigmaClip` is checked; `Mean`, `Median` and `WeightedMean` are
+stateless singletons and sharing one is correct.
+
+### Where the other six cores went
+
+| | serial | threaded |
+|---|---|---|
+| register | 290 s | 290 s — untouched, still one core |
+| combine | 854 s | 487 s — **1.76×** on seven threads |
+
+Solving Amdahl for the combine puts it at **~429 s of parallel compute and ~425 s of serial I/O and
+gather** — very nearly half and half. Seven cores took the compute to about 60 s and left the rest
+exactly where it was.
+
+So the honest reading is that §1.38's estimate of the profile (~353 s of arithmetic at this frame
+count) was about right all along, and the *other* half of the combine — reading 17 GB back and
+walking it into the sample store — was never in the profile because the profile keeps its pool in
+cache. **The thing that was measured is not the whole of the thing that runs**, which is the same
+lesson as §1.34 and §1.38 in a third costume.
+
+The tile budget also doubled, from 96 MB to 192 MB. That was chosen before `largeHeap` existed;
+doubling it took the tile from 8 rows to 17 and halved the number of reads, from 384 tiles to 181.
+
+### What is left, in order of what it would buy
+
+1. **The register pass, 290 s and entirely serial.** Frames are independent, so it parallelises the
+   same way — bounded by flash rather than by cores, but four-way would likely halve it.
+2. **The combine's serial half, ~425 s.** Reading the next tile while the current one combines
+   would hide most of the I/O behind compute that is now finishing early.
+
+Either would take this under ten minutes. Neither is needed to make Phase 3 usable, which it now is.
+
+---
+
 ## 2. Decisions
 
 | ID | Decision | Rationale | Reversal cost |
@@ -3559,7 +3618,12 @@ changes whether someone can run one without being surprised.
   happens), and the combine then tiles over already-registered data **with no margin at all**.
   43 776 band-warps became 114. **61 minutes became 19, and it completes.** The margin is now
   measured from the transforms rather than assumed — the constant 160 was too small because §1.32's
-  formula counted rotation and ignored drift. The combiner ships as **T-5.4**'s sigma clipping since
+  formula counted rotation and ignored drift.
+  **Threaded 2026-09-02 (§1.40): 19 minutes to 12.9.** Each core combines with its own `SigmaClip`
+  and the counters are summed; the master is **sha256-identical** to the serial one on the real
+  session, which is the property per-pixel independence guarantees. Amdahl puts the combine at half
+  parallel compute and half serial I/O, so seven cores bought 1.76× of it. The register pass is
+  still serial and is now the largest single block. The combiner ships as **T-5.4**'s sigma clipping since
   2026-09-01 (§1.33), leaving the mean available as an explicit choice.
 - [~] **T-5.4** Sigma-clipped mean as default; median / mean / kappa-sigma behind the expert
   affordance. **Build in Kotlin, profile, and only then consider the single sanctioned JNI
@@ -3588,7 +3652,10 @@ changes whether someone can run one without being surprised.
   "several times" it. Sigma clipping costs 25–32× the plain mean. **§12.1's JNI exception stays
   shut**: the loop is per-pixel independent and the phone has eight cores, so threading turns 7.9
   minutes into one or two, and JNI would buy two or three times on top for a native library and a
-  boundary. Threads first, exactly as predicted. The expert
+  boundary. Threads first, exactly as predicted.
+  **Threading built 2026-09-02 (§1.40)** and the arithmetic held: the compute fell from ~429 s to
+  ~60 s on seven cores. What it did *not* fix is the ~425 s of I/O and gather sitting beside it,
+  which the profile never saw because its pool stays in cache. The expert
   affordance **landed 2026-09-02** (§1.36): the Advanced panel under the Stack button offers all
   four methods, and the choice is recorded in `session.json` so a restack reproduces the master.
 - [~] **T-5.5** Frame weighting by star count, HFR and background level.
@@ -3924,6 +3991,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-09-02 | **Threads, and what Amdahl had to say (§1.40).** The lever §1.33 predicted and §1.38 measured: **19.1 minutes to 12.9**. Every pixel of the combine is independent, so which core computes which *cannot* change the answer — and that was checked past the fixtures, on the real session: the threaded master is **sha256-identical** to the serial one, the same 131 909 712 bytes. Each worker gets its own `SigmaClip`, since it carries a scratch buffer and counters, and the counters are summed at the end; a factory handing every worker the same stateful instance is **refused rather than raced**, because it would give a master subtly different every run. Seven cores bought only 1.76× of the combine, and solving Amdahl says why: the combine is **~429 s of parallel compute beside ~425 s of serial I/O and gather**, so the compute fell to about 60 s and the rest did not move. §1.38's profile was right about the arithmetic and never saw the other half, because its pool stays in cache — *the thing that was measured is not the whole of the thing that runs*, which is §1.34's lesson in a third costume. The tile budget also doubled to 192 MB now that `largeHeap` exists, taking tiles from 8 rows to 17 and halving the reads. What is left: the register pass (290 s, still serial and now the largest single block) and overlapping the combine's reads with its compute. 599 JVM tests. |
 | 2026-09-02 | **Warp once, and the first master from real sky (§1.39).** §1.38's fix built and run: a register pass puts every frame into reference coordinates once, into one float file per frame, and the combine then tiles over already-registered data **with no margin at all**. 43 776 band-warps became 114, and **61 minutes became 19 — and it finishes**. The margin is now measured from the transforms; the old constant of 160 was too small because §1.32's formula counted rotation and ignored drift, and rotation alone is only 136 of the 220 rows this session needed. **Three defects, all found by running it.** A band one row taller than its buffer, because the CFA parity snap rounds a band's start *down* — invisible while tile and margin were both even. **`Trim to overlap` was answering the wrong question**: it tested for NaN, and a pixel is only NaN when *no* frame reached it, but the reference covers everything by definition — so nothing was ever NaN and the crop kept the whole frame, reporting `0.00% uncovered` on a session with 3.72° of rotation. It now takes a per-pixel coverage count and trims to where every frame reached: **3887x2828**, the displacement showing up as a border. The evidence had been in the run all along — 496 104 pixels combined below the five-sample floor, the partial-depth border averaged from one to four frames. And 17 GB unpacked a byte at a time, now a bulk FloatBuffer copy, which bought less than expected and so confirmed the combine is compute-bound. **`stack_linear.tif` verified tag by tag** — 32-bit, `SampleFormat [3,3,3]`, provenance embedded, scratch cleaned up. **T-5.7 is now a desktop afternoon rather than a clear night.** 595 JVM tests. |
 | 2026-09-02 | **On the phone at last — four findings, one architectural (§1.38).** **There is field data**: `2026-08-23_0006` has sat on the device since 2026-08-23 with 119 of 120 lights accepted, 18 darks and 14.7 minutes of integration, and this document has said since §1.29 that none existed — stale four days after it was written. **T-5.4's profile ran** and §1.33's estimate was low by five times: 471.7 s of combining for a 150-frame master on one core, sixteen times the warp pass rather than several times it; §12.1's JNI exception stays shut because the loop is per-pixel independent and threading turns 7.9 minutes into one or two. **The heap does not fit a stack** — 151 MB master plus 50 MB dark plus 96 MB samples against a 256 MB growth limit, every number written down in a doc comment and never added up; `largeHeap` fixes it. **And the tiled loop is the wrong shape**: 114 frames give an 8-row tile against a 160-row margin, so every band reads, calibrates, debayers and warps 328 rows to produce 8 — a 41x amplification, ~61 minutes for one stack, 117 GB read to write 151 MB. The margin is simultaneously **too small**, since the session rotates 3.72° and displaces 219.5 rows, so tiles miss rows they need. Neither is tunable: the margin grows with session length and the tile shrinks with frame count. The fix is to warp each frame once into an intermediate and tile only the combine, where the margin is zero — ~7-8 minutes. Invisible to the JVM tests, whose 24-row fixture is smaller than the margin: §1.34's blind spot in a new disguise. |
 | 2026-09-02 | **T-5.5 — frame weighting, and the two places it quietly does not apply (§1.37).** The last unbuilt task in Phase 3, and two features from one score: weighting asks how much a frame counts, the keep-best cut asks whether it counts at all. **The exponents are physics rather than tuning** — weight is `1 / variance`, so sharpness enters as `1 / HFR²` since a star's flux spreads over an area proportional to `HFR²`, background as its inverse since sky shot noise variance is the background, and star count linearly, deliberately not squared, because haze raises the sky *and* hides stars and a frame should not be punished twice for one cause. **The property that mattered most is the boring one: with no metrics, nothing changes** — every session so far has a partial log, and a scheme that reweighted a night by which fields happened to be populated would be worse than no weighting. **Keeping the weights attached to their samples is what made this more than arithmetic**: the combiner reorders its scratch array and compacts survivors in place, so by the time there is a set to average nothing knows which frame each value came from — the weighted path carries a parallel index array through every quickselect swap and every compaction step, which halves the tile height, while the unweighted path allocates nothing because weighting is decided once per stack. **Rejection stays unweighted**, since a satellite is an outlier whatever frame it crossed. **Two places the weights quietly do not apply**, found by a test that failed for the right reason: `SigmaClip` returns the median below its five-sample floor, so a session of four frames or fewer is unweighted whatever the setting says, as is every pixel at the edge of the common area; and the median ignores weights by nature. The cut rounds up, so 95% of twenty drops one and 95% of three drops none, and the panel says the consequence in frames rather than percent. Phase 3 is now built in full; only T-5.7 remains, and it needs a night. 582 JVM tests. |

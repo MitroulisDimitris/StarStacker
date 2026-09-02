@@ -143,7 +143,7 @@ class TiledStackerTest {
         }
         val master = FloatArray(w * h * 3)
 
-        assertTrue(TiledStacker(frames, StubResampler(), mean, scratchDirectory = scratch).stack(master))
+        assertTrue(TiledStacker(frames, StubResampler(), { mean }, scratchDirectory = scratch).stack(master))
 
         for (y in 0 until h) {
             for (x in 0 until w) {
@@ -160,7 +160,7 @@ class TiledStackerTest {
             100 * (f + 1)
         }
         val master = FloatArray(w * h * 3)
-        TiledStacker(frames, StubResampler(), mean, scratchDirectory = scratch).stack(master)
+        TiledStacker(frames, StubResampler(), { mean }, scratchDirectory = scratch).stack(master)
 
         // (100 + 200 + 300 + 400) / 4
         assertEquals(250f, master[0], 1e-3f)
@@ -180,8 +180,8 @@ class TiledStackerTest {
         val manyTiles = FloatArray(w * h * 3)
 
         // A budget large enough for the whole frame, and one so small each tile is a single row.
-        TiledStacker(make(), StubResampler(), mean, memoryBudgetBytes = 64L * 1024 * 1024, scratchDirectory = scratch).stack(oneTile)
-        TiledStacker(make(), StubResampler(), mean, memoryBudgetBytes = w * 3L * 6 * 4, scratchDirectory = scratch).stack(manyTiles)
+        TiledStacker(make(), StubResampler(), { mean }, memoryBudgetBytes = 64L * 1024 * 1024, scratchDirectory = scratch).stack(oneTile)
+        TiledStacker(make(), StubResampler(), { mean }, memoryBudgetBytes = w * 3L * 6 * 4, scratchDirectory = scratch).stack(manyTiles)
 
         for (i in oneTile.indices) {
             assertEquals(oneTile[i], manyTiles[i], 1e-3f) { "tiling changed the master at $i" }
@@ -276,7 +276,7 @@ class TiledStackerTest {
         // Small enough to force many tiles, so most bands are genuinely partial.
         val budget = narrow * 3L * 2 * 4 * 100
         assertTrue(
-            TiledStacker(frames, StubResampler(), mean, memoryBudgetBytes = budget, scratchDirectory = scratch).stack(master),
+            TiledStacker(frames, StubResampler(), { mean }, memoryBudgetBytes = budget, scratchDirectory = scratch).stack(master),
         )
 
         // Every pixel is (1000 + y) - y = 1000, whatever tile it landed in.
@@ -350,7 +350,7 @@ class TiledStackerTest {
             transforms = { i -> if (i == 0) null else half },
         ) { f, _, _ -> if (f == 0) 100 else 300 }
         val master = FloatArray(w * h * 3)
-        TiledStacker(frames, StubResampler(), mean, scratchDirectory = scratch).stack(master)
+        TiledStacker(frames, StubResampler(), { mean }, scratchDirectory = scratch).stack(master)
 
         val left = master[(5 * w + 1) * 3]
         val right = master[(5 * w + w - 2) * 3]
@@ -371,7 +371,7 @@ class TiledStackerTest {
             masters = Calibration.Masters.of(w, h, dark = dark),
         ) { _, _, _ -> 340 }
         val master = FloatArray(w * h * 3)
-        TiledStacker(frames, StubResampler(), mean, scratchDirectory = scratch).stack(master)
+        TiledStacker(frames, StubResampler(), { mean }, scratchDirectory = scratch).stack(master)
 
         assertEquals(300f, master[0], 1e-3f) { "the dark was not subtracted: ${master[0]}" }
     }
@@ -389,11 +389,11 @@ class TiledStackerTest {
         // T-5.4 seen from the outside. The mean keeps a twelfth of it — 166.7 against a background
         // of 100, which after the stretch is a sharp bright line and unmistakably not sky.
         val averaged = FloatArray(w * h * 3)
-        TiledStacker(framesWithASatellite(), StubResampler(), mean, scratchDirectory = scratch).stack(averaged)
+        TiledStacker(framesWithASatellite(), StubResampler(), { mean }, scratchDirectory = scratch).stack(averaged)
         assertEquals(166.667f, averaged[(9 * w + 4) * 3], 1e-2f)
 
         val clipped = FloatArray(w * h * 3)
-        TiledStacker(framesWithASatellite(), StubResampler(), Combine.SigmaClip(), scratchDirectory = scratch).stack(clipped)
+        TiledStacker(framesWithASatellite(), StubResampler(), { Combine.SigmaClip() }, scratchDirectory = scratch).stack(clipped)
         assertEquals(100f, clipped[(9 * w + 4) * 3], 1e-3f) { "the streak survived the clip" }
 
         // And the sky either side of it is untouched — a clip that flattened everything would pass
@@ -409,12 +409,12 @@ class TiledStackerTest {
         val manyTiles = FloatArray(w * h * 3)
 
         TiledStacker(
-            framesWithASatellite(), StubResampler(), Combine.SigmaClip(),
+            framesWithASatellite(), StubResampler(), { Combine.SigmaClip() },
             memoryBudgetBytes = 64L * 1024 * 1024,
             scratchDirectory = scratch,
         ).stack(oneTile)
         TiledStacker(
-            framesWithASatellite(), StubResampler(), Combine.SigmaClip(),
+            framesWithASatellite(), StubResampler(), { Combine.SigmaClip() },
             memoryBudgetBytes = w * 3L * 12 * 4,
             scratchDirectory = scratch,
         ).stack(manyTiles)
@@ -428,12 +428,35 @@ class TiledStackerTest {
     fun `the master can say what its rejection did`() {
         // A stack that cannot report its rejection rate has to be trusted instead, and FR-9.2 wants
         // the figure in session.json so a restack is comparable rather than merely similar.
-        val clip = Combine.SigmaClip()
-        TiledStacker(framesWithASatellite(), StubResampler(), clip, scratchDirectory = scratch).stack(FloatArray(w * h * 3))
+        val stacker = TiledStacker(
+            framesWithASatellite(),
+            StubResampler(),
+            { Combine.SigmaClip() },
+            scratchDirectory = scratch,
+        )
+        stacker.stack(FloatArray(w * h * 3))
+
+        // Summed across the workers, since §1.39 gives each core its own combiner.
+        val total = Combine.SigmaClip.Stats()
+        stacker.workers.filterIsInstance<Combine.SigmaClip>().forEach { total.add(it.stats) }
 
         // Four rows of the frame, three channels, one frame in twelve.
-        assertEquals(w * 4L * 3, clip.stats.rejected)
-        assertEquals(w * h * 3L, clip.stats.pixels)
+        assertEquals(w * 4L * 3, total.rejected)
+        assertEquals(w * h * 3L, total.pixels)
+    }
+
+    @Test
+    fun `a factory that hands every worker the same combiner is refused`() {
+        // `{ existing }` instead of `{ Combine.SigmaClip() }` is an easy slip and would be a race
+        // on one instance's scratch buffer — a master subtly different every run.
+        val shared = Combine.SigmaClip()
+        val error = runCatching {
+            TiledStacker(
+                framesWithASatellite(), StubResampler(), { shared },
+                threads = 4, scratchDirectory = scratch,
+            ).stack(FloatArray(w * h * 3))
+        }
+        assertTrue(error.exceptionOrNull() is IllegalArgumentException, "expected a refusal")
     }
 
     // ------------------------------------------------------------------ housekeeping
@@ -503,7 +526,7 @@ class TiledStackerTest {
         var tilesRun = 0
         val budget = w * 3L * 2 * 4 * 2 // two rows a tile, so there are plenty of them
 
-        val completed = TiledStacker(frames, StubResampler(), mean, memoryBudgetBytes = budget, scratchDirectory = scratch)
+        val completed = TiledStacker(frames, StubResampler(), { mean }, memoryBudgetBytes = budget, scratchDirectory = scratch)
             .stack(FloatArray(w * h * 3), cancelled = { tilesRun >= 2 }) { tilesRun++ }
 
         assertFalse(completed, "a cancelled stack has not completed")
@@ -514,7 +537,7 @@ class TiledStackerTest {
     fun `a stack cancelled before it starts does no work at all`() {
         val frames = FakeFrames(count = 2, width = w, height = h, masters = masters()) { _, _, _ -> 100 }
         var tilesRun = 0
-        val completed = TiledStacker(frames, StubResampler(), mean, scratchDirectory = scratch)
+        val completed = TiledStacker(frames, StubResampler(), { mean }, scratchDirectory = scratch)
             .stack(FloatArray(w * h * 3), cancelled = { true }) { tilesRun++ }
 
         assertFalse(completed)

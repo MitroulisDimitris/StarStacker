@@ -119,3 +119,149 @@ class RegisterBandTest {
         }
     }
 }
+
+/**
+ * §1.39's threading, and the property that makes it safe to have.
+ *
+ * Every pixel of the combine is independent of every other, so splitting the work across cores
+ * cannot change the answer — not "should not", *cannot*. That makes the test unusually strong: the
+ * master must come back **bit-identical**, not merely close. Anything less would mean state is
+ * leaking between pixels, which would be a bug on one thread too.
+ */
+class CombineThreadingTest {
+
+    @org.junit.jupiter.api.io.TempDir
+    lateinit var scratch: java.io.File
+
+    private val w = 32
+    private val h = 40
+
+    private fun frames() = object : TiledStacker.Frames {
+        override val count = 9
+        override val width = w
+        override val height = h
+        override val cfaCodes = listOf(1, 0, 2, 1)
+        override val masters = Calibration.Masters.of(w, h)
+        override val blackLevel = 0.0
+        override fun transform(index: Int) = null
+        override fun rows(index: Int, fromRow: Int, rowCount: Int, into: ShortArray): Int {
+            val rows = minOf(rowCount, (h - fromRow).coerceAtLeast(0))
+            for (r in 0 until rows) {
+                for (x in 0 until w) {
+                    val y = fromRow + r
+                    // A background with structure, a few stars, and one satellite in one frame, so
+                    // every branch of the clip is exercised somewhere in the frame.
+                    val base = 900 + (x * 7 + y * 13) % 60
+                    val star = if ((x * 31 + y * 17) % 91 == 0) 6_000 else 0
+                    val hit = if (index == 4 && (x + y) % 37 == 0) 30_000 else 0
+                    into[r * w + x] = (base + star + hit + index * 3).toShort()
+                }
+            }
+            return rows
+        }
+    }
+
+    private fun stack(threads: Int, budget: Long): FloatArray {
+        val master = FloatArray(w * h * 3)
+        val ok = TiledStacker(
+            frames = frames(),
+            resampler = PassThrough(),
+            combiner = { Combine.SigmaClip() },
+            memoryBudgetBytes = budget,
+            threads = threads,
+            scratchDirectory = scratch,
+        ).stack(master)
+        assertTrue(ok, "stack failed at $threads threads")
+        return master
+    }
+
+    @Test
+    fun `the master is bit-identical however many threads combine it`() {
+        val serial = stack(1, 64L * 1024 * 1024)
+        for (threads in listOf(2, 3, 8)) {
+            val parallel = stack(threads, 64L * 1024 * 1024)
+            for (i in serial.indices) {
+                // toRawBits, not a delta: identical means identical.
+                assertEquals(
+                    serial[i].toRawBits(),
+                    parallel[i].toRawBits(),
+                    "sample $i differs at $threads threads",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `it stays identical when the tiling changes underneath it too`() {
+        // Threads split a tile; the budget splits the frame into tiles. Neither may show up in the
+        // answer, and the two interact — a worker's chunk is a fraction of a tile.
+        val oracle = stack(1, 64L * 1024 * 1024)
+        val awkward = stack(5, w * 3L * 9 * 8 * 3) // three rows a tile, five workers
+        for (i in oracle.indices) {
+            assertEquals(oracle[i].toRawBits(), awkward[i].toRawBits(), "sample $i")
+        }
+    }
+
+    @Test
+    fun `the rejection counters survive being split across workers`() {
+        // Each worker has its own SigmaClip, so the rate a stack reports has to be reassembled or
+        // it describes one core's share of the frame.
+        fun countersFor(threads: Int): Pair<Long, Long> {
+            val stacker = TiledStacker(
+                frames = frames(),
+                resampler = PassThrough(),
+                combiner = { Combine.SigmaClip() },
+                memoryBudgetBytes = 64L * 1024 * 1024,
+                threads = threads,
+                scratchDirectory = scratch,
+            )
+            stacker.stack(FloatArray(w * h * 3))
+            val total = Combine.SigmaClip.Stats()
+            stacker.workers.filterIsInstance<Combine.SigmaClip>().forEach { total.add(it.stats) }
+            return total.pixels to total.rejected
+        }
+
+        val (serialPixels, serialRejected) = countersFor(1)
+        val (parallelPixels, parallelRejected) = countersFor(4)
+
+        assertEquals(w.toLong() * h * 3, serialPixels, "every pixel should be counted once")
+        assertEquals(serialPixels, parallelPixels)
+        assertEquals(serialRejected, parallelRejected)
+        assertTrue(serialRejected > 0, "the fixture should give the clip something to reject")
+    }
+
+    /** Replicates each CFA sample into three channels and does not warp. */
+    private class PassThrough : TiledStacker.Resampler {
+        override fun debayer(
+            cfa: ShortArray,
+            width: Int,
+            height: Int,
+            cfaCodes: List<Int>,
+            out: FloatArray,
+        ): Boolean {
+            for (i in 0 until width * height) {
+                val v = (cfa[i].toInt() and 0xFFFF).toFloat()
+                out[i * 3] = v
+                out[i * 3 + 1] = v
+                out[i * 3 + 2] = v
+            }
+            return true
+        }
+
+        override fun warpBand(
+            src: FloatArray,
+            width: Int,
+            srcRows: Int,
+            srcTop: Int,
+            channels: Int,
+            dstRows: Int,
+            dstTop: Int,
+            transform: com.starstacker.registration.RigidTransform,
+            out: FloatArray,
+        ): Boolean {
+            val skip = (dstTop - srcTop) * width * channels
+            src.copyInto(out, 0, skip, skip + dstRows * width * channels)
+            return true
+        }
+    }
+}

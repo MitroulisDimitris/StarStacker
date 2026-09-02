@@ -390,6 +390,24 @@ object Combine {
                 internal set
 
             /**
+             * Folds another set of counters into this one.
+             *
+             * T-5.5's threading gives each worker its own [SigmaClip], because the class carries a
+             * scratch buffer and these counters and sharing either would be a race. The counters
+             * are the half that still has to be reported as one number, so they are summed at the
+             * end rather than contended for 37.8 million times.
+             */
+            fun add(other: Stats) {
+                pixels += other.pixels
+                samples += other.samples
+                rejected += other.rejected
+                uncovered += other.uncovered
+                belowFloor += other.belowFloor
+                floorHit += other.floorHit
+                degenerateSpread += other.degenerateSpread
+            }
+
+            /**
              * The one number worth reading. A few tenths of a percent is a clean sky with the odd
              * satellite; several percent means κ is eating the noise, and therefore the signal.
              */

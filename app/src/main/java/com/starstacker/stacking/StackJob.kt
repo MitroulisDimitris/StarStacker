@@ -185,16 +185,18 @@ class StackJob(
             } else {
                 null
             }
-            val combiner = settings.combiner()
             val started = System.nanoTime()
-            val completed = TiledStacker(
+            val stacker = TiledStacker(
                 frames = frames,
                 resampler = resampler,
-                combiner = combiner,
+                // A factory: the combine runs on every core and each worker needs its own, since
+                // `SigmaClip` carries a scratch buffer and its own counters.
+                combiner = { settings.combiner() },
                 // §1.38's registered intermediate lives beside the frames it came from, so the
                 // space it takes is visible rather than hidden in app-private storage.
                 scratchDirectory = sessionDir,
-            ).stack(
+            )
+            val completed = stacker.stack(
                 master = master,
                 // Per-pixel frame counts, so the crop can mean "every frame reached this" rather
                 // than "something did" — 25 MB against a 151 MB master.
@@ -231,13 +233,13 @@ class StackJob(
                     width = frames.width,
                     height = frames.height,
                     region = region,
-                    description = provenance(log, frames, combiner, region),
+                    description = provenance(log, frames, stacker, region),
                 )
             }.getOrElse {
                 return failed(name, "could not write the master: ${it.message}", onProgress, notes)
             }
 
-            record(log, frames, combiner, region)
+            record(log, frames, stacker, region)
 
             onProgress(Progress(State.DONE, name, message = "Done"))
             return Result(
@@ -248,10 +250,24 @@ class StackJob(
                 elapsedSeconds = elapsed,
                 frames = frames.count,
                 notes = notes,
-                rejection = (combiner as? Combine.SigmaClip)?.stats?.describe(),
+                rejection = rejectionOf(stacker),
                 stats = stats,
             )
         }
+    }
+
+    /**
+     * The rejection counters, summed across the workers that produced them.
+     *
+     * Each core combines with its own [Combine.SigmaClip] — the class is stateful — so the rate a
+     * stack reports has to be reassembled, or it would describe one core's share of the frame.
+     */
+    private fun rejectionOf(stacker: TiledStacker): String? {
+        val stats = stacker.workers.filterIsInstance<Combine.SigmaClip>().map { it.stats }
+        if (stats.isEmpty()) return null
+        val total = Combine.SigmaClip.Stats()
+        stats.forEach { total.add(it) }
+        return total.describe()
     }
 
     private fun failed(
@@ -274,7 +290,7 @@ class StackJob(
     private fun record(
         log: SessionLog,
         frames: DngFrameSource,
-        combiner: TiledStacker.Combiner,
+        stacker: TiledStacker,
         region: LinearMaster.Region,
     ) {
         val stacking = settings.toMap() + buildMap {
@@ -283,7 +299,7 @@ class StackJob(
             put("calibration", frames.masters.describe())
             put("master", LinearMaster.FILE_NAME)
             put("stackedAt", System.currentTimeMillis().toString())
-            (combiner as? Combine.SigmaClip)?.let { put("rejection", it.stats.describe()) }
+            rejectionOf(stacker)?.let { put("rejection", it) }
         }
         runCatching {
             File(sessionDir, SessionLayout.SESSION_JSON)
@@ -302,7 +318,7 @@ class StackJob(
     private fun provenance(
         log: SessionLog,
         frames: DngFrameSource,
-        combiner: TiledStacker.Combiner,
+        stacker: TiledStacker,
         region: LinearMaster.Region,
     ): String = buildString {
         append("StarStacker linear master")
@@ -313,7 +329,7 @@ class StackJob(
         append(" | ISO ${log.info.plannedIso}")
         append(" | ${frames.masters.describe()}")
         append(" | ${settings.describe()}")
-        (combiner as? Combine.SigmaClip)?.let { append(" | ${it.stats.describe()}") }
+        rejectionOf(stacker)?.let { append(" | $it") }
         append(" | ${region.describe()}")
     }
 }
