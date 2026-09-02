@@ -257,6 +257,51 @@ class RigidFitTest {
     }
 
     @Test
+    fun `the matrix round-trips back into a transform that maps points the same way`() {
+        // The other half of the trip through session.json, and the one that had no reader until
+        // T-5.3 needed to stack a folder the morning after.
+        val t = RigidTransform(-11.0, 8.0, 19.0, centreX, centreY)
+        val back = RigidTransform.fromMatrix(t.toMatrix())!!
+
+        // Deliberately not field equality: `fromMatrix` re-expresses the map about the origin,
+        // which is a different parameterisation of the same transform. Points are what matter.
+        assertEquals(0.0, back.centreX, 1e-12)
+        listOf(0.0 to 0.0, 130.0 to 70.0, 400.0 to 350.0, -50.0 to 900.0).forEach { (x, y) ->
+            val (ex, ey) = t.apply(x, y)
+            val (ax, ay) = back.apply(x, y)
+            assertEquals(ex, ax, 1e-9)
+            assertEquals(ey, ay, 1e-9)
+        }
+    }
+
+    @Test
+    fun `a matrix that is not a rotation is refused rather than flattened`() {
+        // A folder that has been to a PC and back can carry anything (FR-10.6.4). Keeping the
+        // rotation and dropping a scale would misregister every frame by a growing amount towards
+        // the edges — soft corners, and no complaint anywhere.
+        assertNull(RigidTransform.fromMatrix(listOf(1.05, 0.0, 0.0, 1.05, 2.0, 1.0)))
+        // A shear: a = d and the columns are unit, but b != -c.
+        assertNull(RigidTransform.fromMatrix(listOf(1.0, 0.3, 0.3, 1.0, 0.0, 0.0)))
+        assertNull(RigidTransform.fromMatrix(listOf(1.0, 0.0, 0.0, 1.0)))
+        assertNull(RigidTransform.fromMatrix(null))
+        assertNull(RigidTransform.fromMatrix(listOf(1.0, 0.0, 0.0, 1.0, Double.NaN, 0.0)))
+    }
+
+    @Test
+    fun `every angle survives the round trip, including the ones that wrap`() {
+        // atan2 comes back in (-180, 180], so a transform stored at 190 degrees returns as -170.
+        // That is the same rotation and has to behave like it.
+        listOf(-179.9, -90.0, -0.001, 0.0, 0.001, 90.0, 179.9, 190.0, 359.0).forEach { angle ->
+            val t = RigidTransform(angle, 3.0, -4.0, centreX, centreY)
+            val back = RigidTransform.fromMatrix(t.toMatrix())!!
+            val (ex, ey) = t.apply(123.0, 456.0)
+            val (ax, ay) = back.apply(123.0, 456.0)
+            assertEquals(ex, ax, 1e-8, "$angle degrees")
+            assertEquals(ey, ay, 1e-8, "$angle degrees")
+        }
+    }
+
+    @Test
     fun `it stops early when the correspondences are clean`() {
         // The adaptive bound: with no outliers, two or three samples prove the answer, and
         // grinding out four hundred would be work done once per frame for nothing.

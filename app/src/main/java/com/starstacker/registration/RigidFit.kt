@@ -62,6 +62,45 @@ data class RigidTransform(
             centreY - centreX * s - centreY * c + dy,
         )
     }
+
+    companion object {
+
+        /**
+         * Reads [toMatrix] back — the other half of the round trip through `session.json`, and the
+         * only way a restack the next morning can recover what registration measured at 03:00.
+         *
+         * **The centre comes back as the origin, and that is exact rather than an approximation.**
+         * The six numbers are a complete affine map, `x' = a·x + b·y + tx`; the rotation centre is
+         * a *parameterisation* of that map, not extra information, and it is not stored because it
+         * does not need to be. Re-expressing the same map about (0, 0) gives `dx = tx, dy = ty` and
+         * a transform that is not equal to the original as a data class but returns the identical
+         * pair from [apply] at every point. The test asserts that rather than field equality,
+         * because field equality is the wrong question.
+         *
+         * @return null if the six numbers are not a rotation. `session.json` is a file that has
+         *   been to a PC and back (FR-10.6.4), and a matrix carrying a scale would otherwise be
+         *   silently flattened to its rotation — a stack subtly out of register with no complaint.
+         */
+        fun fromMatrix(m: List<Double>?): RigidTransform? {
+            if (m == null || m.size != 6) return null
+            if (m.any { !it.isFinite() }) return null
+            val (a, b, c, d) = m
+            // A rotation has a = d, b = -c, and unit columns. Tolerance is loose enough for the
+            // round trip through JSON's decimal text and tight enough to catch a real scale.
+            if (abs(a - d) > MATRIX_TOLERANCE || abs(b + c) > MATRIX_TOLERANCE) return null
+            if (abs(hypot(a, c) - 1.0) > MATRIX_TOLERANCE) return null
+            return RigidTransform(
+                rotationDeg = Math.toDegrees(atan2(c, a)),
+                dx = m[4],
+                dy = m[5],
+                centreX = 0.0,
+                centreY = 0.0,
+            )
+        }
+
+        /** How far from a rotation the six numbers may sit. See [fromMatrix]. */
+        const val MATRIX_TOLERANCE = 1e-6
+    }
 }
 
 /**

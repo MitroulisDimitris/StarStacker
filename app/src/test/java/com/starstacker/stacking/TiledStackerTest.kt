@@ -219,6 +219,68 @@ class TiledStackerTest {
         assertEquals(232, bottom.second)
     }
 
+    @Test
+    fun `a band always starts on an even row, whatever the tile height`() {
+        // The band is debayered with the frame's CFA pattern, so a band starting on an odd row
+        // presents the second row of the 2x2 as though it were the first and swaps red with blue.
+        // tileRowsFor returns whatever the budget allows — odd about half the time — so `top`
+        // walks through both parities and only this snap keeps the phase right.
+        listOf(1, 7, 99, 333).forEach { rows ->
+            var top = 0
+            while (top < 3072) {
+                val (first, _) = TiledStacker.sourceRowsFor(top, rows, margin = 160, height = 3072)
+                assertEquals(0, first % 2, "band from top=$top rows=$rows starts on an odd row")
+                top += rows
+            }
+        }
+    }
+
+    @Test
+    fun `an odd margin cannot put a band on an odd row either`() {
+        val (first, _) = TiledStacker.sourceRowsFor(top = 500, rows = 100, margin = 161, height = 3072)
+        assertEquals(338, first)
+    }
+
+    // ------------------------------------------------------------------ calibration across bands
+
+    @Test
+    fun `masters are whole-frame while the light is a band, and the rows line up`() {
+        // The defect this catches shipped in T-5.3 and could not be seen by any other test here:
+        // Calibration.apply was handed a band and full-frame masters with no way to relate them,
+        // so it threw on the first frame taller than the 160-row margin. Everything else in this
+        // file uses a 24-row frame, where every band is the whole frame.
+        val tall = 800
+        val narrow = 32
+        // A dark whose value is its own row, so applying it at the wrong offset is visible in the
+        // answer rather than merely wrong by a constant.
+        val dark = FloatArray(narrow * tall) { (it / narrow).toFloat() }
+        val frames = FakeFrames(
+            count = 2,
+            width = narrow,
+            height = tall,
+            masters = Calibration.Masters.of(narrow, tall, dark = dark),
+        ) { _, _, y -> 1000 + y }
+
+        val master = FloatArray(narrow * tall * 3)
+        // Small enough to force many tiles, so most bands are genuinely partial.
+        val budget = narrow * 3L * 2 * 4 * 100
+        assertTrue(
+            TiledStacker(frames, StubResampler(), mean, memoryBudgetBytes = budget).stack(master),
+        )
+
+        // Every pixel is (1000 + y) - y = 1000, whatever tile it landed in.
+        for (y in 0 until tall) {
+            for (x in 0 until narrow) {
+                assertEquals(
+                    1000f,
+                    master[(y * narrow + x) * 3],
+                    1e-3f,
+                    "row $y took the wrong row of the dark",
+                )
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ transforms and coverage
 
     @Test

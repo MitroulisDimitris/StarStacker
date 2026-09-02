@@ -30,7 +30,7 @@ import org.opencv.imgproc.Imgproc
  * a battery. So the library loads on **first stacking call** rather than at startup, and
  * [available] is the honest answer to "can this device do it" rather than an assumption.
  */
-object Resample {
+object Resample : TiledStacker.Resampler {
 
     /**
      * True once the native library is mapped. **Attempting the load is the only way to know** —
@@ -103,6 +103,117 @@ object Resample {
             warped.release()
             matrix.release()
         }
+    }
+
+    // ------------------------------------------------------- TiledStacker.Resampler, T-5.3's seam
+
+    /**
+     * [TiledStacker.Resampler]'s debayer: the same call, taking the CFA codes the frame reported
+     * rather than a pattern already looked up.
+     *
+     * **This assumes the band starts on an even row**, which is [TiledStacker.sourceRowsFor]'s
+     * job — a band beginning on an odd row is the frame's pattern with its rows swapped, and would
+     * demosaic as a different arrangement entirely.
+     */
+    override fun debayer(
+        cfa: ShortArray,
+        width: Int,
+        height: Int,
+        cfaCodes: List<Int>,
+        out: FloatArray,
+    ): Boolean {
+        val pattern = BayerPattern.of(cfaCodes)
+        if (pattern == null) {
+            Log.e(TAG, "unrecognised CFA arrangement $cfaCodes")
+            return false
+        }
+        return debayer(cfa, width, height, pattern, out)
+    }
+
+    /**
+     * [warpToReference] for one band of a frame, and for interleaved channels.
+     *
+     * ### The row offset, which is the whole of the difference
+     *
+     * A transform is expressed against the **whole frame**; a band does not know where it sits.
+     * Warping a band with the frame's matrix unchanged would treat the band's first row as row
+     * zero, so every tile but the first would be shifted by its own offset — a master built out of
+     * bands that each drifted a different distance.
+     *
+     * Both sides move together, because the source band and the destination band cover the same
+     * rows. For output row `y` within a band starting at `r`, the whole-frame row is `y + r`, and
+     * the source row wanted from the band is `T_y(x, y + r) − r`. Expanding the affine form:
+     *
+     * ```
+     * T_x(x, y + r) = a·x + b·y + (tx + b·r)
+     * T_y(x, y + r) = c·x + d·y + (ty + (d − 1)·r)
+     * ```
+     *
+     * So only the translation changes, by `b·r` and `(d − 1)·r`. Note `(d − 1)`, not `d`: the `−r`
+     * that brings the answer back into band coordinates is the easy half to forget, and forgetting
+     * it leaves a stack that looks right at the top of every tile and slides towards the bottom.
+     */
+    override fun warpBand(
+        src: FloatArray,
+        width: Int,
+        height: Int,
+        channels: Int,
+        rowOffset: Int,
+        transform: RigidTransform,
+        out: FloatArray,
+    ): Boolean {
+        val samples = width * height * channels
+        require(src.size >= samples) { "source smaller than ${width}x${height}x$channels" }
+        require(out.size >= samples) { "destination smaller than ${width}x${height}x$channels" }
+        if (!available) return false
+
+        val type = CvType.CV_32FC(channels)
+        val source = Mat(height, width, type)
+        val warped = Mat(height, width, type)
+        val matrix = Mat(2, 3, CvType.CV_64F)
+        try {
+            source.put(0, 0, src)
+            val m = bandMatrix(transform, rowOffset)
+            matrix.put(0, 0, m[0], m[1], m[2], m[3], m[4], m[5])
+
+            Imgproc.warpAffine(
+                source,
+                warped,
+                matrix,
+                source.size(),
+                Imgproc.INTER_CUBIC or Imgproc.WARP_INVERSE_MAP,
+                org.opencv.core.Core.BORDER_CONSTANT,
+                Scalar(UNCOVERED, UNCOVERED, UNCOVERED, UNCOVERED),
+            )
+            warped.get(0, 0, out)
+            return true
+        } catch (t: Throwable) {
+            Log.e(TAG, "band warp failed", t)
+            return false
+        } finally {
+            source.release()
+            warped.release()
+            matrix.release()
+        }
+    }
+
+    /**
+     * The warp matrix for a band starting at [rowOffset], in OpenCV's row-major 2×3 order:
+     * `[a, b, tx, c, d, ty]`.
+     *
+     * Separated from [warpBand] so it can be tested without OpenCV, which is the only reason it is
+     * a function rather than four lines inline. The arithmetic is worked through on [warpBand]; the
+     * short version is that both the source and destination bands cover the same rows, so the
+     * translation absorbs `b·r` in x and `(d − 1)·r` in y — the `−1` being the step back into band
+     * coordinates, and the half that a reader will assume is a typo.
+     */
+    fun bandMatrix(transform: RigidTransform, rowOffset: Int): DoubleArray {
+        val m = transform.toMatrix()
+        val r = rowOffset.toDouble()
+        return doubleArrayOf(
+            m[0], m[1], m[4] + m[1] * r,
+            m[2], m[3], m[5] + (m[3] - 1.0) * r,
+        )
     }
 
     /**

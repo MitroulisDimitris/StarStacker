@@ -36,6 +36,19 @@ package com.starstacker.stacking
  * **A flat near zero is a hole, not a gain.** Dividing by a photosite that saw almost no light
  * produces an enormous number from a measurement that carries no information. Such pixels are
  * treated as bad rather than amplified.
+ *
+ * ### The masters are whole-frame; the light may be a band of one
+ *
+ * [TiledStacker] never holds a whole frame — it works a band of rows at a time, because sigma
+ * clipping over 150 frames of 12.6 MP would want 7.5 GB. So [apply] takes the band's origin and
+ * indexes the masters at it, while [Masters] stays whole-frame: a dark is a property of the sensor
+ * and does not want re-slicing per tile.
+ *
+ * This was originally written frame-at-a-time and the tiled loop called it with a band, which threw
+ * on the first real frame and could not have done anything else — the arithmetic had no way to know
+ * where the band sat. It went unnoticed because the loop's tests use a 24-row frame and the band
+ * margin is 160 rows, so every test band was the whole frame. A fixture smaller than the margin
+ * cannot exercise banding at all.
  */
 object Calibration {
 
@@ -109,6 +122,8 @@ object Calibration {
      *   its own colour rather than its neighbours'.
      * @param out receives the result, in ADU above zero. May be the caller's reused buffer
      *   (FR-12.2); it is fully written.
+     * @param fromRow the band's first row in **whole-frame** coordinates. See the note below.
+     * @param rowCount how many rows [light] holds. Defaults to the whole frame.
      */
     fun apply(
         light: ShortArray,
@@ -116,24 +131,34 @@ object Calibration {
         blackLevel: Double,
         out: FloatArray,
         cfaCodes: List<Int> = DEFAULT_CFA,
+        fromRow: Int = 0,
+        rowCount: Int = masters.height,
     ) {
         val width = masters.width
-        val height = masters.height
-        val count = width * height
-        require(light.size >= count) { "light is smaller than ${width}x$height" }
-        require(out.size >= count) { "output is smaller than ${width}x$height" }
+        require(fromRow >= 0) { "negative row" }
+        require(rowCount >= 0) { "negative row count" }
+        require(fromRow + rowCount <= masters.height) {
+            "band [$fromRow, ${fromRow + rowCount}) runs past the master's ${masters.height} rows"
+        }
+        val count = width * rowCount
+        require(light.size >= count) { "light is smaller than ${width}x$rowCount" }
+        require(out.size >= count) { "output is smaller than ${width}x$rowCount" }
 
         val dark = masters.dark
         val flat = masters.flat
         // With a dark, the pedestal leaves with it. Without, it has to go explicitly — and it must
         // happen before the flat division, which assumes a signal measured from zero.
         val pedestal = if (dark == null) blackLevel.toFloat() else 0f
+        // The masters are whole-frame and the light is one band of it, so every master lookup is
+        // shifted by the band's origin. Getting this wrong does not throw — it applies row 0's
+        // dark current to row 900, which looks like a stack with a faint horizontal structure.
+        val offset = fromRow * width
 
         for (i in 0 until count) {
             var value = (light[i].toInt() and 0xFFFF).toFloat() - pedestal
-            if (dark != null) value -= dark[i]
+            if (dark != null) value -= dark[offset + i]
             if (flat != null) {
-                val gain = flat[i]
+                val gain = flat[offset + i]
                 // A photosite that saw almost nothing carries no gain information; dividing by it
                 // manufactures an enormous value out of noise.
                 value = if (gain.isFinite() && gain > MIN_FLAT_GAIN) value / gain else Float.NaN
@@ -141,7 +166,7 @@ object Calibration {
             out[i] = value
         }
 
-        masters.hotPixels?.let { repairHotPixels(out, width, height, it, cfaCodes) }
+        masters.hotPixels?.let { repairHotPixels(out, width, rowCount, fromRow, it, cfaCodes) }
     }
 
     /**
@@ -154,18 +179,29 @@ object Calibration {
      *
      * A median rather than a mean, because a hot pixel's neighbour is sometimes also hot: clusters
      * are common, and a mean would carry the neighbour's fault into the repair.
+     *
+     * **The list is in whole-frame indices and the plane is one band**, so entries outside the band
+     * are skipped and the rest are translated. A repair within two rows of a band edge sees fewer
+     * neighbours than it would in a whole frame; that is correct rather than merely tolerable,
+     * because [TiledStacker] discards the band's outer margin and only the interior reaches the
+     * master. The parity of the step is unaffected — ±2 lands on the same colour wherever the band
+     * begins, which is why this step does not care about the band's CFA phase and the debayer does.
      */
     private fun repairHotPixels(
         plane: FloatArray,
         width: Int,
-        height: Int,
+        rowCount: Int,
+        fromRow: Int,
         hotPixels: IntArray,
         cfaCodes: List<Int>,
     ) {
         require(cfaCodes.size == 4) { "expected a 2x2 CFA pattern" }
         val neighbours = FloatArray(4)
-        hotPixels.forEach { index ->
-            if (index < 0 || index >= width * height) return@forEach
+        val firstIndex = fromRow * width
+        val lastIndex = firstIndex + rowCount * width
+        hotPixels.forEach { absolute ->
+            if (absolute < firstIndex || absolute >= lastIndex) return@forEach
+            val index = absolute - firstIndex
             val x = index % width
             val y = index / width
             var n = 0
@@ -173,7 +209,7 @@ object Calibration {
             if (x >= 2) neighbours[n++] = plane[index - 2]
             if (x < width - 2) neighbours[n++] = plane[index + 2]
             if (y >= 2) neighbours[n++] = plane[index - 2 * width]
-            if (y < height - 2) neighbours[n++] = plane[index + 2 * width]
+            if (y < rowCount - 2) neighbours[n++] = plane[index + 2 * width]
             if (n == 0) return@forEach
 
             val usable = FloatArray(n) { neighbours[it] }.filter { it.isFinite() }.sorted()
@@ -202,16 +238,34 @@ object Calibration {
      */
     fun masterDark(frames: List<ShortArray>, count: Int): FloatArray? {
         if (frames.isEmpty()) return null
-        frames.forEach { require(it.size >= count) { "a dark frame is smaller than the others" } }
         val out = FloatArray(count)
+        masterDarkInto(frames, count, out, 0)
+        return out
+    }
+
+    /**
+     * [masterDark] writing one band into a whole-frame master at [offset].
+     *
+     * This exists because the whole-frame form cannot be used on a real session: one 12.6 MP dark
+     * is 25 MB as a `ShortArray`, so holding a session's twenty at once to take a median down the
+     * stack is half a gigabyte. Read a band from each dark instead and the peak is the band times
+     * the count — the same trick, and for the same reason, as the stacking loop itself.
+     *
+     * The output stays whole-frame (12.6 M floats, 50 MB) because that is what [Masters] holds and
+     * what [apply] indexes into; it is the input side that had to be bounded.
+     */
+    fun masterDarkInto(frames: List<ShortArray>, count: Int, out: FloatArray, offset: Int) {
+        if (frames.isEmpty()) return
+        frames.forEach { require(it.size >= count) { "a dark frame is smaller than the others" } }
+        require(out.size >= offset + count) { "master is smaller than the band it is given" }
         val samples = FloatArray(frames.size)
         for (i in 0 until count) {
             frames.forEachIndexed { f, frame -> samples[f] = (frame[i].toInt() and 0xFFFF).toFloat() }
             samples.sort()
             val mid = samples.size / 2
-            out[i] = if (samples.size % 2 == 1) samples[mid] else (samples[mid - 1] + samples[mid]) / 2f
+            out[offset + i] =
+                if (samples.size % 2 == 1) samples[mid] else (samples[mid - 1] + samples[mid]) / 2f
         }
-        return out
     }
 
     /**

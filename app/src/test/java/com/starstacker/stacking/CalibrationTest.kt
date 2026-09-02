@@ -2,6 +2,7 @@ package com.starstacker.stacking
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import kotlin.math.abs
@@ -279,5 +280,102 @@ class CalibrationTest {
         assertEquals(793.75f, out[9], 0.02f) { "flat not applied: ${out[9]}" }
         // The hot one is replaced by its same-colour neighbours, which are plain pixels.
         assertEquals(396.875f, out[hot], 0.01f)
+    }
+
+    // ------------------------------------------------------------------ bands of a frame
+
+    @Test
+    fun `a band takes its own rows of the masters, not the frame's first rows`() {
+        // The whole point of the band parameters. A dark whose value is its own row makes a wrong
+        // offset visible; a constant dark would subtract the same amount either way and the test
+        // would pass while the pipeline was broken.
+        val dark = FloatArray(n) { (it / w).toFloat() }
+        val masters = Calibration.Masters.of(w, h, dark = dark)
+
+        val bandRows = 3
+        val fromRow = 4
+        val light = ShortArray(w * bandRows) { (500 + (fromRow + it / w)).toShort() }
+        val out = FloatArray(w * bandRows)
+        Calibration.apply(light, masters, black, out, fromRow = fromRow, rowCount = bandRows)
+
+        // light - dark = (500 + y) - y = 500 on every row of the band.
+        for (i in 0 until w * bandRows) assertEquals(500f, out[i], 1e-3f) { "index $i" }
+    }
+
+    @Test
+    fun `whole-frame and band-at-a-time produce the same answer`() {
+        // The property that defines banding, stated the same way T-5.3 states it for tiling: the
+        // band boundaries must be invisible in the result.
+        val dark = FloatArray(n) { (it % 7).toFloat() }
+        val flat = FloatArray(n) { 0.8f + (it % 5) * 0.1f }
+        val masters = Calibration.Masters.of(w, h, dark = dark, rawFlat = flat)
+        val light = ShortArray(n) { (1000 + it).toShort() }
+
+        val whole = FloatArray(n)
+        Calibration.apply(light, masters, black, whole)
+
+        val banded = FloatArray(n)
+        var row = 0
+        while (row < h) {
+            val rows = minOf(3, h - row)
+            val slice = ShortArray(w * rows) { light[row * w + it] }
+            val out = FloatArray(w * rows)
+            Calibration.apply(slice, masters, black, out, fromRow = row, rowCount = rows)
+            out.copyInto(banded, row * w, 0, w * rows)
+            row += rows
+        }
+
+        for (i in 0 until n) assertEquals(whole[i], banded[i], 1e-4f) { "index $i" }
+    }
+
+    @Test
+    fun `hot pixels outside the band are left alone`() {
+        // The list is in whole-frame indices; a band must repair the ones it holds and ignore the
+        // rest rather than translating them onto innocent rows.
+        val insideBand = 4 * w + 3
+        val outsideBand = 1 * w + 3
+        val masters = Calibration.Masters.of(w, h, hotPixels = intArrayOf(outsideBand, insideBand))
+
+        val bandRows = 3
+        val fromRow = 4
+        val light = ShortArray(w * bandRows) { 100 }
+        light[insideBand - fromRow * w] = 9000
+        val out = FloatArray(w * bandRows)
+        Calibration.apply(light, masters, black, out, fromRow = fromRow, rowCount = bandRows)
+
+        assertEquals(36f, out[insideBand - fromRow * w], 1e-3f) { "the hot one was not repaired" }
+        // The out-of-band index must not have been applied to whatever sits at that offset here.
+        assertEquals(36f, out[3], 1e-3f)
+    }
+
+    @Test
+    fun `a band running past the master is refused`() {
+        val masters = Calibration.Masters.of(w, h)
+        val light = ShortArray(w * 4)
+        val out = FloatArray(w * 4)
+        assertThrows(IllegalArgumentException::class.java) {
+            Calibration.apply(light, masters, black, out, fromRow = h - 2, rowCount = 4)
+        }
+    }
+
+    @Test
+    fun `the master dark built in bands matches the whole-frame one`() {
+        val darks = listOf(
+            ShortArray(n) { (it % 13).toShort() },
+            ShortArray(n) { ((it * 3) % 17).toShort() },
+            ShortArray(n) { ((it * 5) % 11).toShort() },
+        )
+        val whole = Calibration.masterDark(darks, n)!!
+
+        val banded = FloatArray(n)
+        var row = 0
+        while (row < h) {
+            val rows = minOf(3, h - row)
+            val slices = darks.map { d -> ShortArray(w * rows) { d[row * w + it] } }
+            Calibration.masterDarkInto(slices, w * rows, banded, row * w)
+            row += rows
+        }
+
+        for (i in 0 until n) assertEquals(whole[i], banded[i], 0f) { "index $i" }
     }
 }

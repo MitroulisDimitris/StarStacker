@@ -85,7 +85,7 @@ Two consequences to accept deliberately:
 | 1D | 9 | 0 | **all nine built and photographed 2026-08-18** (§1.15). T-3.21's last piece waits on the session pane, which is now T-3.27 rather than T-6.1 |
 | 1E | 10 | 2 | **all ten built and walked on the phone 2026-08-19** (§1.18–§1.20). **T-3.28** and **T-3.36** met their acceptances whole; T-3.33 and T-3.35's hard parts are demonstrated. Four defects fixed, two of them predating the phase: `KeyValue` crushed its label whenever a value got long (§1.19), and **the sensor's exposure ceiling was being enforced when the hardware does not enforce it** (§1.20, **D-28**). Unwalked: the naming prompt, a failing sweep |
 | 2 | 7 | 0 | **all seven built 2026-08-19** (§1.22–§1.28) — synthetic sky, drift seed, asterism matching, rigid fit with RANSAC, live registration, common area, and an aligned preview. 113 tests; end to end the chain recovers a known transform to **0.15° and 0.6 px**. Ticked nowhere, because **none of it has met a real star field** — that is the whole of Checkpoint 2 |
-| 3 | 7 | 1 | **T-5.1 accepted on device** (§1.31), **T-5.2, T-5.3 and T-5.4 built** (§1.30, §1.32, §1.33). Calibration, row-range DNG reads, the tiled accumulator and sigma clipping, 63 tests across the four stacking classes. What is left is not statistics but **plumbing and a night**: no `DngFrameSource`, so none of it has met a real DNG; T-5.4's profile waits on a device and its expert affordance on a stacking screen; T-5.7 cannot be validated at all until there are real subs again (§1.29) |
+| 3 | 7 | 1 | **T-5.1 accepted on device** (§1.31), **T-5.2, T-5.3 and T-5.4 built** (§1.30, §1.32, §1.33), and **the chain now reads real files** (§1.34). `DngFrameSource`, the production `Resampler` and `RigidTransform.fromMatrix` closed the plumbing gap — and doing so surfaced **two defects in shipped code that 466 tests could not see**, because the stacking fixture is a 24-row frame and the band margin is 160 rows, so every test band was the whole frame. What is left is **a device and a night**: `--es diag stack` joins `warp` and `combine` in the queue, and T-5.7 cannot be validated at all until there are real subs again (§1.29) |
 | 4+ | outlined | 0 | not started |
 
 > **The `Ticked` column counts `[x]` only.** §0 ties that to an acceptance demonstrated on a real
@@ -1710,6 +1710,99 @@ T-5.2 and T-5.3 are waiting on — the piece that turns Phase 3 from built into 
 
 ---
 
+## 1.34 The frame source, and two defects that a 24-row fixture could not see — 2026-09-02
+
+`DngFrameSource` is the piece every remaining part of Phase 3 was waiting on: T-5.2, T-5.3 and
+T-5.4 each ended with the same sentence about having never met a real DNG. It is a small class —
+open a `DngReader.Rows` per accepted light, read the transforms out of `session.json`, build the
+masters from `darks/` — and writing it took a fraction of the time that finding what it collided
+with did.
+
+### Two defects, both in shipped code, both invisible to 466 tests
+
+**The tiled loop could not apply calibration at all.** `Calibration.apply` was written
+frame-at-a-time and takes its dimensions from `masters.width × masters.height`; `TiledStacker`
+hands it a *band* of a few hundred rows. On any real frame it throws on the first tile — `light is
+smaller than 4096x3072` — and it could not have done anything else, because the arithmetic had no
+way of knowing where the band sat. Even past the size check, a dark applied at the wrong offset
+would have subtracted row 0's dark current from row 900.
+
+**A band starting on an odd row debayers as the wrong pattern.** `tileRowsFor` returns whatever the
+memory budget allows, which is odd about half the time, so `top` alternates parity down the frame
+and so does the band. The band is handed to the debayer with the *frame's* CFA codes, so a band
+beginning on an odd row presents GRBG as RGGB — **red and blue swapped, on alternate tiles**. This
+is the second time §1.31's Bayer-naming trap has arrived through a different door, and this time it
+would have produced horizontal bands of wrong colour that only become visible after colour balance.
+
+**Neither could be caught by the tests that existed, and the reason is one number.** The stacking
+tests use a 24-row frame and the band margin is 160 rows, so `sourceRowsFor` clips to the whole
+frame every time: every test band was the whole frame, starting at row 0. A fixture smaller than
+the margin cannot exercise banding at all — it exercises the un-banded special case and reports
+success. The stub resampler compounded it by replicating one value into all three channels, which
+makes a red/blue swap arithmetically invisible.
+
+That is the lesson worth keeping, and it generalises past this file: **§1.22's warning that a small
+frame tests the pipeline's failure mode rather than the pipeline was right, and was not applied
+thoroughly enough.** The new tests use an 800-row frame with a dark whose value is its own row, so
+a wrong offset changes the answer rather than merely the size check.
+
+### What the transform direction turned out to be, checked rather than assumed
+
+`RigidFit.fit(reference, target)` returns a transform whose `consensus` applies it to the
+*reference* coordinate and compares against the *target* — so it maps **reference → frame**, which
+is exactly what `TiledStacker` wants and what `Resample`'s warning describes. The six numbers go
+from `session.json` into the loop without inversion. Worth stating because three separate places in
+this codebase now depend on it and it is not deducible from any of their signatures.
+
+`session.json` also had no reader for those six numbers: `toMatrix` existed and nothing undid it.
+**`fromMatrix` returns the centre as the origin, and that is exact rather than approximate** — the
+matrix is a complete affine map and the rotation centre is a parameterisation of it, not extra
+information, so re-expressing the same map about (0, 0) gives a transform that is unequal as a data
+class and identical at every point. The test asserts points, not fields. It **refuses a matrix that
+is not a rotation** rather than flattening it, because a folder that has been to a PC and back
+(FR-10.6.4) can carry anything, and silently dropping a scale factor misregisters every frame by an
+amount that grows towards the edges.
+
+### The production `Resampler` did not exist either
+
+T-5.3 injected `Resampler` so the loop could be tested without OpenCV, and the only implementation
+was the test's stub — `Resample` had `warpToReference` for a whole single-channel frame and nothing
+for a three-channel band. The band offset is the interesting part: a transform is expressed against
+the whole frame and a band does not know where it sits, so the translation absorbs `b·r` in x and
+**`(d − 1)·r`** in y. The `−1` is the step back into band coordinates, it looks like a typo, and
+omitting it gives a stack that is right at the top of every tile and slides towards the bottom. It
+has its own JVM test against `transform.apply`, because this is the fourth appearance of this class
+of error and all four produced a plausible image rather than an exception.
+
+### Memory, which shapes the class more than anything else
+
+`Calibration.masterDark` takes every dark as a whole `ShortArray`. On this sensor that is 25 MB
+each, so a session's twenty is half a gigabyte — the same arithmetic that forced tiling in the
+first place, arriving one layer down. The master is built a band at a time instead, and the
+whole-frame form now delegates to the banded one so there is a single median.
+
+What stays resident during a stack: a master dark and a master flat at 50 MB each (whole-frame
+floats, because `Calibration.apply` indexes into them), the loop's 96 MB sample budget, and the
+caller's 151 MB master. Roughly 350 MB for a full-resolution night, which is worth knowing before
+it is attempted on a warm phone.
+
+### What has not happened
+
+**None of it has run on a phone, and there are still no real subs.** `--es diag stack` is written
+and joins `warp` and `combine` in the queue of things waiting on a device; T-5.7 additionally waits
+on a clear night (§1.29). What the check will answer that no JVM test can: whether `DngReader.Rows`
+walks a strip table `DngCreator` actually wrote, whether OpenCV's band warp agrees with the stub the
+loop was proven against, and what the whole chain costs against §1.31's 13–15 ms/megapixel.
+
+**It writes no image.** The linear master out is T-5.6, so the check reports statistics and
+throughput rather than something to look at.
+
+**SAF-rooted sessions cannot be opened.** `DngReader.Rows` needs a `File`, which is T-0.5's
+outstanding `ParcelFileDescriptor` piece rather than anything new. The check says so explicitly
+instead of reporting "no sessions found", because those are very different problems.
+
+---
+
 ## 2. Decisions
 
 | ID | Decision | Rationale | Reversal cost |
@@ -2982,9 +3075,15 @@ changes whether someone can run one without being surprised.
   mean, because clusters are common.
   `masterDark` combines a session's darks by **median**, so a cosmic ray in one frame does not get
   subtracted from every light in the session.
-  *Remaining:* no file I/O — this is the arithmetic, and loading masters comes with T-5.3's tiled
-  reader. Temperature matching (**D-16**) is Phase 6's library problem; the session shooting its own
-  darks at the end of the run is what stands in for it.
+  **Made band-aware 2026-09-02** (§1.34): `apply` takes the band's origin, because the tiled loop
+  hands it a few hundred rows of a frame and the masters stay whole-frame. It had been written
+  frame-at-a-time and **threw on the first real frame** — invisible until then, since the loop's
+  tests use a 24-row frame and the band margin is 160 rows, so every test band was the whole frame.
+  `masterDarkInto` builds a master a band at a time for the same reason `TiledStacker` exists: a
+  session's twenty darks held at once is half a gigabyte.
+  *Remaining:* file I/O now exists in `DngFrameSource` (§1.34) but has never run on a device.
+  Temperature matching (**D-16**) is Phase 6's library problem; the session shooting its own darks
+  at the end of the run is what stands in for it.
 - [~] **T-5.3** Debayer + tiled accumulator (FR-7.6): load tile T across all N frames, combine,
   write, advance. `FloatArray` only, buffers allocated once (FR-12.2).
   **Built 2026-08-21** as `stacking/TiledStacker.kt` and `DngReader.Rows`, 21 tests, §1.32.
@@ -2998,10 +3097,18 @@ changes whether someone can run one without being surprised.
   **Both dependencies are injected** — `Frames` so the loop can be driven by synthetic data, and
   `Resampler` because **OpenCV cannot load off-device** (§1.31). Without the second, none of this
   could be tested anywhere but on a phone.
-  *Remaining:* no `DngFrameSource` yet — the loop is proven against synthetic frames and has never
-  read a real DNG, which is partly because there are none (§1.29). The combiner ships as a plain
-  mean; **T-5.4** replaced it with sigma clipping on 2026-09-01 (§1.33), leaving the mean available
-  as an explicit choice.
+  **`DngFrameSource` built 2026-09-02** (§1.34), and with it the production `Resampler` — T-5.3
+  had injected the interface and left the only implementation in the test. `Resample.warpBand`
+  carries a three-channel band, folding the band's origin into the translation as `b·r` and
+  **`(d − 1)·r`**; the `−1` is the step back into band coordinates and has its own JVM test,
+  because this is the fourth silent-direction bug in this codebase.
+  **Two defects fell out of connecting it**, both shipped and both unreachable by the tests here:
+  the loop could not apply calibration at all, and **a band starting on an odd row debayered as the
+  wrong CFA pattern** — red and blue swapped, on alternate tiles, since `tileRowsFor` returns an odd
+  tile height about half the time. `sourceRowsFor` now snaps the band to an even row.
+  *Remaining:* none of it has read a DNG **on a phone**. `--es diag stack` is written and waiting,
+  and there are still no real subs (§1.29). The combiner ships as **T-5.4**'s sigma clipping since
+  2026-09-01 (§1.33), leaving the mean available as an explicit choice.
 - [~] **T-5.4** Sigma-clipped mean as default; median / mean / kappa-sigma behind the expert
   affordance. **Build in Kotlin, profile, and only then consider the single sanctioned JNI
   exception** (§12.1).
@@ -3027,7 +3134,8 @@ changes whether someone can run one without being surprised.
   *Remaining:* **the profile has not run** — `--es diag combine` is written and waiting on a device,
   and until it does, §12.1's JNI question is not open. The estimate is ~85 G operations for a
   150-frame master, and **if that is uncomfortable the first lever is threads, not JNI**. The expert
-  affordance itself has nothing to attach to until there is a stacking screen.
+  affordance itself has nothing to attach to until there is a stacking screen — though since
+  §1.34 the combiner does at least have a call site on real data, through `--es diag stack`.
 - [ ] **T-5.5** Frame weighting by star count, HFR and background level.
 - [ ] **T-5.6** Linear master out: 32-bit float TIFF, saved separately and treated as sacred
   (FR-8.2).
@@ -3276,6 +3384,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-09-02 | **`DngFrameSource` — the chain reads real files, and two defects a 24-row fixture could not see (§1.34).** The piece T-5.2, T-5.3 and T-5.4 each ended by naming: a session folder as `TiledStacker.Frames`. Writing it was small; what it collided with was not. **The tiled loop could not apply calibration at all** — `Calibration.apply` was written frame-at-a-time and the loop hands it a band, so it throws on the first real frame and, past the size check, would have subtracted row 0's dark current from row 900. **A band starting on an odd row debayers as the wrong pattern**, GRBG read as RGGB, red and blue swapped on alternate tiles, because `tileRowsFor` returns an odd tile height about half the time. **Neither was reachable by 466 tests, for one reason:** the stacking fixture is 24 rows and the band margin is 160, so every test band was the whole frame starting at row 0 — the un-banded special case, reporting success. §1.22 warned that a small frame tests the pipeline's failure mode rather than the pipeline; it was not applied thoroughly enough. Also built: **`RigidTransform.fromMatrix`**, since `toMatrix` had no reader and a restack has to recover what registration measured at 03:00 — it returns the centre as the origin, which is *exact* because the matrix is a complete affine map, and it **refuses a matrix that is not a rotation** rather than flattening a scale into a misregistration that grows towards the edges. And the **production `Resampler`**, which did not exist: `Resample.warpBand` folds the band's origin into the translation as `b·r` and `(d − 1)·r`, the `−1` being the half that looks like a typo and the fourth appearance of this class of error. Memory forced the shape of the master build — twenty 12.6 MP darks at once is half a gigabyte, so it is banded too. **Nothing has run on a phone**: `--es diag stack` joins `warp` and `combine` in the queue, and T-5.7 still waits on a clear night. 523 JVM tests. |
 | 2026-09-01 | **T-5.4 — sigma clipping, and a threshold that is arithmetic rather than taste (§1.33).** The placeholder mean is replaced by the rejection that does stacking's actual work: a satellite in one frame of 150 survives a mean at 1/150th of its brightness, which after the stretch is a sharp bright line and obviously not sky. **The default is seeded from the median and MAD because of an exact result, not a preference** — a mean/SD clip rejects a lone outlier only when `(n − 1) > κ√n`, crossing at **n = 11** at κ = 3 and **independent of the outlier's brightness**, so a ten-frame stack cannot remove a satellite that way however bright it is (120, 1 000 and 60 000 ADU are all kept at n = 10, and there is a test for each). After the first pass the roles reverse and the iterations use mean and SD of the survivors, since robustness is only wanted while the contaminant is present. **A zero MAD is the ordinary case** — quantised background where over half the samples share a value — and the obvious fallback is wrong: the standard deviation about the median reintroduces the same `n ≤ 10` weakness by the back door, so σ comes from the **mean absolute deviation**, which clears an outlier above n = 4. **Two floors, because they are two questions:** five samples before rejection is attempted at all, three survivors before a pass is refused; merging them made the combiner worse, giving 234.5 instead of 101.5 for six frames with two satellites in them. **Clean-data cost measured at 0.88%** of samples rejected over 30 frames of Gaussian noise, which is 0.44% more noise in the master. The rejection reports itself rather than being trusted. **The profile has not run** — `--es diag combine` waits on a device, and until it does §12.1's JNI question is not open; the estimate is ~85 G operations per 150-frame master, and the first lever if that hurts is **threads, not JNI**. 491 JVM tests. |
 | 2026-08-21 | **T-5.3 — the tiled accumulator, and what a stub is allowed to be (§1.32).** Tiling is forced by arithmetic: a 12.6 MP master in three channels is 151 MB, and sigma clipping needs every frame's value for a pixel at once — **7.5 GB** for 150 frames. `tileRowsFor` makes the governing relationship explicit: **more frames means thinner tiles**, so a 20-frame session and a 200-frame night do not stack alike. **`DngReader.Rows` is the enabler**, serving row ranges instead of whole frames — possible only because §1.12 measured one strip per row, and without it a tiled stack would need sixteen thousand full 25 MB decodes for one night. The tile fetches a **margin either side**, because under rotation a band of output maps to a sheared band of input `2048 × sin θ` rows taller — over a hundred at the angles a session reaches, so a stack built as though rows lined up would seam at every boundary. **Both dependencies injected**, `Resampler` because OpenCV cannot load off-device — and the stub immediately earned its keep by being **wrong in the documented way**: it used the inverse transform where the contract says forward, the same confusion `Resample` warns about, caught by the test within an hour of the warning being written. A second failure recorded because it will recur: **Kotlin sorts `NaN` above every number**, so a `maxByOrNull` over a master picks an uncovered pixel — and uncovered is NaN by design, since writing zero would claim a darkness nobody measured. The defining property has its own test: **the tiling must be invisible in the answer**, one tile or twenty. 466 JVM tests. |
 | 2026-08-20 | **T-5.1 accepted on device, and the throughput read honestly (§1.31).** `--es diag warp` passes on all four counts: OpenCV loads; the warp recovers a placed dot to **0.13 px**, so the direction is right where an inversion would have landed it 36 px away with no exception; the uncovered border carries the sentinel rather than zero; and **debayer returns R=1000 G=500 B=100 exactly as they went in**, confirming `GRBG` really is OpenCV's `BayerGB` and that red and blue are not swapped — an error that would only have surfaced after colour balance, looking like a white-balance problem. **Throughput 13–15 ms/megapixel**, so ~25–29 s for a 150-frame stack's warp pass. Comfortable, and **not a number that required OpenCV**: the Kotlin alternative was estimated at roughly twice this, which would also have been comfortable. The dependency bought quality and margin rather than feasibility, the profile §12.1 asked for now exists, and it says either choice would have worked. Recorded rather than glossed, since the 24.8 MB is permanent and the reasoning should be too. The figure's real use is T-5.3's budget: 4 ms per 512×512 tile is a baseline any future regression can be measured against. **T-5.1 ticked.** |

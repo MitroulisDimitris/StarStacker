@@ -200,8 +200,17 @@ class TiledStacker(
             val got = frames.rows(f, band.first, band.second, cfa)
             if (got <= 0) continue
 
-            // 1-2. Calibrate on CFA, before debayer (FR-8.1, T-5.2).
-            Calibration.apply(cfa, frames.masters, frames.blackLevel, calibrated, frames.cfaCodes)
+            // 1-2. Calibrate on CFA, before debayer (FR-8.1, T-5.2). The band's origin goes with
+            // it: the masters are whole-frame and this is one band of the light.
+            Calibration.apply(
+                cfa,
+                frames.masters,
+                frames.blackLevel,
+                calibrated,
+                frames.cfaCodes,
+                band.first,
+                got,
+            )
             // The debayer takes integers; calibration produced floats that may be negative. Rounding
             // back is lossy by well under an ADU and keeps the CFA path honest — the alternative is
             // a float demosaic this app does not have.
@@ -300,9 +309,20 @@ class TiledStacker(
         /**
          * The source band a tile needs: the tile's rows plus [margin] either side, clipped to the
          * frame. Returns `(firstRow, rowCount)`.
+         *
+         * **The first row is always even, and that is a correctness requirement rather than
+         * alignment tidiness.** A band is handed to the debayer with the *frame's* CFA pattern, so
+         * a band starting on an odd row presents the second row of the 2×2 as though it were the
+         * first — GRBG read as RGGB. Red and blue come back swapped, and only for the tiles that
+         * happened to start odd, so the master gets bands of wrong colour rather than a wrong
+         * colour anyone would notice at once.
+         *
+         * [tileRowsFor] returns whatever the memory budget allows, which is odd about half the
+         * time, and `top` then alternates parity down the frame. Snapping here rather than forcing
+         * even tiles keeps the budget arithmetic honest and costs at most one extra row of I/O.
          */
         fun sourceRowsFor(top: Int, rows: Int, margin: Int, height: Int): Pair<Int, Int> {
-            val first = (top - margin).coerceAtLeast(0)
+            val first = (top - margin).coerceAtLeast(0) and 1.inv()
             val last = (top + rows + margin).coerceAtMost(height)
             return Pair(first, (last - first).coerceAtLeast(0))
         }

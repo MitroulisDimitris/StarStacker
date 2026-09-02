@@ -42,6 +42,7 @@ import com.starstacker.diag.CameraLifecycleCheck
 import com.starstacker.diag.CombineCheck
 import com.starstacker.diag.FieldDiagnostics
 import com.starstacker.diag.FieldLog
+import com.starstacker.diag.StackCheck
 import com.starstacker.diag.StorageBenchmark
 import com.starstacker.diag.WarpCheck
 import com.starstacker.dng.DngReader
@@ -387,8 +388,12 @@ class MainActivity : ComponentActivity() {
             val cycles = intent?.getIntExtra("cycles", 50) ?: 50
             val sessions = intent?.getIntExtra("sessions", 30) ?: 30
             val handoff = intent?.getBooleanExtra("handoff", false) ?: false
+            // --es session <folder> picks which one to stack; without it, the most recent.
+            val sessionName = intent?.getStringExtra("session")
             lifecycleScope.launch {
-                runFieldDiagnostics(fieldDiag, frames, iso, exposureMs, cycles, sessions, handoff)
+                runFieldDiagnostics(
+                    fieldDiag, frames, iso, exposureMs, cycles, sessions, handoff, sessionName,
+                )
             }
         }
 
@@ -849,6 +854,7 @@ class MainActivity : ComponentActivity() {
         cycles: Int = 50,
         sessions: Int = 30,
         handoff: Boolean = false,
+        sessionName: String? = null,
     ) {
         val dir = File(getExternalFilesDir(null) ?: filesDir, "first-light").apply { mkdirs() }
         val out = File(dir, "field-diagnosis.txt")
@@ -923,10 +929,19 @@ class MainActivity : ComponentActivity() {
                         // measured on the phone before JNI is considered.
                         "combine" -> CombineCheck.run(log)
 
+                        // Phase 3 end to end, on real DNGs from a real session. The one thing no
+                        // JVM test can reach: OpenCV, a strip table DngCreator wrote, and the cost
+                        // of the whole chain on a phone that is warming up while it runs.
+                        "stack" -> StackCheck.run(
+                            root = File(getExternalFilesDir(null) ?: filesDir, "sessions"),
+                            sessionName = sessionName,
+                            log = log,
+                        )
+
                         else ->
                             log(
                                 "unknown diag mode '$mode' — expected framing, focus, lens, solve, " +
-                                    "lifecycle, warp or combine",
+                                    "lifecycle, warp, combine or stack",
                             )
                     }
                 }
