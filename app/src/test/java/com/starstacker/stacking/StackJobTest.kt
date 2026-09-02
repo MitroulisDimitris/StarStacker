@@ -211,6 +211,91 @@ class StackJobTest {
         assertTrue(stats.describe().contains("entirely uncovered"))
     }
 
+    // ------------------------------------------------------------------------------ T-5.5
+
+    @Test
+    fun `the keep-best cut drops the worst frames and says which`() {
+        // Four frames, the fourth much softer than the rest. At 70% one goes: ceil(2.8) = 3.
+        val dir = session(lights = 4, hfr = { index -> if (index == 4) 9.0 else 2.0 })
+        val result = job(dir, StackSettings(keepBestPercent = 70)).run()
+
+        assertTrue(result.succeeded, "failed: ${result.error}")
+        assertEquals(3, result.frames)
+        assertTrue(
+            result.notes.any { it.contains("light_0004.dng") && it.contains("best 70%") },
+            "the cut must name what it dropped: ${result.notes}",
+        )
+    }
+
+    @Test
+    fun `keeping everything is the default-off switch`() {
+        val dir = session(lights = 4, hfr = { index -> if (index == 4) 9.0 else 2.0 })
+        val result = job(dir, StackSettings(keepBestPercent = 100)).run()
+
+        assertEquals(4, result.frames)
+        assertTrue(result.notes.none { it.contains("best") })
+    }
+
+    @Test
+    fun `weighting changes the master, and turning it off changes it back`() {
+        // Six frames: three sharp and dim, three soft and bright. Six rather than two because
+        // SigmaClip falls back to the median below five samples — see the test below.
+        val dir = session(
+            lights = 6,
+            pixels = { index -> IntArray(w * h) { if (index <= 3) 164 else 1064 } },
+            hfr = { index -> if (index <= 3) 2.0 else 4.0 },
+        )
+
+        val even = job(dir, StackSettings(keepBestPercent = 100, weightByQuality = false)).run()
+        val weighted = job(dir, StackSettings(keepBestPercent = 100, weightByQuality = true)).run()
+
+        // The pedestal is 64, so the frames calibrate to 100 and 1000.
+        assertEquals(550.0, even.stats!!.mean, 1e-3)
+        // Twice the HFR is a quarter of the weight: (3x100 + 3x0.25x1000) / (3 + 3x0.25).
+        assertEquals(280.0, weighted.stats!!.mean, 1e-3)
+    }
+
+    @Test
+    fun `below the sample floor the median runs and weights do not apply`() {
+        // T-5.4's floor: under five samples there is not enough data to estimate a spread, so
+        // SigmaClip returns the median instead — and a median has no weighted form (see
+        // Combine.Median). A four-frame session is therefore unweighted whatever the setting says,
+        // which is worth knowing rather than discovering.
+        val dir = session(
+            lights = 4,
+            pixels = { index -> IntArray(w * h) { if (index <= 2) 164 else 1064 } },
+            hfr = { index -> if (index <= 2) 2.0 else 8.0 },
+        )
+
+        val even = job(dir, StackSettings(keepBestPercent = 100, weightByQuality = false)).run()
+        val weighted = job(dir, StackSettings(keepBestPercent = 100, weightByQuality = true)).run()
+
+        assertEquals(even.stats!!.mean, weighted.stats!!.mean, 1e-9)
+    }
+
+    @Test
+    fun `a session with no quality metrics stacks exactly as it did before T-5-5`() {
+        // The property that matters most: every session shot so far has a partial log, and
+        // weighting must degrade to no change rather than reordering by which fields exist.
+        val dir = session(lights = 3, hfr = { null })
+
+        val weighted = job(dir, StackSettings(weightByQuality = true)).run()
+        val even = job(dir, StackSettings(weightByQuality = false)).run()
+
+        assertEquals(even.stats!!.mean, weighted.stats!!.mean, 1e-9)
+        assertEquals(3, weighted.frames)
+    }
+
+    @Test
+    fun `the weighting choices are recorded for a restack`() {
+        val dir = session(lights = 4)
+        val settings = StackSettings(keepBestPercent = 80, weightByQuality = false)
+        job(dir, settings).run()
+
+        val reread = SessionLog.decode(File(dir, SessionLayout.SESSION_JSON).readText())
+        assertEquals(settings, StackSettings.fromMap(reread.info.stacking))
+    }
+
     // --------------------------------------------------------------------------------- fixtures
 
     private fun job(dir: File, settings: StackSettings = StackSettings()) =
@@ -252,6 +337,7 @@ class StackJobTest {
         lights: Int,
         accepted: Boolean = true,
         pixels: (Int) -> IntArray = { IntArray(w * h) { i -> 100 + i } },
+        hfr: (Int) -> Double? = { 2.0 },
     ): File {
         val dir = File(tempDir.toFile(), "2026-09-02_2200_stackjob").apply { mkdirs() }
         SessionLayout.DIRECTORIES.forEach { File(dir, it).mkdirs() }
@@ -275,7 +361,7 @@ class StackJobTest {
                 iso = 3200,
                 exposureNs = 8_000_000_000L,
                 temperatureC = 20.0,
-                hfr = 2.0,
+                hfr = hfr(index),
                 starCount = 40,
                 eccentricity = 0.2,
                 backgroundAdu = 300.0,

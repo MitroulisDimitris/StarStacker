@@ -94,17 +94,89 @@ object Combine {
         MEAN("Mean"),
     }
 
+    /**
+     * T-5.5 — a combiner that can take frame weights.
+     *
+     * Separate from [TiledStacker.Combiner] rather than folded into it, for two reasons. That one
+     * is a `fun interface` and adding a second method would stop it being one — the lambda form is
+     * how half the tests declare a combiner. And the weighted path costs a parallel index array
+     * per sample and a branch in the partition loop, so a stack with nothing to weight should not
+     * pay for it: [TiledStacker] uses this only when the weights are not all equal.
+     *
+     * The contract adds one clause to [TiledStacker.Combiner]'s: **`frames[i]` names the frame
+     * `samples[i]` came from and must be permuted with it.** Every reorder in here carries both.
+     */
+    interface Weighted : TiledStacker.Combiner {
+        /**
+         * @param frames `frames[i]` is the frame index of `samples[i]`; reordered alongside.
+         * @param weights indexed by frame, not by sample — the same array for every pixel.
+         */
+        fun combineWeighted(
+            samples: FloatArray,
+            frames: IntArray,
+            count: Int,
+            weights: FloatArray,
+        ): Float
+    }
+
+    /**
+     * The weighted mean of `samples[0, count)`, each weighted by its own frame's weight.
+     *
+     * Falls back to the plain mean if the weights sum to nothing, which cannot happen through
+     * [FrameQuality] — its floor is well above zero — but would silently produce NaN if it did.
+     */
+    fun weightedMeanOf(
+        samples: FloatArray,
+        frames: IntArray,
+        count: Int,
+        weights: FloatArray,
+    ): Double {
+        if (count <= 0) return Double.NaN
+        var sum = 0.0
+        var total = 0.0
+        for (i in 0 until count) {
+            val w = weights.getOrElse(frames[i]) { 1f }.toDouble()
+            sum += samples[i] * w
+            total += w
+        }
+        return if (total > 0.0) sum / total else meanOf(samples, count)
+    }
+
     /** A fresh combiner for [method]. Fresh because [SigmaClip] is stateful — one per stack. */
     fun of(method: Method): TiledStacker.Combiner = when (method) {
         Method.SIGMA_CLIP -> SigmaClip()
         Method.KAPPA_SIGMA -> SigmaClip(robustSeed = false)
         Method.MEDIAN -> Median
-        Method.MEAN -> TiledStacker.Combiner.Mean
+        Method.MEAN -> WeightedMean
     }
 
-    /** No rejection logic and no state, so a single instance serves every caller. */
+    /** Whether [method] does anything with frame weights — see [Median]. */
+    fun supportsWeights(method: Method): Boolean = method != Method.MEDIAN
+
+    /**
+     * No rejection logic and no state, so a single instance serves every caller.
+     *
+     * **Not weighted, and that is a real gap rather than an omission.** A weighted median exists —
+     * the value where the cumulative weight crosses half — but it is a different estimator with
+     * different behaviour at small n, and it is not what any desktop tool means by "median". A
+     * session stacked this way ignores the weights; the UI says so rather than implying otherwise.
+     */
     val Median = TiledStacker.Combiner { samples, count ->
         if (count <= 0) Float.NaN else medianOf(samples, count).toFloat()
+    }
+
+    /** The plain mean, weighted. [TiledStacker.Combiner.Mean]'s counterpart for T-5.5. */
+    val WeightedMean = object : Weighted {
+        override fun combine(samples: FloatArray, count: Int): Float =
+            TiledStacker.Combiner.Mean.combine(samples, count)
+
+        override fun combineWeighted(
+            samples: FloatArray,
+            frames: IntArray,
+            count: Int,
+            weights: FloatArray,
+        ): Float =
+            if (count <= 0) Float.NaN else weightedMeanOf(samples, frames, count, weights).toFloat()
     }
 
     /**
@@ -136,7 +208,7 @@ object Combine {
         val minSamples: Int = DEFAULT_MIN_SAMPLES,
         val minSurvivors: Int = DEFAULT_MIN_SURVIVORS,
         val robustSeed: Boolean = true,
-    ) : TiledStacker.Combiner {
+    ) : Weighted {
 
         /** What the rejection actually did, which is the only way to know it did anything. */
         val stats = Stats()
@@ -144,7 +216,34 @@ object Combine {
         /** Deviations for the MAD. Grown once to the frame count, then reused for every pixel. */
         private var deviations = FloatArray(0)
 
-        override fun combine(samples: FloatArray, count: Int): Float {
+        override fun combine(samples: FloatArray, count: Int): Float =
+            clip(samples, count, null, null)
+
+        override fun combineWeighted(
+            samples: FloatArray,
+            frames: IntArray,
+            count: Int,
+            weights: FloatArray,
+        ): Float = clip(samples, count, frames, weights)
+
+        /**
+         * One implementation for both paths, because two would diverge.
+         *
+         * The rejection itself is **unweighted, deliberately**. A satellite is an outlier whatever
+         * the quality of the frame it crossed, and letting a good frame's opinion count for more
+         * while deciding what is an outlier would make the clip depend on which frames happened to
+         * be sharp. Quality belongs in the average, not in the judgement of what to average — so
+         * the weights are consulted exactly once, on the last line.
+         *
+         * @param frames null on the unweighted path, which then costs nothing: the branches below
+         *   are on a value that is constant for the whole stack.
+         */
+        private fun clip(
+            samples: FloatArray,
+            count: Int,
+            frames: IntArray?,
+            weights: FloatArray?,
+        ): Float {
             stats.pixels++
             if (count <= 0) {
                 stats.uncovered++
@@ -153,13 +252,13 @@ object Combine {
             stats.samples += count.toLong()
             if (count < minSamples) {
                 stats.belowFloor++
-                return medianOf(samples, count).toFloat()
+                return medianOf(samples, count, frames).toFloat()
             }
 
             var centre: Double
             var sigma: Double
             if (robustSeed) {
-                centre = medianOf(samples, count)
+                centre = medianOf(samples, count, frames)
                 sigma = madSigma(samples, count, centre)
                 if (sigma <= 0.0) {
                     // Quantised data with a repeated mode. Not a pathology — see the class note.
@@ -196,7 +295,12 @@ object Combine {
                 var w = 0
                 for (i in 0 until n) {
                     val v = samples[i]
-                    if (v >= lo && v <= hi) samples[w++] = v
+                    if (v >= lo && v <= hi) {
+                        // The frame index moves with its sample, or the weights below would be
+                        // applied to whichever frame happened to land at that slot.
+                        if (frames != null) frames[w] = frames[i]
+                        samples[w++] = v
+                    }
                 }
                 n = keep
 
@@ -210,7 +314,11 @@ object Combine {
             // survivors on the paths that finished a pass, and is still the median seed on the two
             // that break early. One extra pass over at most a few hundred floats buys the guarantee
             // that what comes back is always the mean of what survived.
-            return meanOf(samples, n).toFloat()
+            return if (frames != null && weights != null) {
+                weightedMeanOf(samples, frames, n, weights).toFloat()
+            } else {
+                meanOf(samples, n).toFloat()
+            }
         }
 
         /**
@@ -309,11 +417,11 @@ object Combine {
      * Sorting 150 floats to read the middle one costs `n log n` compares where `n` buys the same
      * answer, 37.8 million times over.
      */
-    fun medianOf(a: FloatArray, count: Int): Double {
+    fun medianOf(a: FloatArray, count: Int, ids: IntArray? = null): Double {
         if (count <= 0) return Double.NaN
         if (count == 1) return a[0].toDouble()
         val mid = count / 2
-        selectKth(a, 0, count - 1, mid)
+        selectKth(a, 0, count - 1, mid, ids)
         if (count % 2 == 1) return a[mid].toDouble()
         // Selection leaves everything below `mid` no greater than `a[mid]`, so the largest of them
         // is the lower of the two middle values. A second selection would be the obvious way, and
@@ -358,7 +466,7 @@ object Combine {
      * which terminates, but leaves the range unordered. The precondition documented on [Combine] is
      * what keeps that out.
      */
-    private fun selectKth(a: FloatArray, from: Int, to: Int, k: Int) {
+    private fun selectKth(a: FloatArray, from: Int, to: Int, k: Int, ids: IntArray?) {
         var lo = from
         var hi = to
         while (lo < hi) {
@@ -372,6 +480,14 @@ object Combine {
                 val t = a[i]
                 a[i] = a[j]
                 a[j] = t
+                // T-5.5: the weights live per *frame*, so a sample that moves has to take its
+                // frame with it. Nothing else in this file knows which frame a sample came from,
+                // and after one partition nothing could work it out.
+                if (ids != null) {
+                    val id = ids[i]
+                    ids[i] = ids[j]
+                    ids[j] = id
+                }
             }
             if (k <= j) hi = j else lo = j + 1
         }

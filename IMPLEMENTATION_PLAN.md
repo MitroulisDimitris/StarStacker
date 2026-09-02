@@ -85,7 +85,7 @@ Two consequences to accept deliberately:
 | 1D | 9 | 0 | **all nine built and photographed 2026-08-18** (§1.15). T-3.21's last piece waits on the session pane, which is now T-3.27 rather than T-6.1 |
 | 1E | 10 | 2 | **all ten built and walked on the phone 2026-08-19** (§1.18–§1.20). **T-3.28** and **T-3.36** met their acceptances whole; T-3.33 and T-3.35's hard parts are demonstrated. Four defects fixed, two of them predating the phase: `KeyValue` crushed its label whenever a value got long (§1.19), and **the sensor's exposure ceiling was being enforced when the hardware does not enforce it** (§1.20, **D-28**). Unwalked: the naming prompt, a failing sweep |
 | 2 | 7 | 0 | **all seven built 2026-08-19** (§1.22–§1.28) — synthetic sky, drift seed, asterism matching, rigid fit with RANSAC, live registration, common area, and an aligned preview. 113 tests; end to end the chain recovers a known transform to **0.15° and 0.6 px**. Ticked nowhere, because **none of it has met a real star field** — that is the whole of Checkpoint 2 |
-| 3 | 7 | 1 | **T-5.1 accepted on device** (§1.31), **T-5.2, T-5.3 and T-5.4 built** (§1.30, §1.32, §1.33), and **the chain now reads real files** (§1.34). `DngFrameSource`, the production `Resampler` and `RigidTransform.fromMatrix` closed the plumbing gap — and doing so surfaced **two defects in shipped code that 466 tests could not see**, because the stacking fixture is a 24-row frame and the band margin is 160 rows, so every test band was the whole frame. What is left is **a device and a night**: **T-5.6 now writes `stack_linear.tif`** (§1.35), so the pipeline produces something a person can open and T-5.7's only remaining blocker is a night. `--es diag stack` joins `warp` and `combine` in the queue waiting on a phone |
+| 3 | 7 | 1 | **Every task now built** — T-5.1 accepted on device (§1.31), T-5.2/5.3/5.4 (§1.30, §1.32, §1.33), the chain reading real files (§1.34), the linear master out (§1.35) and frame weighting (§1.37). **Only T-5.7 is unbuilt, and it needs a night.** `DngFrameSource`, the production `Resampler` and `RigidTransform.fromMatrix` closed the plumbing gap — and doing so surfaced **two defects in shipped code that 466 tests could not see**, because the stacking fixture is a 24-row frame and the band margin is 160 rows, so every test band was the whole frame. What is left is **a device and a night**: **T-5.6 now writes `stack_linear.tif`** (§1.35), so the pipeline produces something a person can open and T-5.7's only remaining blocker is a night. `--es diag stack` joins `warp` and `combine` in the queue waiting on a phone |
 | 4 | 8 | 0 | **T-6.4 built 2026-09-02** (§1.36) — the stacking service, the Stack button and T-5.4's expert panel, which is the first time any of Phase 3 is reachable without a laptop. Building it found a **Cancel that did not cancel**: the stack loop could not be stopped, so cancelling ran every remaining tile and then discarded the result. Nothing has been tapped |
 | 5+ | outlined | 0 | not started |
 
@@ -1984,6 +1984,99 @@ now says *that* rather than "not found", because the two send you looking in ver
 
 ---
 
+## 1.37 Frame weighting, and the two places it quietly does not apply — 2026-09-02
+
+T-5.5 is the last unbuilt task in Phase 3, and it is two features that share a score: **weighting**
+asks how much a frame should count, and **the keep-best cut** asks whether it should count at all.
+They are separate because the answers are: a slightly soft frame should count a little less, and a
+frame ruined by cloud should not be averaged in at any weight, since what it contributes is noise
+and a gradient rather than a weaker version of the signal.
+
+### The exponents are physics, not tuning
+
+The weight that minimises noise in a weighted mean is `1 / variance`, and each term is an estimate
+of the signal-to-noise a frame carries relative to the best one in the session:
+
+- **Sharpness, squared.** A star's flux spreads over an area proportional to `HFR²`, so the peak
+  signal — the part that has to beat the noise — goes as `1 / HFR²`.
+- **Background, inverse.** Under light pollution the noise is sky shot noise, whose variance *is*
+  the background level, so weight is `1 / background`.
+- **Star count, linear** — and deliberately not squared. It is a transparency proxy, and it is
+  partly redundant with background, because haze raises the sky *and* hides stars. Squaring it
+  would punish a frame twice for one cause.
+
+References are the best observed value in the session, so the best frame scores 1 and the numbers
+read as "a fraction of the best frame I had". An absolute scale would need to know what a good HFR
+is for this focal length and pitch, which is a Phase 6 question.
+
+### The property that mattered most is the boring one
+
+**With no metrics, nothing changes.** Every session shot so far has a partial log, and folders
+arrive from PCs (FR-10.6.4). A missing term contributes 1 rather than 0 or a guess, so a session
+with no HFR recorded stacks exactly as it did before T-5.5 — otherwise turning weighting on would
+silently reweight a night by *which fields happened to be populated*, which is worse than not
+weighting at all. It has its own end-to-end test.
+
+### Keeping the weights attached to their samples
+
+This is the part that made T-5.5 more than arithmetic. `Combiner.combine` is handed a scratch array
+it may reorder — that is what lets a median be *selected* rather than sorted, 37.8 M times per
+master — and `SigmaClip` then compacts the survivors in place. By the time there is a set to
+average, **nothing knows which frame each value came from**.
+
+So the weighted path carries a parallel array of frame indices through every swap in the
+quickselect partition and every step of the compaction. Cost: the index array is the same size as
+the sample store, so weighting **halves the tile height** — `tileRowsFor` is told about it, which
+is the "more frames means thinner tiles" relationship arriving through a different door.
+
+**The unweighted path pays none of it.** Whether weighting is on is decided once per stack, not per
+pixel: if every weight is 1 — every session before T-5.5, and every log without metrics — no index
+array is allocated and the original loop runs unchanged.
+
+**The rejection itself stays unweighted, deliberately.** A satellite is an outlier whatever the
+quality of the frame it crossed, and letting a good frame's opinion count for more while deciding
+*what is an outlier* would make the clip depend on which frames happened to be sharp. Quality goes
+into the average, not into the judgement of what to average. There is a test that a heavily
+weighted frame carrying a satellite still has it thrown out.
+
+### Two places the weights quietly do not apply
+
+Found by a test that failed for the right reason. A two-frame session weighted and unweighted gave
+the identical answer, and the cause was not a bug:
+
+- **`SigmaClip` falls back to the median below five samples** (§1.33's floor), and a median has no
+  weighted form. So a **session of four frames or fewer is unweighted whatever the setting says** —
+  as is every pixel near the edge of the common area, where only a handful of frames overlapped.
+- **`Median` ignores weights** by nature: it picks a value rather than averaging them. A weighted
+  median exists but is a different estimator and is not what a desktop tool means by the name.
+
+Both are right for their own reasons and neither is visible from the setting, so both have tests
+that state them and the UI warns when the median is selected with weighting on.
+
+### The cut rounds up, and the UI says what that means in frames
+
+`ceil(0.95 × n)`, so 95% of twenty drops one and 95% of three drops none. That is the right way
+round: the cut exists to remove the occasional ruined frame from a long run, and a session where
+one frame is a third of the data cannot afford to lose it.
+
+A percentage is the control and a **frame count is the consequence**, and on a short session they
+differ strikingly — so the panel says *"Keeps all 12 — too few frames for 95% to drop one"* rather
+than leaving someone believing they had excluded their worst frame. What was dropped is named in
+the run's notes, for **D-10**'s reason: dropping a frame is a judgement, and the user cannot
+disagree with one nothing reports.
+
+Ties break by frame index, because FR-10.4 wants a restack to reproduce a master and a set that
+depended on sort stability would not.
+
+### What has not happened
+
+Still nothing on a phone. And `session.json` now records `keepBestPercent` and `weighted`, with
+**absence read as "kept everything, weighted nothing"** rather than as today's defaults — a master
+made before T-5.5 was not made that way, and describing it as though it were would be a lie in the
+audit trail.
+
+---
+
 ## 2. Decisions
 
 | ID | Decision | Rationale | Reversal cost |
@@ -3317,7 +3410,33 @@ changes whether someone can run one without being surprised.
   150-frame master, and **if that is uncomfortable the first lever is threads, not JNI**. The expert
   affordance **landed 2026-09-02** (§1.36): the Advanced panel under the Stack button offers all
   four methods, and the choice is recorded in `session.json` so a restack reproduces the master.
-- [ ] **T-5.5** Frame weighting by star count, HFR and background level.
+- [~] **T-5.5** Frame weighting by star count, HFR and background level.
+  **Built 2026-09-02** as `stacking/FrameQuality.kt`, 25 tests, §1.37. Two features from one score:
+  **weighting** (how much a frame counts) and **the keep-best cut** (whether it counts at all),
+  separate because a soft frame should count less and a clouded one should not be averaged in at
+  any weight.
+  **The exponents are physics.** Weight is `1 / variance`, so sharpness enters as `1 / HFR²` (a
+  star's flux spreads over an area `∝ HFR²`), background as its inverse (sky shot noise variance
+  *is* the background), and star count linearly — deliberately not squared, since haze raises the
+  sky *and* hides stars and a frame should not be punished twice for one cause.
+  **With no metrics, nothing changes**, which is the property that matters most: every session so
+  far has a partial log, and a scheme that reweighted a night by which fields were populated would
+  be worse than none.
+  **Keeping weights attached to samples is the hard part.** The combiner reorders its scratch array
+  and compacts survivors in place, so the weighted path carries a parallel index array through every
+  quickselect swap and every compaction step. It **halves the tile height** (`tileRowsFor` knows),
+  and the unweighted path allocates nothing — weighting is decided once per stack, not per pixel.
+  **Rejection stays unweighted**: a satellite is an outlier whatever frame it crossed, and weighting
+  the judgement would make the clip depend on which frames were sharp.
+  **Two places the weights quietly do not apply**, found by a test that failed for the right reason:
+  `SigmaClip` returns the median below its five-sample floor, so a **session of four frames or fewer
+  is unweighted whatever the setting says**, as is every pixel at the edge of the common area; and
+  `Median` ignores weights by nature. Both have tests, and the panel warns on the second.
+  **The cut rounds up** — 95% of twenty drops one, 95% of three drops none — and the UI states the
+  consequence in frames rather than percent, because on a short session they differ strikingly.
+  What was dropped is named in the notes (**D-10**).
+  *Remaining:* never run on a phone, and never on frames whose quality metrics came from a real
+  sky rather than a fixture.
 - [~] **T-5.6** Linear master out: 32-bit float TIFF, saved separately and treated as sacred
   (FR-8.2).
   **Built 2026-09-02** as `stacking/LinearMaster.kt`, 14 tests, §1.35. Writes
@@ -3614,6 +3733,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-09-02 | **T-5.5 — frame weighting, and the two places it quietly does not apply (§1.37).** The last unbuilt task in Phase 3, and two features from one score: weighting asks how much a frame counts, the keep-best cut asks whether it counts at all. **The exponents are physics rather than tuning** — weight is `1 / variance`, so sharpness enters as `1 / HFR²` since a star's flux spreads over an area proportional to `HFR²`, background as its inverse since sky shot noise variance is the background, and star count linearly, deliberately not squared, because haze raises the sky *and* hides stars and a frame should not be punished twice for one cause. **The property that mattered most is the boring one: with no metrics, nothing changes** — every session so far has a partial log, and a scheme that reweighted a night by which fields happened to be populated would be worse than no weighting. **Keeping the weights attached to their samples is what made this more than arithmetic**: the combiner reorders its scratch array and compacts survivors in place, so by the time there is a set to average nothing knows which frame each value came from — the weighted path carries a parallel index array through every quickselect swap and every compaction step, which halves the tile height, while the unweighted path allocates nothing because weighting is decided once per stack. **Rejection stays unweighted**, since a satellite is an outlier whatever frame it crossed. **Two places the weights quietly do not apply**, found by a test that failed for the right reason: `SigmaClip` returns the median below its five-sample floor, so a session of four frames or fewer is unweighted whatever the setting says, as is every pixel at the edge of the common area; and the median ignores weights by nature. The cut rounds up, so 95% of twenty drops one and 95% of three drops none, and the panel says the consequence in frames rather than percent. Phase 3 is now built in full; only T-5.7 remains, and it needs a night. 582 JVM tests. |
 | 2026-09-02 | **T-6.4 — the button, and a Cancel that did not cancel (§1.36).** Everything in Phase 3 worked and none of it was reachable: `TiledStacker` had no call site outside a test and a diagnostic, and §1.35's crop setting configured something nobody could trigger. A session now has **Stack**, running in its own foreground service — `mediaProcessing` on API 35+ and `dataSync` below, both declared because which applies depends on the API level the app runs on. FR-10.3.3 is load-bearing twice: it is the product rule, and the platform independently grants the full 6 h budget to a service started from a tap. **The defect: Cancel did not cancel.** The first version checked the flag in the progress callback and discarded the result at the end — but `stack` could not be stopped, so cancelling ground through every remaining tile first. On a 150-frame stack that is minutes of work after the request, and the reason someone cancels is usually that the phone is hot. It passed its test, because the test asserted the returned state and not the work done; the new tests count tiles. **`StackJob` holds the pipeline with no Android in it**, so the whole chain from a folder of DNGs to a written TIFF runs in a JVM test, and the diagnostic and the button cannot drift into two pipelines. **T-5.4's expert affordance finally has a home** after being specified since §1.33: an Advanced disclosure, collapsed, because the defaults are answers rather than placeholders and expanding should be opting into an argument. Three places now hold a stacking choice and they are three different questions — Settings is what a new stack starts with, the panel is what this run uses and does not write back, `session.json` is what produced an existing master. Nothing has been tapped. 557 JVM tests. |
 | 2026-09-02 | **T-5.6 — the linear master, and a boundary question with two right answers (§1.35).** The first thing this app produces that a person can open, and T-5.7's last prerequisite. **`SampleFormat = 3` is the tag it all turns on**: without it a float TIFF is not rejected, it is read as unsigned integers and displayed as noise, so the test parses the IFD and asserts the tag rather than checking that something opens. Two more of that shape were caught building it — the writer declared twelve tags and emitted thirteen, the missing one being the `SampleFormat` entry its own doc comment was describing; and a TIFF value of four bytes or fewer must live *inside* the tag entry, so a short `ImageDescription` written the general way parses and carries garbage. **The crop is a user choice rather than a decision** — `Trim to overlap` or `Keep full frame`, in Settings, defaulting to trimming, because the border is not faint data but **fewer frames**, at a fraction of the depth with none of the rejection working, and it survives the autostretch as a bright noisy frame. The mode is also the answer to what uncovered pixels contain, which is otherwise a second and worse question. **The region comes from the master's own NaN mask, not from T-4.5's `CommonArea`**: that intersection is a convex polygon and a TIFF is a rectangle, so it would need a largest-inscribed-rectangle step anyway, while the mask is free, exact with respect to what happened rather than what was predicted, and sees interior gaps a footprint intersection cannot represent. It is a **default, not a lock** — a new `stacking` block in `session.json` records what actually made each master, **and is where T-5.4's combiner method finally lands** after being specified since §1.33 with nowhere to go; the same provenance goes in the TIFF's `ImageDescription`, because the audit trail is in the wrong place once one file is copied to a PC. 151 MB per master, streamed a row at a time. Also fixed: a **literal NUL byte in `DngReader.kt`** that made ripgrep skip the entire file as binary. 541 JVM tests. |
 | 2026-09-02 | **`DngFrameSource` — the chain reads real files, and two defects a 24-row fixture could not see (§1.34).** The piece T-5.2, T-5.3 and T-5.4 each ended by naming: a session folder as `TiledStacker.Frames`. Writing it was small; what it collided with was not. **The tiled loop could not apply calibration at all** — `Calibration.apply` was written frame-at-a-time and the loop hands it a band, so it throws on the first real frame and, past the size check, would have subtracted row 0's dark current from row 900. **A band starting on an odd row debayers as the wrong pattern**, GRBG read as RGGB, red and blue swapped on alternate tiles, because `tileRowsFor` returns an odd tile height about half the time. **Neither was reachable by 466 tests, for one reason:** the stacking fixture is 24 rows and the band margin is 160, so every test band was the whole frame starting at row 0 — the un-banded special case, reporting success. §1.22 warned that a small frame tests the pipeline's failure mode rather than the pipeline; it was not applied thoroughly enough. Also built: **`RigidTransform.fromMatrix`**, since `toMatrix` had no reader and a restack has to recover what registration measured at 03:00 — it returns the centre as the origin, which is *exact* because the matrix is a complete affine map, and it **refuses a matrix that is not a rotation** rather than flattening a scale into a misregistration that grows towards the edges. And the **production `Resampler`**, which did not exist: `Resample.warpBand` folds the band's origin into the translation as `b·r` and `(d − 1)·r`, the `−1` being the half that looks like a typo and the fourth appearance of this class of error. Memory forced the shape of the master build — twenty 12.6 MP darks at once is half a gigabyte, so it is banded too. **Nothing has run on a phone**: `--es diag stack` joins `warp` and `combine` in the queue, and T-5.7 still waits on a clear night. 523 JVM tests. |

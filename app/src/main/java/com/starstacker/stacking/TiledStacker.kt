@@ -63,6 +63,16 @@ class TiledStacker(
          * @return rows actually written, fewer than asked at the bottom edge.
          */
         fun rows(index: Int, fromRow: Int, rowCount: Int, into: ShortArray): Int
+
+        /**
+         * T-5.5 — how much frame [index] counts for, in `(0, 1]`.
+         *
+         * Defaults to 1 for every frame, which is the unweighted stack and the path everything
+         * before T-5.5 took. A source that returns 1 everywhere costs nothing extra: the loop
+         * checks once, up front, and never allocates the parallel index array that weighting
+         * needs.
+         */
+        fun weight(index: Int): Float = 1f
     }
 
     /**
@@ -154,7 +164,15 @@ class TiledStacker(
         require(master.size >= w * h * CHANNELS) { "master needs ${w * h * CHANNELS} floats" }
         if (frames.count == 0) return false
 
-        val tileRows = tileRowsFor(w, frames.count, memoryBudgetBytes)
+        // T-5.5, resolved before the tile height because the tile height depends on it: weighting
+        // costs a parallel index array the size of the sample store, so it halves the tile.
+        // Decided once for the whole stack rather than per pixel, and a stack with nothing to
+        // weight — every stack before T-5.5, and every session whose log has no quality metrics —
+        // pays neither the memory nor the branch.
+        weights = FloatArray(frames.count) { frames.weight(it) }
+        weighted = combiner is Combine.Weighted && weights.any { it != 1f }
+
+        val tileRows = tileRowsFor(w, frames.count, memoryBudgetBytes, weighted)
         val margin = marginFor()
         val bandRows = tileRows + 2 * margin
 
@@ -165,6 +183,7 @@ class TiledStacker(
         val colour = FloatArray(w * bandRows * CHANNELS)
         val warped = FloatArray(w * bandRows * CHANNELS)
         val samples = FloatArray(frames.count)
+        val sampleFrames = if (weighted) IntArray(frames.count) else null
 
         val tiles = (h + tileRows - 1) / tileRows
         var tile = 0
@@ -172,7 +191,7 @@ class TiledStacker(
         while (top < h) {
             if (cancelled()) return false
             val rows = minOf(tileRows, h - top)
-            if (!stackTile(top, rows, margin, bandRows, cfa, calibrated, calibratedShorts, colour, warped, samples, master)) {
+            if (!stackTile(top, rows, margin, bandRows, cfa, calibrated, calibratedShorts, colour, warped, samples, sampleFrames, master)) {
                 return false
             }
             tile++
@@ -193,6 +212,7 @@ class TiledStacker(
         colour: FloatArray,
         warped: FloatArray,
         samples: FloatArray,
+        sampleFrames: IntArray?,
         master: FloatArray,
     ): Boolean {
         val w = frames.width
@@ -206,6 +226,9 @@ class TiledStacker(
         val store = tileStore(tilePixels)
         val counts = tileCounts(tilePixels)
         java.util.Arrays.fill(counts, 0)
+        // Parallel to `store`, and only when weighting is on. A sample's value is useless for
+        // weighting without knowing which frame produced it, and the combiner reorders both.
+        val origin = if (weighted) tileOrigin(tilePixels) else null
 
         for (f in 0 until frames.count) {
             val band = sourceRowsFor(top, rows, margin, h)
@@ -253,6 +276,7 @@ class TiledStacker(
                     val n = counts[p]
                     if (n < frames.count) {
                         store[p * frames.count + n] = v
+                        origin?.set(p * frames.count + n, f)
                         counts[p] = n + 1
                     }
                 }
@@ -263,7 +287,13 @@ class TiledStacker(
         for (p in 0 until tilePixels) {
             val n = counts[p]
             for (i in 0 until n) samples[i] = store[p * frames.count + i]
-            master[(top * w * CHANNELS) + p] = combiner.combine(samples, n)
+            master[(top * w * CHANNELS) + p] = if (origin != null && sampleFrames != null) {
+                for (i in 0 until n) sampleFrames[i] = origin[p * frames.count + i]
+                (combiner as Combine.Weighted)
+                    .combineWeighted(samples, sampleFrames, n, weights)
+            } else {
+                combiner.combine(samples, n)
+            }
         }
         return true
     }
@@ -271,6 +301,11 @@ class TiledStacker(
     // Lazily sized once, then reused across every tile (FR-12.2).
     private var store: FloatArray = FloatArray(0)
     private var counts: IntArray = IntArray(0)
+    private var origin: IntArray = IntArray(0)
+
+    /** T-5.5, resolved once per stack in [stack]. */
+    private var weights: FloatArray = FloatArray(0)
+    private var weighted: Boolean = false
 
     private fun tileStore(tilePixels: Int): FloatArray {
         val needed = tilePixels.toLong() * frames.count
@@ -282,6 +317,20 @@ class TiledStacker(
     private fun tileCounts(tilePixels: Int): IntArray {
         if (counts.size < tilePixels) counts = IntArray(tilePixels)
         return counts
+    }
+
+    /**
+     * The frame each stored sample came from, parallel to [tileStore].
+     *
+     * The same size as the sample store in elements, so turning weighting on **doubles** the
+     * tile's memory. [tileRowsFor] is told about it, so what changes is the tile height rather
+     * than the budget — the same relationship as "more frames means thinner tiles", arriving
+     * through a different door.
+     */
+    private fun tileOrigin(tilePixels: Int): IntArray {
+        val needed = tilePixels.toLong() * frames.count
+        if (origin.size < needed) origin = IntArray(needed.toInt())
+        return origin
     }
 
     companion object {
@@ -298,10 +347,17 @@ class TiledStacker(
          * a 20-frame test session and a 200-frame night do not stack the same way, and a tile size
          * chosen for one silently exceeds the budget for the other.
          */
-        fun tileRowsFor(width: Int, frames: Int, budgetBytes: Long): Int {
+        fun tileRowsFor(
+            width: Int,
+            frames: Int,
+            budgetBytes: Long,
+            weighted: Boolean = false,
+        ): Int {
             if (width <= 0 || frames <= 0) return 1
-            val perRow = width.toLong() * CHANNELS * frames * 4
-            return (budgetBytes / perRow).toInt().coerceIn(1, MAX_TILE_ROWS)
+            // Four bytes a sample, and four more for the frame index when T-5.5 is weighting.
+            val bytesPerSample = if (weighted) 8 else 4
+            val perRow = width.toLong() * CHANNELS * frames * bytesPerSample
+            return (budgetBytes / perRow).coerceIn(1L, MAX_TILE_ROWS.toLong()).toInt()
         }
 
         /**

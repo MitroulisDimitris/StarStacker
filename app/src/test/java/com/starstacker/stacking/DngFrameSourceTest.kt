@@ -437,6 +437,9 @@ class DngFrameSourceTest {
 
     private val logs = mutableMapOf<String, SessionLog>()
 
-    private fun open(dir: File, masterBudget: Long = DngFrameSource.DEFAULT_MASTER_BUDGET) =
-        DngFrameSource.open(dir, logs.getValue(dir.path), masterBudget)
+    private fun open(
+        dir: File,
+        masterBudget: Long = DngFrameSource.DEFAULT_MASTER_BUDGET,
+        settings: StackSettings = StackSettings(keepBestPercent = 100, weightByQuality = false),
+    ) = DngFrameSource.open(dir, logs.getValue(dir.path), settings, masterBudget)
 }

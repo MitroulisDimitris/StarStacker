@@ -3,6 +3,7 @@ package com.starstacker.stacking
 import com.starstacker.dng.DngMetadata
 import com.starstacker.dng.DngReader
 import com.starstacker.registration.RigidTransform
+import com.starstacker.session.FrameRecord
 import com.starstacker.session.SessionLayout
 import com.starstacker.session.SessionLog
 import java.io.Closeable
@@ -63,6 +64,7 @@ import java.io.File
 class DngFrameSource private constructor(
     private val readers: List<DngReader.Rows>,
     private val transforms: List<RigidTransform?>,
+    private val weights: List<Float>,
     override val width: Int,
     override val height: Int,
     override val cfaCodes: List<Int>,
@@ -85,11 +87,20 @@ class DngFrameSource private constructor(
     override fun rows(index: Int, fromRow: Int, rowCount: Int, into: ShortArray): Int =
         readers[index].read(fromRow, rowCount, into)
 
+    /** T-5.5 — 1 for every frame unless the log carried enough quality metrics to say otherwise. */
+    override fun weight(index: Int): Float = weights[index]
+
+    /** True when the weights actually differ, so a caller can say whether weighting did anything. */
+    val weighted: Boolean get() = weights.any { it != 1f }
+
     /** One line for `session.json` and the field log, in the shape the other stages use. */
     fun describe(): String = buildString {
         append("$count frames · ${width}x$height")
         append(" · ${masters.describe()}")
         if (referenceIndex >= 0) append(" · reference ${fileNames[referenceIndex]}")
+        if (weighted) {
+            append(" · weights %.2f-%.2f".format(weights.min(), weights.max()))
+        }
         if (skipped.isNotEmpty()) append(" · ${skipped.size} skipped")
     }
 
@@ -115,16 +126,24 @@ class DngFrameSource private constructor(
         fun open(
             sessionDir: File,
             log: SessionLog,
+            settings: StackSettings = StackSettings(),
             masterBudgetBytes: Long = DEFAULT_MASTER_BUDGET,
         ): DngFrameSource? {
             val skipped = mutableListOf<String>()
             val lightsDir = File(sessionDir, SessionLayout.LIGHTS)
 
-            val candidates = log.accepted
-            if (candidates.isEmpty()) {
+            val accepted = log.accepted
+            if (accepted.isEmpty()) {
                 skipped += "no accepted light frames in the log"
                 return null
             }
+
+            // T-5.5, in this order deliberately: score every accepted frame, drop the worst by the
+            // keep-best cut, then weight what is left. Scoring after the cut would rescale the
+            // survivors against each other and make the best remaining frame a 1.0 by definition,
+            // so the weights would depend on what had already been thrown away.
+            val scores = FrameQuality.score(accepted).associateBy { it.index }
+            val candidates = quality(accepted, scores, settings, skipped)
 
             // The first readable frame sets the geometry every other frame is measured against.
             // Taking it from the log's plan instead would trust a number nobody wrote the pixels
@@ -133,6 +152,7 @@ class DngFrameSource private constructor(
             val readers = mutableListOf<DngReader.Rows>()
             val transforms = mutableListOf<RigidTransform?>()
             val names = mutableListOf<String>()
+            val weights = mutableListOf<Float>()
 
             for (record in candidates) {
                 val file = File(lightsDir, record.fileName)
@@ -173,6 +193,11 @@ class DngFrameSource private constructor(
                 readers += rows
                 transforms += transform
                 names += record.fileName
+                weights += if (settings.weightByQuality) {
+                    scores[record.index]?.weight?.toFloat() ?: 1f
+                } else {
+                    1f
+                }
             }
 
             val geometry = reference
@@ -195,6 +220,7 @@ class DngFrameSource private constructor(
             return DngFrameSource(
                 readers = readers,
                 transforms = transforms,
+                weights = weights,
                 width = geometry.width,
                 height = geometry.height,
                 cfaCodes = cfaCodesOf(geometry, skipped),
@@ -203,6 +229,31 @@ class DngFrameSource private constructor(
                 fileNames = names,
                 skipped = skipped,
             )
+        }
+
+        /**
+         * T-5.5's keep-best cut, and the note that says what it did.
+         *
+         * Reported rather than silent, for the same reason a rejected frame stays on disk
+         * (**D-10**): dropping a frame is a judgement, and the user is entitled to disagree with
+         * it — which they cannot do if nothing says it happened. The note names the count and the
+         * worst weight kept, so "it dropped my best frame" is a checkable claim.
+         */
+        private fun quality(
+            accepted: List<FrameRecord>,
+            scores: Map<Int, FrameQuality.Score>,
+            settings: StackSettings,
+            notes: MutableList<String>,
+        ): List<FrameRecord> {
+            if (settings.keepBestPercent >= 100) return accepted
+            val ranked = accepted.mapNotNull { scores[it.index] }
+            val kept = FrameQuality.keepBest(ranked, settings.keepBestPercent).map { it.index }.toSet()
+            if (kept.size == accepted.size) return accepted
+
+            val dropped = accepted.filter { it.index !in kept }
+            notes += "best ${settings.keepBestPercent}%: dropped ${dropped.size} of " +
+                "${accepted.size} — ${dropped.joinToString { it.fileName }}"
+            return accepted.filter { it.index in kept }
         }
 
         /**

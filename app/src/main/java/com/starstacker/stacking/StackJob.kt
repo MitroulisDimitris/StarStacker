@@ -158,7 +158,7 @@ class StackJob(
             return failed(name, "session.json will not parse: ${it.message}", onProgress)
         }
 
-        val source = DngFrameSource.open(sessionDir, log)
+        val source = DngFrameSource.open(sessionDir, log, settings)
             ?: return failed(name, "no frames to stack", onProgress)
 
         source.use { frames ->

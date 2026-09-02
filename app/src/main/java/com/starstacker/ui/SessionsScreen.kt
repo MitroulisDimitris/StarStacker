@@ -35,6 +35,7 @@ import com.starstacker.session.FrameKind
 import com.starstacker.session.SessionState
 import com.starstacker.session.SessionSummary
 import com.starstacker.stacking.Combine
+import com.starstacker.stacking.FrameQuality
 import com.starstacker.stacking.LinearMaster
 import com.starstacker.stacking.StackJob
 import com.starstacker.stacking.StackSettings
@@ -457,6 +458,59 @@ private fun StackingSection(
         )
 
         if (advanced) {
+            Eyebrow("Frames to keep")
+            Spacer(Modifier.height(6.dp))
+            ButtonRow {
+                KEEP_CHOICES.forEach { percent ->
+                    QuietButton(
+                        text = if (percent >= 100) "All" else "$percent%",
+                        selected = percent == settings.keepBestPercent,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onSettingsChange(settings.copy(keepBestPercent = percent)) },
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Card {
+                Mono(
+                    keepSummary(settings.keepBestPercent, accepted),
+                    color = Night.Txt3,
+                    size = 10.5.sp,
+                )
+                Spacer(Modifier.height(8.dp))
+                KeyValue(
+                    "Weight by quality",
+                    if (settings.weightByQuality) "on" else "off",
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            ButtonRow {
+                QuietButton(
+                    text = "Weighted",
+                    selected = settings.weightByQuality,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onSettingsChange(settings.copy(weightByQuality = true)) },
+                )
+                QuietButton(
+                    text = "Count equally",
+                    selected = !settings.weightByQuality,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onSettingsChange(settings.copy(weightByQuality = false)) },
+                )
+            }
+            if (settings.weightByQuality && !Combine.supportsWeights(settings.method)) {
+                Spacer(Modifier.height(8.dp))
+                Card {
+                    Mono(
+                        "The median ignores weights \u2014 it picks a value rather than averaging " +
+                            "them. The frames to keep still applies.",
+                        color = Night.Warn,
+                        size = 10.5.sp,
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(14.dp))
             Eyebrow("Combination")
             Spacer(Modifier.height(6.dp))
             Combine.Method.entries.forEach { method ->
@@ -486,6 +540,27 @@ private fun StackingSection(
         }
     }
 }
+
+/**
+ * What the keep-best cut will actually do to *this* session, in frames rather than in percent.
+ *
+ * A percentage is the control and a frame count is the consequence, and on a short session they
+ * are strikingly different: 95% of twelve frames drops nothing at all, because the count rounds up
+ * (FrameQuality.keepBest). Showing only the percentage would leave someone believing they had
+ * excluded their worst frame when they had not.
+ */
+private fun keepSummary(percent: Int, accepted: Int): String {
+    if (percent >= 100) return "Every accepted frame is stacked."
+    val kept = kotlin.math.ceil(accepted * percent / 100.0).toInt().coerceIn(1, accepted)
+    val dropped = accepted - kept
+    return when (dropped) {
+        0 -> "Keeps all $accepted \u2014 too few frames for $percent% to drop one."
+        1 -> "Keeps $kept of $accepted, dropping the worst frame."
+        else -> "Keeps $kept of $accepted, dropping the $dropped worst."
+    }
+}
+
+private val KEEP_CHOICES = listOf(80, 90, FrameQuality.DEFAULT_KEEP_PERCENT, 100)
 
 /** A bar, in the night palette. Material's has its own opinions about colour and animation. */
 @Composable
