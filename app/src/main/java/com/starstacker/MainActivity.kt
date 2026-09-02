@@ -39,6 +39,7 @@ import com.starstacker.device.DeviceProfile
 import com.starstacker.device.ProfileJson
 import com.starstacker.device.Qualification
 import com.starstacker.diag.CameraLifecycleCheck
+import com.starstacker.diag.CombineCheck
 import com.starstacker.diag.FieldDiagnostics
 import com.starstacker.diag.FieldLog
 import com.starstacker.diag.StorageBenchmark
@@ -918,8 +919,15 @@ class MainActivity : ComponentActivity() {
                         // T-5.1 — OpenCV cannot run in a JVM test, so its acceptance lives here.
                         "warp" -> WarpCheck.run(log)
 
+                        // T-5.4 — correctness is settled in a JVM test; §12.1 wants the cost
+                        // measured on the phone before JNI is considered.
+                        "combine" -> CombineCheck.run(log)
+
                         else ->
-                            log("unknown diag mode '$mode' — expected framing, focus, lens, solve, lifecycle or warp")
+                            log(
+                                "unknown diag mode '$mode' — expected framing, focus, lens, solve, " +
+                                    "lifecycle, warp or combine",
+                            )
                     }
                 }
             }

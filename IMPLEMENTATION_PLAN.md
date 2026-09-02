@@ -85,7 +85,7 @@ Two consequences to accept deliberately:
 | 1D | 9 | 0 | **all nine built and photographed 2026-08-18** (§1.15). T-3.21's last piece waits on the session pane, which is now T-3.27 rather than T-6.1 |
 | 1E | 10 | 2 | **all ten built and walked on the phone 2026-08-19** (§1.18–§1.20). **T-3.28** and **T-3.36** met their acceptances whole; T-3.33 and T-3.35's hard parts are demonstrated. Four defects fixed, two of them predating the phase: `KeyValue` crushed its label whenever a value got long (§1.19), and **the sensor's exposure ceiling was being enforced when the hardware does not enforce it** (§1.20, **D-28**). Unwalked: the naming prompt, a failing sweep |
 | 2 | 7 | 0 | **all seven built 2026-08-19** (§1.22–§1.28) — synthetic sky, drift seed, asterism matching, rigid fit with RANSAC, live registration, common area, and an aligned preview. 113 tests; end to end the chain recovers a known transform to **0.15° and 0.6 px**. Ticked nowhere, because **none of it has met a real star field** — that is the whole of Checkpoint 2 |
-| 3 | 7 | 1 | **T-5.1 accepted on device** (§1.31), **T-5.2 and T-5.3 built** (§1.30, §1.32). Calibration, row-range DNG reads and the tiled accumulator, 39 tests. T-5.4's sigma clipping is next; T-5.7 cannot be validated at all until there are real subs again (§1.29) |
+| 3 | 7 | 1 | **T-5.1 accepted on device** (§1.31), **T-5.2, T-5.3 and T-5.4 built** (§1.30, §1.32, §1.33). Calibration, row-range DNG reads, the tiled accumulator and sigma clipping, 63 tests across the four stacking classes. What is left is not statistics but **plumbing and a night**: no `DngFrameSource`, so none of it has met a real DNG; T-5.4's profile waits on a device and its expert affordance on a stacking screen; T-5.7 cannot be validated at all until there are real subs again (§1.29) |
 | 4+ | outlined | 0 | not started |
 
 > **The `Ticked` column counts `[x]` only.** §0 ties that to an acceptance demonstrated on a real
@@ -1617,6 +1617,97 @@ remove anyway.
 
 ---
 
+## 1.33 Sigma clipping, and a threshold that is arithmetic rather than taste — 2026-09-01
+
+T-5.4 replaces T-5.3's placeholder mean with the rejection that does stacking's actual work.
+Averaging is what makes a stack deep; rejection is what makes it clean, and the two are separate
+problems. A satellite crossing one frame of 150 survives the mean at 1/150th of its brightness,
+which sounds like nothing and is not — the trail sits hundreds of ADU above a background the stretch
+is about to lift by two orders of magnitude, and lands in the finished image as a sharp bright line
+that is obviously not sky.
+
+### The threshold that decided the default, and it is not a preference
+
+The textbook implementation takes the mean and standard deviation of the samples and rejects what
+lies more than κ away. Working out when that actually fires produced the most useful number in this
+section. For `n − 1` samples at one value and a single outlier `d` away from them:
+
+> the SD is `d/√n`, the outlier sits `d(n−1)/n` from the mean, so it is rejected only when
+> `(n − 1) > κ√n` — **independent of `d`**.
+
+At κ = 3 that crosses at **n = 11**. So a ten-frame stack cannot remove a satellite this way *no
+matter how bright it is*: making the intruder ten times brighter inflates the standard deviation by
+the same factor and changes nothing. The outlier is part of the spread being used to judge it, and
+below eleven samples it always wins. Both halves have a test, including the counter-intuitive one —
+120, 1 000 and 60 000 ADU are all kept at n = 10.
+
+Seeding from the **median and the MAD** removes the problem at its root, because neither statistic
+moves when one wild value arrives. After the first pass the roles reverse and the iterations use the
+mean and standard deviation of the survivors: once the contaminant is gone, the SD is both the
+better description of what is left and cheaper than another median. That is not an inconsistency —
+robustness is only wanted while the thing it defends against is still in the set.
+
+The classic form is still offered as `KAPPA_SIGMA`, because it is what the desktop tools mean by the
+name and **T-5.7 has to compare like with like**. It is not offered as an equal.
+
+### A MAD of zero is the common case, not the corner
+
+Calibrated data is quantised, and in a dark patch of background more than half the samples routinely
+share a value — at which point the MAD is exactly 0. A naive implementation then has bounds of
+`[median, median]` and rejects everything that is not precisely the median, which is a mode filter
+wearing a clip's clothes; a `σ > 0` guard instead rejects nothing and averages the satellite in.
+
+The fallback had to be chosen more carefully than expected. **The obvious one — the standard
+deviation about the median — reintroduces exactly the weakness the MAD was picked to avoid**, and by
+the same arithmetic: it rejects a lone outlier only above ten samples. The **mean absolute
+deviation** is `d/n` for that case, so scaled to σ it clears the outlier at any n above four. It is
+not robust the way the MAD is, which is precisely why it is second in line and not first: the most
+robust estimator is asked, and this one only answers when that one had nothing to say.
+
+### Two floors, which are two different questions
+
+The first attempt used one number for both, and it made the combiner worse exactly where it should
+be best. **"Is there enough data to estimate a spread from?"** is a question about the input, and the
+answer is five — below that a single satellite is a quarter of the data and any spread built from it
+is describing the intruder, so the combiner returns the median and says so in its counters. **"Is
+this pass running away?"** is a different question about the iteration, and the answer is three.
+
+Six frames with two satellites in them is the case that separates them: there is ample data, the
+pass correctly identifies both, and a survivor floor of five would decline it for leaving only four
+— so the master would keep both satellites out of misplaced caution. With the floors separated the
+answer is 101.5 rather than 234.5.
+
+### What it costs on clean data, measured
+
+κ = 3 has to be quiet on data with nothing wrong with it, or it is throwing away the depth the
+session was shot for. Over 200 pixels of Gaussian noise at 30 frames: **0.88% of samples rejected**,
+against the 0.27% a single 3σ pass would take. The excess is the iteration nibbling — each pass
+recomputes σ over an already truncated set, so the bounds tighten slightly even when nothing was
+wrong. Losing 0.88% of the samples costs **0.44% more noise** in the master, which is not a trade
+worth declining rejection for.
+
+### What has not happened
+
+**The profile has not run.** §12.1's rule is "build in Kotlin, profile, and only then consider the
+single sanctioned JNI exception", and `--es diag combine` is written and waiting on a phone being
+plugged in — the same position T-5.1 was in for a day. The arithmetic is settled off-device where it
+belongs; the cost is not the kind of question a desktop JVM can answer, since this is a tight scalar
+loop run 37.8 million times per master and the ratio between a laptop and a throttling phone is the
+whole question.
+
+The estimate that makes the measurement worth taking: the combine pass does roughly 15 operations
+per sample, so a 150-frame stack is on the order of 85 G operations for the master. That is
+plausibly several times the warp pass's measured 25–29 s. **If it is uncomfortable, the first lever
+is threads and not JNI** — the loop is independent per pixel and the phone has eight cores, which is
+a cheaper and far more reversible answer than a native library.
+
+**The expert affordance has nothing to attach to.** `Combine.Method` exists and `Combine.of` builds
+any of the four, but `TiledStacker` still has no call site outside its own test, so there is no
+stacking screen to put a control on. That half of T-5.4 waits on the same `DngFrameSource` that
+T-5.2 and T-5.3 are waiting on — the piece that turns Phase 3 from built into run.
+
+---
+
 ---
 
 ## 2. Decisions
@@ -2909,10 +3000,34 @@ changes whether someone can run one without being surprised.
   could be tested anywhere but on a phone.
   *Remaining:* no `DngFrameSource` yet — the loop is proven against synthetic frames and has never
   read a real DNG, which is partly because there are none (§1.29). The combiner ships as a plain
-  mean; **T-5.4** replaces it with sigma clipping.
-- [ ] **T-5.4** Sigma-clipped mean as default; median / mean / kappa-sigma behind the expert
+  mean; **T-5.4** replaced it with sigma clipping on 2026-09-01 (§1.33), leaving the mean available
+  as an explicit choice.
+- [~] **T-5.4** Sigma-clipped mean as default; median / mean / kappa-sigma behind the expert
   affordance. **Build in Kotlin, profile, and only then consider the single sanctioned JNI
   exception** (§12.1).
+  **Built 2026-09-01** as `stacking/Combine.kt`, 25 tests, §1.33. It drops into the `Combiner`
+  interface T-5.3 left for it, so the loop did not change; `Combine.Method` names the four choices
+  and goes in `session.json`, since a restack has to reproduce a master rather than approximate it.
+  **The default is seeded from the median and MAD, and that is arithmetic rather than preference.**
+  A mean/SD clip rejects a lone outlier only when `(n − 1) > κ√n`, which at κ = 3 crosses at
+  **n = 11** and is *independent of the outlier's brightness* — so a ten-frame stack cannot remove a
+  satellite that way however bright it is. Both halves are tested, including 60 000 ADU being kept.
+  The classic form stays available as `KAPPA_SIGMA` because **T-5.7 must compare like with like**
+  against Siril, not because it is an equal.
+  **A zero MAD is the ordinary case, not the corner** — quantised background where over half the
+  samples share a value — and the fallback needed care: the standard deviation about the median
+  reintroduces the same `n ≤ 10` weakness by the back door, so σ comes from the **mean absolute
+  deviation**, which clears an outlier above n = 4.
+  **Two floors, because they answer different questions:** five samples to attempt rejection at all
+  (below it, the median, recorded as such), and three survivors before a *pass* is refused. Merging
+  them made the combiner worse — six frames with two satellites gave 234.5 instead of 101.5.
+  **Clean-data cost measured: 0.88% of samples rejected** at 30 frames of Gaussian noise, so 0.44%
+  more noise in the master. Rejection is reported rather than trusted: `stats.describe()` carries
+  the rate, the uncovered count and the fallback counts.
+  *Remaining:* **the profile has not run** — `--es diag combine` is written and waiting on a device,
+  and until it does, §12.1's JNI question is not open. The estimate is ~85 G operations for a
+  150-frame master, and **if that is uncomfortable the first lever is threads, not JNI**. The expert
+  affordance itself has nothing to attach to until there is a stacking screen.
 - [ ] **T-5.5** Frame weighting by star count, HFR and background level.
 - [ ] **T-5.6** Linear master out: 32-bit float TIFF, saved separately and treated as sacred
   (FR-8.2).
@@ -3161,6 +3276,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-09-01 | **T-5.4 — sigma clipping, and a threshold that is arithmetic rather than taste (§1.33).** The placeholder mean is replaced by the rejection that does stacking's actual work: a satellite in one frame of 150 survives a mean at 1/150th of its brightness, which after the stretch is a sharp bright line and obviously not sky. **The default is seeded from the median and MAD because of an exact result, not a preference** — a mean/SD clip rejects a lone outlier only when `(n − 1) > κ√n`, crossing at **n = 11** at κ = 3 and **independent of the outlier's brightness**, so a ten-frame stack cannot remove a satellite that way however bright it is (120, 1 000 and 60 000 ADU are all kept at n = 10, and there is a test for each). After the first pass the roles reverse and the iterations use mean and SD of the survivors, since robustness is only wanted while the contaminant is present. **A zero MAD is the ordinary case** — quantised background where over half the samples share a value — and the obvious fallback is wrong: the standard deviation about the median reintroduces the same `n ≤ 10` weakness by the back door, so σ comes from the **mean absolute deviation**, which clears an outlier above n = 4. **Two floors, because they are two questions:** five samples before rejection is attempted at all, three survivors before a pass is refused; merging them made the combiner worse, giving 234.5 instead of 101.5 for six frames with two satellites in them. **Clean-data cost measured at 0.88%** of samples rejected over 30 frames of Gaussian noise, which is 0.44% more noise in the master. The rejection reports itself rather than being trusted. **The profile has not run** — `--es diag combine` waits on a device, and until it does §12.1's JNI question is not open; the estimate is ~85 G operations per 150-frame master, and the first lever if that hurts is **threads, not JNI**. 491 JVM tests. |
 | 2026-08-21 | **T-5.3 — the tiled accumulator, and what a stub is allowed to be (§1.32).** Tiling is forced by arithmetic: a 12.6 MP master in three channels is 151 MB, and sigma clipping needs every frame's value for a pixel at once — **7.5 GB** for 150 frames. `tileRowsFor` makes the governing relationship explicit: **more frames means thinner tiles**, so a 20-frame session and a 200-frame night do not stack alike. **`DngReader.Rows` is the enabler**, serving row ranges instead of whole frames — possible only because §1.12 measured one strip per row, and without it a tiled stack would need sixteen thousand full 25 MB decodes for one night. The tile fetches a **margin either side**, because under rotation a band of output maps to a sheared band of input `2048 × sin θ` rows taller — over a hundred at the angles a session reaches, so a stack built as though rows lined up would seam at every boundary. **Both dependencies injected**, `Resampler` because OpenCV cannot load off-device — and the stub immediately earned its keep by being **wrong in the documented way**: it used the inverse transform where the contract says forward, the same confusion `Resample` warns about, caught by the test within an hour of the warning being written. A second failure recorded because it will recur: **Kotlin sorts `NaN` above every number**, so a `maxByOrNull` over a master picks an uncovered pixel — and uncovered is NaN by design, since writing zero would claim a darkness nobody measured. The defining property has its own test: **the tiling must be invisible in the answer**, one tile or twenty. 466 JVM tests. |
 | 2026-08-20 | **T-5.1 accepted on device, and the throughput read honestly (§1.31).** `--es diag warp` passes on all four counts: OpenCV loads; the warp recovers a placed dot to **0.13 px**, so the direction is right where an inversion would have landed it 36 px away with no exception; the uncovered border carries the sentinel rather than zero; and **debayer returns R=1000 G=500 B=100 exactly as they went in**, confirming `GRBG` really is OpenCV's `BayerGB` and that red and blue are not swapped — an error that would only have surfaced after colour balance, looking like a white-balance problem. **Throughput 13–15 ms/megapixel**, so ~25–29 s for a 150-frame stack's warp pass. Comfortable, and **not a number that required OpenCV**: the Kotlin alternative was estimated at roughly twice this, which would also have been comfortable. The dependency bought quality and margin rather than feasibility, the profile §12.1 asked for now exists, and it says either choice would have worked. Recorded rather than glossed, since the 24.8 MB is permanent and the reasoning should be too. The figure's real use is T-5.3's budget: 4 ms per 512×512 tile is a baseline any future regression can be measured against. **T-5.1 ticked.** |
 | 2026-08-20 | **T-5.2 — calibration, and three ways to be quietly wrong (§1.30).** FR-8.1 steps 1–2 on CFA data before debayer, every master independently optional. The ordering is not stylistic: dark current and flat response are properties of *one photosite*, and debayering first would apply each correction to a blend of sites that never shared either. Three details each have a test, because none of them would be visible in the result — the **black pedestal leaves exactly once** (a dark carries it too, so removing both pushes the background negative by exactly 64 ADU); **negatives are kept**, since clamping biases the mean upward by more where noise is larger and that non-uniform lift survives into the master, which is exactly what FR-8.1 step 5 then has to undo; and a **flat near zero is a hole, not a gain**, so it is marked bad rather than amplified into something indistinguishable from a star. **Hot pixels are repaired from their own colour, two pixels away** — on a Bayer grid the adjacent sites are a different colour, and repairing from them swaps an obviously bad pixel for a plausible wrong one that the gate and the stack would both trust. Medians throughout, since hot pixels cluster and a cosmic ray in one dark would otherwise be subtracted from every light in the session. 445 JVM tests. |

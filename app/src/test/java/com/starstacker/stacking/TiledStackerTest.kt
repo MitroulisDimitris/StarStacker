@@ -112,6 +112,17 @@ class TiledStackerTest {
 
     private fun masters() = Calibration.Masters.of(w, h)
 
+    /**
+     * The plain mean, named rather than defaulted.
+     *
+     * Since T-5.4 the default combiner is [Combine.SigmaClip], and these tests are about the
+     * *machinery* — whether every frame reaches every tile, whether boundaries seam. Letting
+     * rejection run underneath them would mean a test asserting an average could pass while
+     * something else produced the number, which is the failure mode where a test stops being
+     * evidence. The rejection has its own tests in `CombineTest`.
+     */
+    private val mean = TiledStacker.Combiner.Mean
+
     // ------------------------------------------------------------------ the tiling itself
 
     @Test
@@ -121,7 +132,7 @@ class TiledStackerTest {
         }
         val master = FloatArray(w * h * 3)
 
-        assertTrue(TiledStacker(frames, StubResampler()).stack(master))
+        assertTrue(TiledStacker(frames, StubResampler(), mean).stack(master))
 
         for (y in 0 until h) {
             for (x in 0 until w) {
@@ -138,7 +149,7 @@ class TiledStackerTest {
             100 * (f + 1)
         }
         val master = FloatArray(w * h * 3)
-        TiledStacker(frames, StubResampler()).stack(master)
+        TiledStacker(frames, StubResampler(), mean).stack(master)
 
         // (100 + 200 + 300 + 400) / 4
         assertEquals(250f, master[0], 1e-3f)
@@ -158,8 +169,8 @@ class TiledStackerTest {
         val manyTiles = FloatArray(w * h * 3)
 
         // A budget large enough for the whole frame, and one so small each tile is a single row.
-        TiledStacker(make(), StubResampler(), memoryBudgetBytes = 64L * 1024 * 1024).stack(oneTile)
-        TiledStacker(make(), StubResampler(), memoryBudgetBytes = w * 3L * 6 * 4).stack(manyTiles)
+        TiledStacker(make(), StubResampler(), mean, memoryBudgetBytes = 64L * 1024 * 1024).stack(oneTile)
+        TiledStacker(make(), StubResampler(), mean, memoryBudgetBytes = w * 3L * 6 * 4).stack(manyTiles)
 
         for (i in oneTile.indices) {
             assertEquals(oneTile[i], manyTiles[i], 1e-3f) { "tiling changed the master at $i" }
@@ -266,7 +277,7 @@ class TiledStackerTest {
             transforms = { i -> if (i == 0) null else half },
         ) { f, _, _ -> if (f == 0) 100 else 300 }
         val master = FloatArray(w * h * 3)
-        TiledStacker(frames, StubResampler()).stack(master)
+        TiledStacker(frames, StubResampler(), mean).stack(master)
 
         val left = master[(5 * w + 1) * 3]
         val right = master[(5 * w + w - 2) * 3]
@@ -287,9 +298,67 @@ class TiledStackerTest {
             masters = Calibration.Masters.of(w, h, dark = dark),
         ) { _, _, _ -> 340 }
         val master = FloatArray(w * h * 3)
-        TiledStacker(frames, StubResampler()).stack(master)
+        TiledStacker(frames, StubResampler(), mean).stack(master)
 
         assertEquals(300f, master[0], 1e-3f) { "the dark was not subtracted: ${master[0]}" }
+    }
+
+    // ------------------------------------------------------------------ rejection, in the loop
+
+    /** Twelve frames of flat sky, with a bright streak across four rows of frame 3 only. */
+    private fun framesWithASatellite() =
+        FakeFrames(count = 12, width = w, height = h, masters = masters()) { f, _, y ->
+            if (f == 3 && y in 8..11) 900 else 100
+        }
+
+    @Test
+    fun `a satellite in one frame does not reach the master`() {
+        // T-5.4 seen from the outside. The mean keeps a twelfth of it — 166.7 against a background
+        // of 100, which after the stretch is a sharp bright line and unmistakably not sky.
+        val averaged = FloatArray(w * h * 3)
+        TiledStacker(framesWithASatellite(), StubResampler(), mean).stack(averaged)
+        assertEquals(166.667f, averaged[(9 * w + 4) * 3], 1e-2f)
+
+        val clipped = FloatArray(w * h * 3)
+        TiledStacker(framesWithASatellite(), StubResampler(), Combine.SigmaClip()).stack(clipped)
+        assertEquals(100f, clipped[(9 * w + 4) * 3], 1e-3f) { "the streak survived the clip" }
+
+        // And the sky either side of it is untouched — a clip that flattened everything would pass
+        // the assertion above for the wrong reason.
+        assertEquals(100f, clipped[(2 * w + 4) * 3], 1e-3f)
+    }
+
+    @Test
+    fun `the tiling is invisible with rejection running too`() {
+        // §1.32's defining property, re-checked now that the combiner has state of its own. A
+        // scratch buffer or a counter carried between tiles would show up here and nowhere else.
+        val oneTile = FloatArray(w * h * 3)
+        val manyTiles = FloatArray(w * h * 3)
+
+        TiledStacker(
+            framesWithASatellite(), StubResampler(), Combine.SigmaClip(),
+            memoryBudgetBytes = 64L * 1024 * 1024,
+        ).stack(oneTile)
+        TiledStacker(
+            framesWithASatellite(), StubResampler(), Combine.SigmaClip(),
+            memoryBudgetBytes = w * 3L * 12 * 4,
+        ).stack(manyTiles)
+
+        for (i in oneTile.indices) {
+            assertEquals(oneTile[i], manyTiles[i], 1e-3f) { "tiling changed the master at $i" }
+        }
+    }
+
+    @Test
+    fun `the master can say what its rejection did`() {
+        // A stack that cannot report its rejection rate has to be trusted instead, and FR-9.2 wants
+        // the figure in session.json so a restack is comparable rather than merely similar.
+        val clip = Combine.SigmaClip()
+        TiledStacker(framesWithASatellite(), StubResampler(), clip).stack(FloatArray(w * h * 3))
+
+        // Four rows of the frame, three channels, one frame in twelve.
+        assertEquals(w * 4L * 3, clip.stats.rejected)
+        assertEquals(w * h * 3L, clip.stats.pixels)
     }
 
     // ------------------------------------------------------------------ housekeeping

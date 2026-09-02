@@ -36,7 +36,9 @@ import com.starstacker.registration.RigidTransform
 class TiledStacker(
     private val frames: Frames,
     private val resampler: Resampler,
-    private val combiner: Combiner = Combiner.Mean,
+    // T-5.4's sigma-clipped mean, per instance because it carries a scratch buffer and its own
+    // rejection counters. A shared default would have every stack writing into one set of stats.
+    private val combiner: Combiner = Combine.SigmaClip(),
     private val memoryBudgetBytes: Long = DEFAULT_MEMORY_BUDGET,
 ) {
     /** Where frames come from. One implementation reads DNGs; the test's makes them up. */
@@ -89,16 +91,31 @@ class TiledStacker(
         ): Boolean
     }
 
-    /** How N samples of one pixel become one. T-5.4 replaces [Mean] with sigma clipping. */
+    /**
+     * How N samples of one pixel become one. [Combine] holds the implementations; the default is
+     * T-5.4's sigma-clipped mean.
+     *
+     * The contract has two halves the implementations rely on. **Only `samples[0, count)` is
+     * valid** — the tail is whatever the previous pixel left there, and a combiner that reads past
+     * `count` produces a plausible master that is wrong everywhere the coverage was partial. And
+     * **the array is scratch**: a combiner may reorder it, which is what lets a median be selected
+     * rather than sorted out of a copy, 37.8 million times per master.
+     */
     fun interface Combiner {
-        /** @param count how many of [samples] are valid; the rest are frames that did not cover. */
+        /**
+         * @param samples the pixel's values, one per frame that covered it. Finite — the gather
+         *   loop drops non-finite values and the uncovered sentinel — and free to be reordered.
+         * @param count how many of [samples] are valid; the rest are frames that did not cover.
+         */
         fun combine(samples: FloatArray, count: Int): Float
 
         companion object {
             /**
              * The plain mean — correct, and deliberately naive: it keeps satellites, aircraft and
-             * cosmic rays, which is exactly what T-5.4's sigma clipping is for. Shipping it first
-             * means the machinery can be proven before the statistics are argued about.
+             * cosmic rays, which is exactly what [Combine.SigmaClip] is for. It stays because it is
+             * the deepest possible result on clean data, because it is what a stack compared
+             * against a desktop tool's "average" setting needs, and because the tests that check
+             * the *machinery* should not have rejection running underneath them.
              */
             val Mean = Combiner { samples, count ->
                 if (count == 0) {
