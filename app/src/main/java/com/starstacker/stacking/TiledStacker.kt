@@ -527,6 +527,23 @@ class TiledStacker(
     private var counts: IntArray = IntArray(0)
     private var origin: IntArray = IntArray(0)
 
+    /**
+     * Drops the tile buffers, which are the largest thing this holds.
+     *
+     * At the default budget the sample store and its frame-index twin are **192 MB between them**,
+     * and they stay reachable for as long as the stacker does — which on the first run of T-7.x was
+     * long enough to starve the auto-edit that came next and fail it with an `OutOfMemoryError`.
+     * A stack is finished when it returns; what it needed to get there is not.
+     *
+     * Not `close()`, because this is not a resource and the object stays usable: calling [stack]
+     * again simply grows them back.
+     */
+    fun release() {
+        store = FloatArray(0)
+        counts = IntArray(0)
+        origin = IntArray(0)
+    }
+
     /** T-5.5, resolved once per stack in [stack]. */
     private var weights: FloatArray = FloatArray(0)
     private var weighted: Boolean = false

@@ -1,5 +1,7 @@
 package com.starstacker.stacking
 
+import com.starstacker.edit.AutoEdit
+import com.starstacker.edit.StretchedImage
 import com.starstacker.session.SessionLayout
 import com.starstacker.session.SessionLog
 import java.io.File
@@ -34,6 +36,12 @@ class StackJob(
     private val sessionDir: File,
     private val settings: StackSettings,
     private val resampler: TiledStacker.Resampler,
+    /**
+     * T-7.6 — where the stretched preview goes. Injected for the same reason [resampler] is: the
+     * encoder is `android.graphics.Bitmap` and the pipeline that feeds it is pure Kotlin. Null
+     * writes the linear master and no preview, which is what a JVM test wants.
+     */
+    private val stretched: StretchedImage? = null,
 ) {
 
     /** Where a run has got to. Coarse on purpose — see [Progress.percent]. */
@@ -78,6 +86,10 @@ class StackJob(
         /** What the rejection did, when the method was one that rejects. */
         val rejection: String? = null,
         val stats: MasterStats? = null,
+        /** T-7.x's stretched JPEG, when one could be made. */
+        val previewFile: File? = null,
+        /** What the auto-edit did, for the log and the audit trail. */
+        val edit: String? = null,
         val error: String? = null,
     ) {
         val succeeded: Boolean get() = state == State.DONE
@@ -239,7 +251,16 @@ class StackJob(
                 return failed(name, "could not write the master: ${it.message}", onProgress, notes)
             }
 
-            record(log, frames, stacker, region)
+            // The tile buffers are 192 MB and the stack is over; the auto-edit below needs the
+            // room far more than the stacker needs to keep them (§1.41).
+            stacker.release()
+
+            // T-7.x — the picture, from the linear master that has just been written. Deliberately
+            // after it: FR-8.2 makes the linear result the artefact, so a failure to render a
+            // preview must not cost the thing the session was actually for.
+            val preview = renderPreview(master, frames, region, notes, onProgress, name)
+
+            record(log, frames, stacker, region, preview)
 
             onProgress(Progress(State.DONE, name, message = "Done"))
             return Result(
@@ -252,6 +273,8 @@ class StackJob(
                 notes = notes,
                 rejection = rejectionOf(stacker),
                 stats = stats,
+                previewFile = preview?.first,
+                edit = preview?.second?.describe(),
             )
         }
     }
@@ -287,17 +310,75 @@ class StackJob(
      * say how an existing one was made — they are a default and can have been changed since. So
      * the values that moved pixels are recorded against the session that used them.
      */
+    /**
+     * Renders the stretched preview, cropped to the same region the master was.
+     *
+     * Returns null rather than failing the run. The linear master is on disk by this point and is
+     * what FR-8.2 calls sacred; a preview that would not render is a missing convenience, not a
+     * lost night — and the reason is put in the notes rather than swallowed.
+     */
+    private fun renderPreview(
+        master: FloatArray,
+        frames: DngFrameSource,
+        region: LinearMaster.Region,
+        notes: MutableList<String>,
+        onProgress: (Progress) -> Unit,
+        name: String,
+    ): Pair<File, AutoEdit.Report>? {
+        val encoder = stretched ?: return null
+        onProgress(Progress(State.WRITING, name, message = "Rendering the preview"))
+
+        return runCatching {
+            // The edit works on the cropped region, so the picture matches the master rather than
+            // carrying the partial-depth border the crop exists to remove.
+            // One copy, not two: the crop already owns its data, so the edit runs in place on it.
+            val cropped = crop(master, frames.width, region)
+            val (rgb, report) = AutoEdit.renderInPlace(cropped, region.width, region.height)
+            val file = File(File(sessionDir, SessionLayout.MASTER), StretchedImage.FILE_NAME)
+            val bytes = encoder.writeJpeg(file, rgb, region.width, region.height)
+            if (bytes <= 0) {
+                notes += "the preview could not be encoded"
+                null
+            } else {
+                notes += "preview: ${report.describe()}"
+                file to report
+            }
+        }.getOrElse {
+            notes += "the preview failed: ${it.message ?: it::class.simpleName}"
+            null
+        }
+    }
+
+    /** The region of [master], as its own array. */
+    private fun crop(master: FloatArray, frameWidth: Int, region: LinearMaster.Region): FloatArray {
+        val channels = TiledStacker.CHANNELS
+        // Always a copy, even for a full-frame region. The caller edits this in place, and handing
+        // back the master itself would scribble on the very thing FR-8.2 calls sacred — the file is
+        // already written, but the array is still the caller's.
+        val out = FloatArray(region.width * region.height * channels)
+        for (y in 0 until region.height) {
+            val src = ((region.top + y).toLong() * frameWidth + region.left).toInt() * channels
+            master.copyInto(out, y * region.width * channels, src, src + region.width * channels)
+        }
+        return out
+    }
+
     private fun record(
         log: SessionLog,
         frames: DngFrameSource,
         stacker: TiledStacker,
         region: LinearMaster.Region,
+        preview: Pair<File, AutoEdit.Report>?,
     ) {
         val stacking = settings.toMap() + buildMap {
             put("region", region.describe())
             put("frames", frames.count.toString())
             put("calibration", frames.masters.describe())
             put("master", LinearMaster.FILE_NAME)
+            preview?.let {
+                put("preview", StretchedImage.FILE_NAME)
+                put("edit", it.second.describe())
+            }
             put("stackedAt", System.currentTimeMillis().toString())
             rejectionOf(stacker)?.let { put("rejection", it) }
         }

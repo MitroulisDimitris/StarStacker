@@ -1,5 +1,6 @@
 package com.starstacker.diag
 
+import com.starstacker.edit.BitmapJpeg
 import com.starstacker.session.SessionLayout
 import com.starstacker.session.SessionLog
 import com.starstacker.stacking.Resample
@@ -69,7 +70,7 @@ object StackCheck {
             )
         }
 
-        val result = StackJob(session, settings, Resample).run(
+        val result = StackJob(session, settings, Resample, BitmapJpeg).run(
             onProgress = { progress ->
                 // One line per tile is too many for a hundred-tile stack, and none is too few for
                 // something that runs for minutes.
@@ -101,6 +102,8 @@ object StackCheck {
         result.stats?.let { log("stack: master ${it.describe()}") }
         log("stack: wrote ${result.masterFile?.path}")
         log("stack: %.1f MB · ${result.region?.describe()}".format(result.bytesWritten / 1e6))
+        result.edit?.let { log("stack: edit — $it") }
+        result.previewFile?.let { log("stack: preview ${it.path} (%.1f MB)".format(it.length() / 1e6)) }
     }
 
     /**

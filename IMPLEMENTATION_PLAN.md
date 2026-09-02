@@ -2302,6 +2302,86 @@ Either would take this under ten minutes. Neither is needed to make Phase 3 usab
 
 ---
 
+## 1.41 The auto-edit, and a picture that says flats are not optional — 2026-09-03
+
+T-7.1 to T-7.4 built and run on the real session. **The app has produced a photograph**: stars
+across the frame, the Milky Way through the middle, cloud lit orange down the right-hand side.
+`master/stack_stretched.jpg`, 3.9 MB, beside the linear master it came from.
+
+### The pipeline, and why the order is the design
+
+Gradient removal, background neutralisation, colour balance, autostretch, saturation — FR-8.1
+steps 5 to 8. Each has to be where it is:
+
+- **Gradient first**, because everything after it reads the background, and a ramp is not one
+  number. The stretch would measure its spread against the ramp and flatten itself.
+- **Neutralise, then balance**, which are two operations on two ends of the range. Equalising the
+  channels' *backgrounds* is what makes the sky grey; equalising their *bright ends* is what makes
+  the stars white. Doing only the first leaves coloured stars, only the second an orange sky.
+- **One stretch, measured on luminance**, applied to all three channels. Per-channel would be
+  easier and would silently undo the balance — a per-channel stretch equalises the channels by
+  construction, so it throws away the colour that was just set.
+- **Saturation last**, on the stretched values, because a boost applied to linear data is invisible
+  in the shadows and violent in the highlights.
+
+The linear master is never modified, and there is a test that says so: every step here is
+destructive and FR-8.2 makes the thing they derive from sacred.
+
+### The finding: the background is vignetting, and it is not a gradient
+
+The first render came out with a dark blob in one corner and a bright one in another. Measuring the
+background across the frame said why, and it is not the streetlight:
+
+> **21.2 ADU at the centre, 4.8 in the corners.** A fourfold *radial* falloff.
+
+That is the lens, not the sky. Lens falloff follows the **`cos⁴` law**, so a fourth-order surface is
+the lowest one that can hold its shape, and the residuals land exactly where that predicts:
+
+| degree | residual rms | peak to peak | as a share of the 12 ADU sky |
+|---|---|---|---|
+| 1 | 4.74 ADU | 19.4 | 162% |
+| 2 | 1.73 ADU | 8.5 | 71% |
+| 3 | 1.24 ADU | 7.9 | 66% |
+| **4** | **0.55 ADU** | **4.0** | **33%** |
+
+The default was 2 and is now 4 — a visible difference, and the JPEG more than doubled, from 1.7 MB
+to 3.9 MB, because there is more real detail left to encode.
+
+**And it is still not enough, which is the important half.** A third of the sky level is a third of
+the picture once the stretch puts the background at 0.23. The sky here is only **12 ADU above the
+dark**, so the background has to be flat to better than about **1 ADU** — below the per-pixel noise
+— before it stops being the first thing the eye finds. A polynomial fitted to tiles cannot promise
+that, and no order of polynomial will: past `cos⁴` the extra freedom stops describing the lens and
+starts describing whatever is in the frame.
+
+**So flats are not a Phase 6 nicety for this device, they are the difference between a picture with
+a subject and a picture with a shadow in the corner.** T-8.3 was scheduled as calibration-library
+housekeeping; this session says it is the largest remaining lever on image quality.
+
+### Two memory failures, from the same missing habit
+
+The first run of the preview died: `Failed to allocate 131909248 bytes … growth limit 536870912`.
+Live at that moment were the 151 MB master, the 25 MB coverage map, and **192 MB of tile buffers the
+stacker had finished with and never let go** — then the edit asked for two more full-size copies, one
+to crop into and one to work on.
+
+Both halves fixed: `TiledStacker.release()` drops the tile buffers when the stack returns, and
+`AutoEdit.renderInPlace` edits the crop the caller already owns rather than copying it again. That
+is 324 MB recovered, and it is **the third time this project has run out of memory because numbers
+written down in separate files were never added up** (§1.38 was the first, §1.39's band buffer the
+second).
+
+### What is not built
+
+**T-7.5, the UI.** `Settings` carries FR-8.3's single strength slider and the expert values behind
+it, and every stack renders at the default — but there is no slider, no before/after, and no re-run
+from the linear master without restacking. That is where this goes next.
+
+**T-7.6's MediaStore publish.** The JPEG is in the session folder, not the gallery (FR-9.3), so it
+is findable by someone who knows where to look, which FR-9.4 explicitly says is not good enough.
+
+---
+
 ## 2. Decisions
 
 | ID | Decision | Rationale | Reversal cost |
@@ -3784,10 +3864,26 @@ changes whether someone can run one without being surprised.
 
 ## 10. Phase 5 — Auto-edit
 
-- [ ] **T-7.1** Gradient removal — polynomial or RBF background model (FR-8.1.5).
-- [ ] **T-7.2** Background neutralisation + rough colour balance.
-- [ ] **T-7.3** MTF autostretch from median/MAD — the beginner payoff.
-- [ ] **T-7.4** Mild saturation boost.
+- [~] **T-7.1** Gradient removal — polynomial or RBF background model (FR-8.1.5).
+  **Built 2026-09-03** as `edit/Gradient.kt`, §1.41. Low-order polynomial fitted to per-tile
+  background percentiles, with one-sided rejection so a galaxy is not mistaken for sky, and a
+  refusal to model at all when too little of the frame looks like background.
+  **The default is degree 4, and that is the `cos⁴` law rather than a preference**: the measured
+  background is 21.2 ADU at the centre against 4.8 in the corners, which is lens vignetting, and
+  fourth order is the lowest that holds its shape. *Remaining:* even at degree 4 the residual is
+  4 ADU peak-to-peak against a 12 ADU sky — **flats (T-8.3) are the real fix**.
+- [~] **T-7.2** Background neutralisation + rough colour balance.
+  **Built 2026-09-03** in `edit/AutoEdit.kt`. Two operations on two ends of the range: equalising
+  the channels' backgrounds makes the *sky* grey, equalising their bright ends makes the *stars*
+  white, and doing only one leaves the other coloured.
+- [~] **T-7.3** MTF autostretch from median/MAD — the beginner payoff.
+  **Built 2026-09-03**, reusing T-2.2's `Autostretch`. **One stretch measured on luminance and
+  applied to all three channels** — per-channel would be easier and would silently undo T-7.2,
+  since a per-channel stretch equalises the channels by construction.
+- [~] **T-7.4** Mild saturation boost.
+  **Built 2026-09-03**, about Rec. 709 luminance so it changes colour without changing brightness,
+  and applied *after* the stretch — on linear data a boost is invisible in the shadows and violent
+  in the highlights.
 - [ ] **T-7.5** Auto-edit UI: one strength slider, before/after, re-run from the linear master,
   expert controls one tap deeper (FR-8.3).
 - [ ] **T-7.6** MediaStore publish of the stretched JPEG (FR-9.3) + Siril/DSS-compatible export
@@ -3800,6 +3896,12 @@ changes whether someone can run one without being surprised.
   behind the T-3.1 interface.
 - [ ] **T-8.2** Hot/warm pixel map (FR-4.1.2), quick and deep variants.
 - [ ] **T-8.3** Flat field capture + validity checks (FR-4.1.3).
+  **Promoted in importance 2026-09-03 (§1.41): this is the largest remaining lever on image
+  quality.** The measured background is 21.2 ADU at the centre and 4.8 in the corners — a fourfold
+  radial falloff on a sky that is only 12 ADU above the dark. T-7.1's polynomial takes the residual
+  to 4 ADU peak-to-peak and no order of polynomial will do better, because past `cos⁴` the freedom
+  describes the subject rather than the lens. The background has to be flat to about **1 ADU**,
+  below the per-pixel noise, before it stops being the first thing the eye finds.
 - [ ] **T-8.4** Lens intrinsics — measured, not trusted from `LENS_DISTORTION` (FR-4.1.5).
 - [ ] **T-8.5** Timing calibration: gyro-to-timestamp offset, actual vs requested exposure, rolling
   shutter skew (FR-4.1.6).
@@ -3991,6 +4093,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-09-03 | **The auto-edit, and a picture that says flats are not optional (§1.41).** T-7.1–T-7.4 built and run: **the app has produced a photograph** — stars, the Milky Way, and cloud lit orange down one side, as `master/stack_stretched.jpg` beside the linear master. The order is the design: gradient first because everything after reads the background; neutralise *then* balance, because equalising backgrounds makes the sky grey and equalising bright ends makes the stars white; **one stretch measured on luminance**, since per-channel would silently undo the balance; saturation last, because on linear data a boost is invisible in the shadows and violent in the highlights. **The finding: the background is vignetting, not a gradient.** Measured at **21.2 ADU centre against 4.8 in the corners** — a fourfold radial falloff, which is the lens. Falloff follows `cos⁴`, so fourth order is the lowest that holds its shape, and the residuals agree exactly: 8.5 ADU peak-to-peak at degree 2, 4.0 at degree 4. The default moved from 2 to 4 and the JPEG more than doubled. **And it is still not enough**: the sky is only 12 ADU above the dark, so 4 ADU is a third of the picture after the stretch, and no polynomial will do better because past `cos⁴` the freedom describes the subject. **Flats (T-8.3) are now the largest remaining lever on image quality.** Also: the preview OOM'd on its first run, because the stacker held 192 MB of tile buffers it had finished with and the edit then copied the data twice — the third time this project has run out of memory from numbers written in separate files and never added up. 614 JVM tests. |
 | 2026-09-02 | **Threads, and what Amdahl had to say (§1.40).** The lever §1.33 predicted and §1.38 measured: **19.1 minutes to 12.9**. Every pixel of the combine is independent, so which core computes which *cannot* change the answer — and that was checked past the fixtures, on the real session: the threaded master is **sha256-identical** to the serial one, the same 131 909 712 bytes. Each worker gets its own `SigmaClip`, since it carries a scratch buffer and counters, and the counters are summed at the end; a factory handing every worker the same stateful instance is **refused rather than raced**, because it would give a master subtly different every run. Seven cores bought only 1.76× of the combine, and solving Amdahl says why: the combine is **~429 s of parallel compute beside ~425 s of serial I/O and gather**, so the compute fell to about 60 s and the rest did not move. §1.38's profile was right about the arithmetic and never saw the other half, because its pool stays in cache — *the thing that was measured is not the whole of the thing that runs*, which is §1.34's lesson in a third costume. The tile budget also doubled to 192 MB now that `largeHeap` exists, taking tiles from 8 rows to 17 and halving the reads. What is left: the register pass (290 s, still serial and now the largest single block) and overlapping the combine's reads with its compute. 599 JVM tests. |
 | 2026-09-02 | **Warp once, and the first master from real sky (§1.39).** §1.38's fix built and run: a register pass puts every frame into reference coordinates once, into one float file per frame, and the combine then tiles over already-registered data **with no margin at all**. 43 776 band-warps became 114, and **61 minutes became 19 — and it finishes**. The margin is now measured from the transforms; the old constant of 160 was too small because §1.32's formula counted rotation and ignored drift, and rotation alone is only 136 of the 220 rows this session needed. **Three defects, all found by running it.** A band one row taller than its buffer, because the CFA parity snap rounds a band's start *down* — invisible while tile and margin were both even. **`Trim to overlap` was answering the wrong question**: it tested for NaN, and a pixel is only NaN when *no* frame reached it, but the reference covers everything by definition — so nothing was ever NaN and the crop kept the whole frame, reporting `0.00% uncovered` on a session with 3.72° of rotation. It now takes a per-pixel coverage count and trims to where every frame reached: **3887x2828**, the displacement showing up as a border. The evidence had been in the run all along — 496 104 pixels combined below the five-sample floor, the partial-depth border averaged from one to four frames. And 17 GB unpacked a byte at a time, now a bulk FloatBuffer copy, which bought less than expected and so confirmed the combine is compute-bound. **`stack_linear.tif` verified tag by tag** — 32-bit, `SampleFormat [3,3,3]`, provenance embedded, scratch cleaned up. **T-5.7 is now a desktop afternoon rather than a clear night.** 595 JVM tests. |
 | 2026-09-02 | **On the phone at last — four findings, one architectural (§1.38).** **There is field data**: `2026-08-23_0006` has sat on the device since 2026-08-23 with 119 of 120 lights accepted, 18 darks and 14.7 minutes of integration, and this document has said since §1.29 that none existed — stale four days after it was written. **T-5.4's profile ran** and §1.33's estimate was low by five times: 471.7 s of combining for a 150-frame master on one core, sixteen times the warp pass rather than several times it; §12.1's JNI exception stays shut because the loop is per-pixel independent and threading turns 7.9 minutes into one or two. **The heap does not fit a stack** — 151 MB master plus 50 MB dark plus 96 MB samples against a 256 MB growth limit, every number written down in a doc comment and never added up; `largeHeap` fixes it. **And the tiled loop is the wrong shape**: 114 frames give an 8-row tile against a 160-row margin, so every band reads, calibrates, debayers and warps 328 rows to produce 8 — a 41x amplification, ~61 minutes for one stack, 117 GB read to write 151 MB. The margin is simultaneously **too small**, since the session rotates 3.72° and displaces 219.5 rows, so tiles miss rows they need. Neither is tunable: the margin grows with session length and the tile shrinks with frame count. The fix is to warp each frame once into an intermediate and tile only the combine, where the margin is zero — ~7-8 minutes. Invisible to the JVM tests, whose 24-row fixture is smaller than the margin: §1.34's blind spot in a new disguise. |
