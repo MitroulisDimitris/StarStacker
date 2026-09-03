@@ -716,15 +716,45 @@ class TiledStacker(
          */
         fun registerRowsFor(width: Int, margin: Int): Int {
             val wanted = (margin * 8).coerceAtLeast(64)
-            // Bounded so a huge margin cannot ask for a band larger than the buffers can hold.
-            val affordable = (REGISTER_BAND_BUDGET / (width.toLong() * CHANNELS * 4)).toInt()
+
+            // Every buffer, counted. The first version divided the budget by one three-channel
+            // float array and asked for 1365 rows, which at a 224-row margin is a 1815-row band
+            // and **216 MB** across the five buffers the pass actually allocates — against a
+            // budget written as 64. It fitted until a flat was added to the masters and then it
+            // did not, which is the fourth time in this project that separately-documented
+            // numbers have failed to be added up (§1.38, §1.39, §1.41).
+            //
+            // Per band row: cfa 2 + calibrated 4 + calibratedShorts 2 + colour 12 = 20 bytes a
+            // pixel. Per *output* row, the warped buffer adds 12 more. The band is
+            // `rows + 2 × margin`, so the fixed cost of the margin comes out of the budget before
+            // anything is left for rows.
+            val perBandRow = width.toLong() * BAND_BYTES_PER_PIXEL
+            val perOutputRow = width.toLong() * CHANNELS * 4
+            val marginCost = 2L * margin * perBandRow
+            val affordable = ((REGISTER_BAND_BUDGET - marginCost) / (perBandRow + perOutputRow))
+                .toInt()
+
             // Even, so the band it produces starts on an even row and the debayer sees the frame's
             // own CFA phase — the same requirement sourceRowsFor enforces for tiles.
-            val rows = wanted.coerceIn(1, affordable.coerceAtLeast(1))
+            val rows = wanted.coerceIn(1, affordable.coerceAtLeast(MIN_REGISTER_ROWS))
             return (rows and 1.inv()).coerceAtLeast(2)
         }
 
         /** 64 MB of working buffers for the register pass, which accumulates nothing. */
         private const val REGISTER_BAND_BUDGET = 64L * 1024 * 1024
+
+        /**
+         * Bytes per pixel of the band, across every buffer it is read into: the CFA short, the
+         * calibrated float, the rounded short the debayer takes, and the three-channel float it
+         * produces. Written here rather than rediscovered, because getting it wrong is an
+         * `OutOfMemoryError` two hundred frames into a stack.
+         */
+        private const val BAND_BYTES_PER_PIXEL = 2 + 4 + 2 + CHANNELS * 4
+
+        /**
+         * A floor, for the case where the margin alone exhausts the budget. Slower than ideal and
+         * still correct — refusing to stack because the rotation was large would be worse.
+         */
+        private const val MIN_REGISTER_ROWS = 16
     }
 }

@@ -265,3 +265,58 @@ class CombineThreadingTest {
         }
     }
 }
+
+/**
+ * The register pass's memory budget, which has now been wrong twice.
+ */
+class RegisterBudgetTest {
+
+    private val w = 4096
+
+    /** What the pass actually allocates, in bytes, at a given band and output height. */
+    private fun bytes(rows: Int, margin: Int): Long {
+        val band = rows + 2L * margin + 2
+        return w * band * (2 + 4 + 2 + 3 * 4) + w * rows.toLong() * 3 * 4
+    }
+
+    @Test
+    fun `the band fits the budget it claims, at every margin a session can produce`() {
+        // The first version divided the budget by one buffer and asked for 1365 rows — 216 MB
+        // against a budget of 64. It fitted until a flat was added to the masters.
+        //
+        // The invariant is about the part the budget can *choose*. A margin is a fixed cost that
+        // the session's own rotation imposes — 512 rows of it is 84 MB on a 4096-wide frame before
+        // a single output row exists — so what has to stay bounded is everything above that.
+        for (margin in listOf(4, 64, 137, 224, 512)) {
+            val rows = TiledStacker.registerRowsFor(w, margin)
+            val marginAlone = w * (2L * margin + 2) * 20
+            val variable = bytes(rows, margin) - marginAlone
+            assertTrue(
+                variable <= 70L * 1024 * 1024,
+                "margin $margin gave $rows rows: ${variable / 1_000_000} MB above the margin's own cost",
+            )
+        }
+    }
+
+    @Test
+    fun `a margin that eats the whole budget still yields a working band`() {
+        // 512 rows of margin costs 84 MB whatever else happens. Refusing to stack would be worse
+        // than being slow, so the floor takes over and the cost is the session's, not the code's.
+        val rows = TiledStacker.registerRowsFor(w, 512)
+        assertTrue(rows >= 16, "got $rows")
+        assertTrue(bytes(rows, 512) < 100L * 1024 * 1024, "even the floor must not be extravagant")
+    }
+
+    @Test
+    fun `a large margin still leaves rows to work with`() {
+        // Refusing to stack because the session rotated a lot would be worse than being slow.
+        assertTrue(TiledStacker.registerRowsFor(w, 512) >= 16)
+    }
+
+    @Test
+    fun `the register band is even, whatever the margin`() {
+        for (margin in listOf(4, 63, 137, 224, 511)) {
+            assertEquals(0, TiledStacker.registerRowsFor(w, margin) % 2)
+        }
+    }
+}

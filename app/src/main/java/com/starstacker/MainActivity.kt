@@ -996,6 +996,7 @@ class MainActivity : ComponentActivity() {
                             root = getExternalFilesDir(null) ?: filesDir,
                             frames = frames.coerceAtLeast(8),
                             iso = iso,
+                            probeOnly = handoff,
                             log = log,
                         )
 

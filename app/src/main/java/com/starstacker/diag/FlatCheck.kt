@@ -49,31 +49,72 @@ object FlatCheck {
         root: File,
         frames: Int,
         iso: Int,
+        /**
+         * Shoot one frame, report what it sees, and stop.
+         *
+         * A go/no-go before committing sixteen frames and a library write. The thing that decides
+         * whether a flat is any good is what is in front of the lens, and that is the one thing
+         * neither this nor the validity checks can arrange — so it is worth *looking* first. The
+         * probe is left on disk to be pulled and examined.
+         */
+        probeOnly: Boolean = false,
         log: (String) -> Unit,
     ) {
         log("flats: point the camera at an evenly lit blank surface — a white screen will do")
         val scratch = File(root, "flat-capture").apply {
-            listFiles()?.forEach { it.delete() }
+            if (!probeOnly) listFiles()?.forEach { it.delete() }
             mkdirs()
         }
 
         try {
-            // The probe. Short, because an indoor screen is far brighter than the sky this camera
-            // is usually pointed at, and starting long would clip and tell us nothing.
-            val probeNs = PROBE_EXPOSURE_NS
-            val probe = shoot(access, cameraId, iso, probeNs, scratch, "probe.dng", log) ?: return
-            val metadata = DngReader.readMetadata(probe)
-            val black = metadata.blackLevels.filter { it.isFinite() }.average().takeIf { it.isFinite() } ?: 0.0
-            val white = metadata.whiteLevel ?: 65535
-            val peak = brightEnd(probe)
-            log(
-                "flats: probe at %.1f ms — bright end %.0f of %d (%.0f%% of full scale)".format(
-                    probeNs / 1e6, peak, white, 100 * (peak - black) / (white - black),
-                ),
+            // Metering, iterated rather than guessed once.
+            //
+            // The first version fired a single 2 ms probe and scaled from it, and on a real screen
+            // that came back at **2% of full scale** — the corners reading 1 ADU, which is noise.
+            // Every number derived from that frame was meaningless, and the check duly blamed the
+            // user's screen for the code's exposure. The response is linear, so one correction
+            // usually lands it; what was missing was the willingness to look again.
+            var exposureNs = PROBE_EXPOSURE_NS
+            var probe: File? = null
+            var metadata = DngReader.readMetadata(
+                shoot(access, cameraId, iso, exposureNs, scratch, "probe.dng", log) ?: return,
             )
+            var black = 0.0
+            var white = 65535
+            var peak = 0.0
 
-            val scale = ((white - black) * TARGET_PEAK) / (peak - black).coerceAtLeast(1.0)
-            val exposureNs = (probeNs * scale).toLong().coerceIn(MIN_EXPOSURE_NS, MAX_EXPOSURE_NS)
+            for (attempt in 1..MAX_PROBES) {
+                val file = File(scratch, "probe.dng")
+                metadata = DngReader.readMetadata(file)
+                black = metadata.blackLevels.filter { it.isFinite() }.average()
+                    .takeIf { it.isFinite() } ?: 0.0
+                white = metadata.whiteLevel ?: 65535
+                peak = brightEnd(file)
+                val fraction = (peak - black) / (white - black)
+                log(
+                    "flats: probe %d at %.1f ms — bright end %.0f of %d (%.0f%% of full scale)".format(
+                        attempt, exposureNs / 1e6, peak, white, fraction * 100,
+                    ),
+                )
+                probe = file
+
+                if (fraction in USABLE_LOW..USABLE_HIGH || attempt == MAX_PROBES) break
+
+                val scale = (TARGET_PEAK / fraction).coerceIn(1.0 / MAX_STEP, MAX_STEP)
+                val next = (exposureNs * scale).toLong().coerceIn(MIN_EXPOSURE_NS, MAX_EXPOSURE_NS)
+                if (next == exposureNs) break
+                exposureNs = next
+                shoot(access, cameraId, iso, exposureNs, scratch, "probe.dng", log) ?: return
+            }
+
+            val settled = probe ?: return
+            if (probeOnly) {
+                report(settled, black, white, log)
+                log("flats: use --ei exposureMs ${(exposureNs / 1_000_000).coerceAtLeast(1)} if you shoot now")
+                log("flats: probe kept at ${settled.path}")
+                return
+            }
+
             log("flats: shooting $frames at %.1f ms".format(exposureNs / 1e6))
 
             val planes = mutableListOf<ShortArray>()
@@ -122,8 +163,86 @@ object FlatCheck {
                 log("flats: the library refused the write")
             }
         } finally {
-            scratch.listFiles()?.forEach { it.delete() }
-            scratch.delete()
+            if (!probeOnly) {
+                scratch.listFiles()?.forEach { it.delete() }
+                scratch.delete()
+            }
+        }
+    }
+
+    /**
+     * What one probe frame says about the setup, before sixteen more are spent on it.
+     *
+     * The three questions a person standing in front of a screen actually needs answered: is it
+     * bright enough, is it even, and is there anything in the frame that is not the screen.
+     */
+    private fun report(file: File, black: Double, white: Int, log: (String) -> Unit) {
+        val image = DngReader.read(file)
+        val w = image.metadata.width
+        val h = image.metadata.height
+        val full = (white - black).coerceAtLeast(1.0)
+        val box = (minOf(w, h) / 8).coerceAtLeast(8)
+
+        fun patch(left: Int, top: Int): Double {
+            var sum = 0.0
+            var n = 0
+            for (y in top until minOf(top + box, h)) {
+                for (x in left until minOf(left + box, w)) {
+                    sum += image.sample(x, y) - black
+                    n++
+                }
+            }
+            return if (n == 0) 0.0 else sum / n
+        }
+
+        val centre = patch(w / 2 - box / 2, h / 2 - box / 2)
+        val corners = listOf(
+            patch(0, 0) to "top-left",
+            patch(w - box, 0) to "top-right",
+            patch(0, h - box) to "bottom-left",
+            patch(w - box, h - box) to "bottom-right",
+        )
+        val corner = corners.map { it.first }.average()
+
+        log("flats: centre %.0f ADU (%.0f%% of full scale)".format(centre, 100 * centre / full))
+        corners.forEach { (v, name) ->
+            log("flats:   %-13s %6.0f ADU  (%.2f× the centre)".format(name, v, v / centre))
+        }
+        if (corner > 0) log("flats: falloff %.2f×".format(centre / corner))
+
+        val spread = (corners.maxOf { it.first } - corners.minOf { it.first }) / corner
+        log("flats: corner-to-corner spread %.0f%%".format(spread * 100))
+        val falloff = if (corner > 0) centre / corner else 0.0
+        when {
+            centre / full > 0.9 -> log("flats: VERDICT — clipping. Move back or dim the screen.")
+            centre / full < 0.05 ->
+                log("flats: VERDICT — far too dark. Is the screen actually white and facing the lens?")
+            centre < corner ->
+                log("flats: VERDICT — the corners are brighter than the centre. That is not a flat.")
+
+            // Checked before the corner spread, because it is the failure a screen actually
+            // produces and the spread is a symptom of it. A lens does two to four times; this
+            // camera does 4.4× measured against the sky (§1.41). Anything far above that is the
+            // *source* falling off, not the lens: hold a phone close to a panel and the centre of
+            // the frame is the nearest point of it while the corners are further away and seen at
+            // a steep angle, so inverse-square and cosine pile on top of the vignette.
+            //
+            // Using it would over-correct the corners by the excess — amplifying their noise and
+            // leaving a bright halo. Worse than no flat at all.
+            falloff > MAX_USABLE_FALLOFF -> {
+                log("flats: VERDICT — %.1f× falloff is the setup, not the lens.".format(falloff))
+                log("flats:   A lens does 2–4×; this one measured 4.4× against the sky.")
+                log("flats:   Either back off until the panel is far away and still fills the")
+                log("flats:   frame, or put a diffuser right on the lens — two or three layers of")
+                log("flats:   white t-shirt, or a sheet of printer paper — and light that instead.")
+                log("flats:   A twilight sky is the easy answer when there is one.")
+            }
+
+            spread > 0.25 ->
+                log("flats: VERDICT — the light is one-sided (%.0f%%). Centre the lens on the screen.".format(spread * 100))
+            spread > 0.12 ->
+                log("flats: VERDICT — usable, but the light is a little uneven (%.0f%%).".format(spread * 100))
+            else -> log("flats: VERDICT — good. Even, well lit, nothing in the way.")
         }
     }
 
@@ -181,8 +300,27 @@ object FlatCheck {
      */
     private const val TARGET_PEAK = 0.55
 
-    /** Short enough not to clip against a screen at arm's length. */
+    /**
+     * Where the metering starts. Short on purpose — clipping tells you nothing about how far over
+     * you are, while a dark frame still says how far under — and it climbs from here.
+     */
     private const val PROBE_EXPOSURE_NS = 2_000_000L
+
+    /** Probes before giving up. Linear response means two is usually one more than needed. */
+    private const val MAX_PROBES = 4
+
+    /** Close enough to [TARGET_PEAK] that another probe would not improve the answer. */
+    private const val USABLE_LOW = 0.30
+    private const val USABLE_HIGH = 0.80
+
+    /** A cap per step, so one noise-level reading cannot ask for a thousandfold jump. */
+    private const val MAX_STEP = 64.0
+
+    /**
+     * Above this the illumination is falling off faster than any lens does, so the flat would be
+     * measuring the light source rather than the camera. Six times is generous: this lens is 4.4×.
+     */
+    private const val MAX_USABLE_FALLOFF = 6.0
 
     private const val MIN_EXPOSURE_NS = 100_000L
     private const val MAX_EXPOSURE_NS = 2_000_000_000L

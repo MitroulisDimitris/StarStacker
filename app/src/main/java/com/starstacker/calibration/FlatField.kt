@@ -198,7 +198,9 @@ object FlatField {
             ratio < 1.0 ->
                 warnings += "the corners are brighter than the centre — this is not a flat field"
             ratio > MAX_FALLOFF ->
-                warnings += "%.1f× falloff is more than a lens does; is something covering it?"
+                warnings += ("%.1f× falloff is more than a lens does — the light source is falling " +
+                    "off, not the camera. A panel held close does this: the frame's centre is the " +
+                    "nearest part of it and the corners are further away and at an angle.")
                     .format(ratio)
         }
         // A corner that differs wildly from its opposite means the illumination was one-sided,

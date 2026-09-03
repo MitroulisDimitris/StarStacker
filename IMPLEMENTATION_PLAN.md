@@ -2532,6 +2532,77 @@ knowing before any image is corrected by it.
 
 ---
 
+## 1.44 The flat, shot and applied — and 38% of the field gone — 2026-09-04
+
+T-8.3 run on the phone. **The flat works, and the picture is transformed.** It also cost 38% of the
+frame, and that is not understood yet.
+
+### Getting a usable flat took three attempts, and two of them were code bugs
+
+**The metering gave up after one shot.** The probe fired at 2 ms — about five stops under for an
+indoor screen — came back at **2% of full scale** with the corners reading 1 ADU of pure noise, and
+the check then blamed the user's screen for the code's exposure. It now iterates: 2 ms → 45.9 ms →
+52%, settled in two probes. The response is linear, so one correction lands it; what was missing was
+the willingness to look again.
+
+**Then it misdiagnosed a real problem.** Against a laptop screen the probe measured **14× falloff**
+with a smooth, edgeless radial profile — the screen filled the frame and nothing was in the way. But
+§1.41 had already measured this lens at **4.4× from the sky**, which is uniform and at infinity and
+therefore the truth. The extra 3× is the panel being *close*: the centre of the frame is the nearest
+point of it, the corners are further away and seen at a steep angle, so inverse-square and cosine
+pile on top of the vignette. Dividing by that would have over-corrected the corners threefold. The
+verdict said "the light is one-sided"; it now checks falloff first and says what is actually wrong.
+
+**A sheet of paper over the lens fixed it.** Falloff **3.77×**, corner spread 9%, verdict good — and
+crucially it now agrees with the sky measurement, so two independent measurements of this lens
+concur. Sixteen frames, none rejected, no warnings, **3.98× falloff** stored.
+
+That agreement is the thing worth keeping, and so is the reason a diffuser works: it sits *at* the
+lens, so it is uniform across the whole field regardless of what is beyond it.
+
+### What it did to the picture
+
+| | before the flat | after |
+|---|---|---|
+| sky, per channel | 8.2 / 16.8 / 11.9 ADU | **13.2 / 12.9 / 13.2** |
+| the corner | a dark blob | gone |
+
+The channels equalising is the flat doing what only a flat can: correcting per-photosite response,
+which is colour-dependent because the falloff is. The stretched result went from a recognisable star
+field with a shadow in the corner to **thousands of stars with the Milky Way's dust lanes legible
+across it**.
+
+### A fourth memory failure, from the same missing habit
+
+The first attempt died in the register pass: `OutOfMemoryError, target footprint 536870912`. Adding
+a 50 MB flat beside the 50 MB dark was the last straw, but the real fault was older —
+`registerRowsFor` divided its 64 MB budget by **one** three-channel float array and asked for 1365
+rows, which at a 224-row margin is an 1815-row band across **five** buffers: 216 MB. It fitted until
+it did not.
+
+The budget now counts every buffer, with a test that asserts it at every margin a session can
+produce. **This is the fourth time separately-documented numbers have gone unadded** (§1.38, §1.39,
+§1.41). The habit that would have caught all four is arithmetic on the whole working set before
+allocating any of it, and it is worth adopting as a rule rather than a fourth apology.
+
+### The regression: 38% of the field
+
+The crop went from **3887×2828 at (168, 209)** to **2804×2417 at (876, 476)**. The left edge moved
+in by 708 px, and registration displaces at most ~220 rows and ~100 columns — so this is not the
+frames drifting apart.
+
+**Two things changed between the runs**: the flat is now applied, and the register band went from
+1365 output rows to 232. Either could be responsible and they have not been separated. The crop is
+"the largest rectangle every one of the 114 frames covered", so something is reducing per-pixel
+coverage — but the flat cannot introduce `NaN` here, its minimum gain being 0.193 against a 0.05
+hole threshold, and the band geometry checks out on paper for interior bands. The cause is
+genuinely open.
+
+**Isolating it is one 13-minute run** with the flat disabled and the small band kept. Until that is
+done, the flat's benefit is being bought at a price nobody chose.
+
+---
+
 ## 2. Decisions
 
 | ID | Decision | Rationale | Reversal cost |
@@ -4074,9 +4145,16 @@ changes whether someone can run one without being surprised.
   **The validity checks are the task**, and one bit during the build: **saturation must be judged at
   the bright end, not the median** — a vignetted flat's median is far below its centre, so a frame
   whose centre is clipping passes a median test, and a clipped flat *inverts* the vignette.
-  *Remaining:* **no flat has been shot.** `--es diag flats` needs the phone and a bright even
-  surface. The number to watch is whether the measured falloff agrees with the ≈4.4× §1.41 inferred
-  from the sky. And Settings still says `Calibration — None, Phase 6`, which is no longer true.
+  **Shot and applied 2026-09-04** (§1.44). Sixteen frames through a sheet of paper over the lens,
+  none rejected, **3.98× falloff** against the **4.4×** §1.41 inferred independently from the sky —
+  two measurements of this lens agreeing is what makes it trustworthy. Applied, the session's sky
+  went from **8.2/16.8/11.9 ADU** per channel to **13.2/12.9/13.2**, and the corner blob is gone.
+  **Getting there took three attempts and two were code bugs**: the metering gave up after one probe
+  five stops under and blamed the user's screen, and the verdict then misread a 14× falloff — the
+  panel being close, not the lens — as one-sided light.
+  *Remaining:* **the crop lost 38% of the field** in the same run (§1.44), cause not yet isolated
+  between the flat and the register-band change. And Settings still says `Calibration — None,
+  Phase 6`, which is no longer true.
   **Promoted in importance 2026-09-03 (§1.41): this is the largest remaining lever on image
   quality.** The measured background is 21.2 ADU at the centre and 4.8 in the corners — a fourfold
   radial falloff on a sky that is only 12 ADU above the dark. T-7.1's polynomial takes the residual
@@ -4274,6 +4352,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-09-04 | **The flat, shot and applied — and 38% of the field gone (§1.44).** T-8.3 run on the phone: sixteen frames through a sheet of paper over the lens, none rejected, **3.98× falloff** against the **4.4×** §1.41 inferred independently from the sky. Applied, the session's sky went from **8.2/16.8/11.9 ADU** per channel to **13.2/12.9/13.2** and the corner blob vanished; the stretched result went from a star field with a shadow in it to thousands of stars with the Milky Way's dust lanes legible. **Two of the three attempts failed on code, not setup**: the metering gave up after one probe five stops under, came back at 2% of full scale, and blamed the user's screen; then the verdict read a 14× falloff as one-sided light when it was the panel being close — inverse-square and cosine on top of the vignette — which the sky measurement had already ruled out. A diffuser *at* the lens fixed it, because it is uniform across the field whatever is beyond it. **A fourth memory failure**: `registerRowsFor` divided its 64 MB budget by one buffer and asked for a band needing 216 MB across five; adding the flat was the last straw. Every buffer is now counted and tested. **And a regression**: the crop fell from 3887×2828 to 2804×2417 — 38% of the field, the left edge moving in 708 px, far more than registration displaces. Two things changed at once and they have not been separated. 645 JVM tests. |
 | 2026-09-04 | **The calibration library, and a flat that is shot once (§1.43).** T-8.3, which §1.41 promoted to the largest remaining lever on image quality. **The applying half already existed** — `DngFrameSource` has read `flats/` since §1.34 and `Calibration` has divided by one since T-5.2, both tested — and *nothing had ever written a flat frame*; the only reference to `SessionLayout.FLATS` in the app was the reader. **Per camera rather than per session**, because vignetting is a property of the lens: darks belong to a night and a flat does not, and shooting flats every night is the thing that makes people stop shooting flats. A session's own flats still win when it has them. Keyed on camera id and honestly not on focus or ISO, both recorded so a later version can tell; a flat of the wrong size is refused rather than resampled, since interpolating a per-photosite measurement blends colours. **The validity checks are the task, and one bit during the build**: saturation has to be judged at the bright end rather than the median, because a vignetted flat's median sits far below its centre, so a frame whose centre is already clipping sails through a median test — and a clipped flat is exactly what *inverts* the vignette. Stored as a single-channel float TIFF through `LinearMaster`, so the user can open their own flat in Siril and see whether it looks like a lens. **No flat has been shot yet**: `--es diag flats` needs the phone and a bright even surface, and the number to watch is whether the directly measured falloff agrees with the ≈4.4× §1.41 inferred from the sky. 641 JVM tests. |
 | 2026-09-03 | **The picture, on the phone, with a slider (§1.42).** T-7.5 and T-7.6, walked on the device rather than reasoned about: opened the session, tapped through to the result, dragged the strength from 55% to 94% and watched the sky lift, saved, and found the file in `Pictures/StarStacker` — confirmed by `content query` on MediaStore, not by looking. **Two resolutions is the whole design**: the master is read back decimated to ~1024 px so a slider movement re-renders 9 MB rather than 132, and the full frame is rendered once on Save. Decimated rather than averaged, deliberately — averaging would reduce the noise, so the stretch measured on the preview would not be the one the full render needs and the slider would lie about what it set. Every render restarts from the linear master, which is what makes it a slider rather than a ratchet. `LinearMaster` can now read its own output, strictly: it checks compression, channels and `SampleFormat` and refuses anything else, because there is one producer and tolerance here would be inventing support for files that do not exist. **And the list was lying** — a session with a master in it still read `Captured`. The badge is now `Stacked`, and an unstacked one is `Stack now`, which is the action the prototype specified and §6.5 promised would return. The thumbnail is still a placeholder, and T-6.1 is finally unblocked because there is a JPEG to put in it. 622 JVM tests. |
 | 2026-09-03 | **The auto-edit, and a picture that says flats are not optional (§1.41).** T-7.1–T-7.4 built and run: **the app has produced a photograph** — stars, the Milky Way, and cloud lit orange down one side, as `master/stack_stretched.jpg` beside the linear master. The order is the design: gradient first because everything after reads the background; neutralise *then* balance, because equalising backgrounds makes the sky grey and equalising bright ends makes the stars white; **one stretch measured on luminance**, since per-channel would silently undo the balance; saturation last, because on linear data a boost is invisible in the shadows and violent in the highlights. **The finding: the background is vignetting, not a gradient.** Measured at **21.2 ADU centre against 4.8 in the corners** — a fourfold radial falloff, which is the lens. Falloff follows `cos⁴`, so fourth order is the lowest that holds its shape, and the residuals agree exactly: 8.5 ADU peak-to-peak at degree 2, 4.0 at degree 4. The default moved from 2 to 4 and the JPEG more than doubled. **And it is still not enough**: the sky is only 12 ADU above the dark, so 4 ADU is a third of the picture after the stretch, and no polynomial will do better because past `cos⁴` the freedom describes the subject. **Flats (T-8.3) are now the largest remaining lever on image quality.** Also: the preview OOM'd on its first run, because the stacker held 192 MB of tile buffers it had finished with and the edit then copied the data twice — the third time this project has run out of memory from numbers written in separate files and never added up. 614 JVM tests. |
