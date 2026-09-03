@@ -46,6 +46,8 @@ object StackCheck {
         root: File,
         sessionName: String?,
         settings: StackSettings = StackSettings(),
+        /** T-8.3's per-camera library, so a session with no flats of its own still gets one. */
+        calibrationRoot: File? = null,
         log: (String) -> Unit,
     ) {
         log("stack: Phase 3 against real DNGs, from ${root.path}")
@@ -70,7 +72,7 @@ object StackCheck {
             )
         }
 
-        val result = StackJob(session, settings, Resample, BitmapJpeg).run(
+        val result = StackJob(session, settings, Resample, BitmapJpeg, calibrationRoot).run(
             onProgress = { progress ->
                 // One line per tile is too many for a hundred-tile stack, and none is too few for
                 // something that runs for minutes.

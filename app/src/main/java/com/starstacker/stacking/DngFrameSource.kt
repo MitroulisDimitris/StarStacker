@@ -1,5 +1,6 @@
 package com.starstacker.stacking
 
+import com.starstacker.calibration.CalibrationLibrary
 import com.starstacker.dng.DngMetadata
 import com.starstacker.dng.DngReader
 import com.starstacker.registration.RigidTransform
@@ -128,6 +129,15 @@ class DngFrameSource private constructor(
             log: SessionLog,
             settings: StackSettings = StackSettings(),
             masterBudgetBytes: Long = DEFAULT_MASTER_BUDGET,
+            /**
+             * T-8.3 — where per-camera calibration lives, or null for none.
+             *
+             * A session's own `flats/` wins when it has any, because a flat shot that night with
+             * that focus is a better measurement than a stored one. Otherwise the library's flat
+             * for this camera is used, which is the whole point of having a library: vignetting is
+             * a property of the lens, so it is shot once rather than nightly.
+             */
+            calibrationRoot: File? = null,
         ): DngFrameSource? {
             val skipped = mutableListOf<String>()
             val lightsDir = File(sessionDir, SessionLayout.LIGHTS)
@@ -215,7 +225,10 @@ class DngFrameSource private constructor(
                     "they are stacked where they lie"
             }
 
-            val masters = mastersFor(sessionDir, log, geometry, masterBudgetBytes, skipped)
+            val masters = mastersFor(
+                sessionDir, log, geometry, masterBudgetBytes, skipped, calibrationRoot,
+                log.info.cameraId,
+            )
 
             return DngFrameSource(
                 readers = readers,
@@ -306,6 +319,8 @@ class DngFrameSource private constructor(
             geometry: DngMetadata,
             budgetBytes: Long,
             notes: MutableList<String>,
+            calibrationRoot: File?,
+            cameraId: String,
         ): Calibration.Masters {
             val darkFiles = log.darks
                 .map { File(File(sessionDir, SessionLayout.DARKS), it.fileName) }
@@ -316,7 +331,11 @@ class DngFrameSource private constructor(
                 .orEmpty()
 
             val dark = masterDarkOf(darkFiles, geometry, budgetBytes, "dark", notes)
+            // The session's own flats first — shot that night at that focus, they beat a stored
+            // one. The library is the fallback, and on this device it is the usual case, because
+            // nobody shoots flats every night (T-8.3).
             val flat = masterDarkOf(flatFiles, geometry, budgetBytes, "flat", notes)
+                ?: libraryFlat(calibrationRoot, cameraId, geometry, notes)
 
             // Hot pixels come out of the master dark, so there are none without one. The threshold
             // is relative to the dark's own spread, which is why it cannot be precomputed.
@@ -330,6 +349,31 @@ class DngFrameSource private constructor(
                 rawFlat = flat,
                 hotPixels = hot,
             )
+        }
+
+        /**
+         * The stored flat for this camera, when the session brought none of its own.
+         *
+         * Silent when there is no library and explicit when there is one that does not fit: a flat
+         * of the wrong size is refused rather than resampled, because a flat is a per-photosite
+         * measurement and interpolating it would blend neighbouring sites of different colours.
+         */
+        private fun libraryFlat(
+            root: File?,
+            cameraId: String,
+            geometry: DngMetadata,
+            notes: MutableList<String>,
+        ): FloatArray? {
+            if (root == null) return null
+            val stored = CalibrationLibrary.info(root, cameraId) ?: return null
+            val flat = CalibrationLibrary.flat(root, cameraId, geometry.width, geometry.height)
+            if (flat == null) {
+                notes += "the stored flat for camera $cameraId is ${stored.width}x${stored.height}," +
+                    " not ${geometry.width}x${geometry.height}"
+                return null
+            }
+            notes += "flat from the calibration library — ${flat.info.describe()}"
+            return flat.pixels
         }
 
         /**

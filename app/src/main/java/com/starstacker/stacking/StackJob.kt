@@ -42,6 +42,8 @@ class StackJob(
      * writes the linear master and no preview, which is what a JVM test wants.
      */
     private val stretched: StretchedImage? = null,
+    /** T-8.3 — the per-camera calibration library, or null to use only the session's own frames. */
+    private val calibrationRoot: File? = null,
 ) {
 
     /** Where a run has got to. Coarse on purpose — see [Progress.percent]. */
@@ -170,7 +172,9 @@ class StackJob(
             return failed(name, "session.json will not parse: ${it.message}", onProgress)
         }
 
-        val source = DngFrameSource.open(sessionDir, log, settings)
+        val source = DngFrameSource.open(
+            sessionDir, log, settings, calibrationRoot = calibrationRoot,
+        )
             ?: return failed(name, "no frames to stack", onProgress)
 
         source.use { frames ->

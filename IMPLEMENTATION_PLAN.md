@@ -2450,6 +2450,88 @@ finish, and that is worth having once T-8.3's flats make the background worth fi
 
 ---
 
+## 1.43 The calibration library, and a flat that is shot once — 2026-09-04
+
+§1.41 ended by promoting T-8.3 from housekeeping to *the largest remaining lever on image quality*,
+on a measurement: the sky reads **21.2 ADU at the centre against 4.8 in the corners**, on a sky only
+12 ADU above the dark. Built.
+
+### The half that already existed
+
+`DngFrameSource` has read `flats/` and built a master flat since §1.34, and `Calibration` has
+divided by one since T-5.2, both tested. **Nothing has ever written a flat frame.** The folder is
+created empty in every session and stays that way; the only reference to `SessionLayout.FLATS` in
+the whole app was the reader. So this task was never about applying flats — it was about producing
+one.
+
+### Per camera, not per session, and that is the whole design
+
+Darks belong to a night: dark current depends on temperature and exposure, and **D-16** matches them
+by shooting them at the end of the same run. **A flat does not.** Vignetting is a property of the
+lens, fixed until the lens is cleaned, so one flat serves every session that camera ever shoots.
+
+The practical form of that argument is blunter: **shooting flats every night is the thing that makes
+people stop shooting flats.** Once, indoors, against a bright screen, and every session afterwards
+is corrected. FR-9.1 anticipated it — a session's `flats/` may be *"a symlink/copy from calibration
+library, or reference"*.
+
+A session's own flats still win when it has them, because a flat shot that night at that focus is a
+better measurement than a stored one. The library is the fallback, and on this device it is the
+expected case.
+
+### What is keyed on, and what is honestly not
+
+The key is the **camera id**. Not focus — dust shadows do move with it, but the falloff that
+dominates does not, and demanding a flat per focus position means never having one. Not ISO or
+exposure, because a normalised flat is a *shape* rather than a level. Both simplifications are
+recorded in the metadata, so a later version can tell whether a stored flat was shot anywhere near
+the session using it.
+
+A flat of the wrong size is **refused rather than resampled**: it is a per-photosite measurement,
+and interpolating it would blend neighbouring sites of different colours — T-5.2's error arriving
+from the calibration side.
+
+### The validity checks are the task
+
+Building the median is four lines. Everything else is refusing frames that would make the master
+worse than no master, and **every way of getting this wrong is silent**.
+
+The one that bit during the build: **saturation has to be judged at the bright end, not the
+middle.** The first version tested the frame's median, and a test with a deliberately clipped frame
+caught it — a vignetted flat's median is far below its centre, so at 4× falloff a frame whose centre
+is already clipping passes a median test comfortably. And the clipped centre is precisely what
+inverts the vignette: the middle reads *lower* than it should relative to the corners, so dividing
+by it brightens the middle of every frame it ever touches. It now tests the 99.9th percentile.
+
+The others: too dim is noise, and dividing by noise adds noise. A frame that differs from its
+fellows was shot as the light changed — individually fine, collectively wrong. Corners brighter
+than the centre is not a flat field at all but a photograph of something. Corners differing from
+each other means one-sided illumination, which bakes a gradient into every frame forever.
+
+### Stored as a TIFF, on purpose
+
+Through `LinearMaster`, now generalised to one channel — the same writer and therefore the same
+tested `SampleFormat` handling as the linear master. A float TIFF rather than a private blob costs
+nothing and buys something real: **the user can open their own flat in Siril and see whether it
+looks like a lens.**
+
+### What has not happened
+
+**No flat has been shot.** `--es diag flats` is written — one probe frame, one exposure correction
+to put the bright end at 55% of full scale, then sixteen frames and a master — and it needs the
+phone plus a bright, even, featureless surface in front of it, which is the one thing a diagnostic
+cannot check on its own.
+
+The number to watch when it runs: the falloff it measures directly should agree with the **≈4.4×**
+§1.41 inferred indirectly from the sky background. If it does, the two independent measurements of
+this lens agree and the flat can be trusted. If it does not, one of them is wrong and that is worth
+knowing before any image is corrected by it.
+
+**And there is no screen for it.** The capture is a diagnostic; Settings still shows
+`Calibration — None, Phase 6`, which is now untrue.
+
+---
+
 ## 2. Decisions
 
 | ID | Decision | Rationale | Reversal cost |
@@ -3983,7 +4065,18 @@ changes whether someone can run one without being surprised.
   dual-gain switch point, ISO invariance point (FR-4.1.1) → replaces the OEM-profile provider
   behind the T-3.1 interface.
 - [ ] **T-8.2** Hot/warm pixel map (FR-4.1.2), quick and deep variants.
-- [ ] **T-8.3** Flat field capture + validity checks (FR-4.1.3).
+- [~] **T-8.3** Flat field capture + validity checks (FR-4.1.3).
+  **Built 2026-09-04** as `calibration/FlatField.kt` and `calibration/CalibrationLibrary.kt`,
+  19 tests, §1.43. **Per camera rather than per session**, because vignetting is a property of the
+  lens and shooting flats every night is what makes people stop shooting flats; a session's own
+  `flats/` still wins when it has any. Stored as a single-channel float TIFF through `LinearMaster`,
+  so it can be opened in Siril and checked.
+  **The validity checks are the task**, and one bit during the build: **saturation must be judged at
+  the bright end, not the median** — a vignetted flat's median is far below its centre, so a frame
+  whose centre is clipping passes a median test, and a clipped flat *inverts* the vignette.
+  *Remaining:* **no flat has been shot.** `--es diag flats` needs the phone and a bright even
+  surface. The number to watch is whether the measured falloff agrees with the ≈4.4× §1.41 inferred
+  from the sky. And Settings still says `Calibration — None, Phase 6`, which is no longer true.
   **Promoted in importance 2026-09-03 (§1.41): this is the largest remaining lever on image
   quality.** The measured background is 21.2 ADU at the centre and 4.8 in the corners — a fourfold
   radial falloff on a sky that is only 12 ADU above the dark. T-7.1's polynomial takes the residual
@@ -4181,6 +4274,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-09-04 | **The calibration library, and a flat that is shot once (§1.43).** T-8.3, which §1.41 promoted to the largest remaining lever on image quality. **The applying half already existed** — `DngFrameSource` has read `flats/` since §1.34 and `Calibration` has divided by one since T-5.2, both tested — and *nothing had ever written a flat frame*; the only reference to `SessionLayout.FLATS` in the app was the reader. **Per camera rather than per session**, because vignetting is a property of the lens: darks belong to a night and a flat does not, and shooting flats every night is the thing that makes people stop shooting flats. A session's own flats still win when it has them. Keyed on camera id and honestly not on focus or ISO, both recorded so a later version can tell; a flat of the wrong size is refused rather than resampled, since interpolating a per-photosite measurement blends colours. **The validity checks are the task, and one bit during the build**: saturation has to be judged at the bright end rather than the median, because a vignetted flat's median sits far below its centre, so a frame whose centre is already clipping sails through a median test — and a clipped flat is exactly what *inverts* the vignette. Stored as a single-channel float TIFF through `LinearMaster`, so the user can open their own flat in Siril and see whether it looks like a lens. **No flat has been shot yet**: `--es diag flats` needs the phone and a bright even surface, and the number to watch is whether the directly measured falloff agrees with the ≈4.4× §1.41 inferred from the sky. 641 JVM tests. |
 | 2026-09-03 | **The picture, on the phone, with a slider (§1.42).** T-7.5 and T-7.6, walked on the device rather than reasoned about: opened the session, tapped through to the result, dragged the strength from 55% to 94% and watched the sky lift, saved, and found the file in `Pictures/StarStacker` — confirmed by `content query` on MediaStore, not by looking. **Two resolutions is the whole design**: the master is read back decimated to ~1024 px so a slider movement re-renders 9 MB rather than 132, and the full frame is rendered once on Save. Decimated rather than averaged, deliberately — averaging would reduce the noise, so the stretch measured on the preview would not be the one the full render needs and the slider would lie about what it set. Every render restarts from the linear master, which is what makes it a slider rather than a ratchet. `LinearMaster` can now read its own output, strictly: it checks compression, channels and `SampleFormat` and refuses anything else, because there is one producer and tolerance here would be inventing support for files that do not exist. **And the list was lying** — a session with a master in it still read `Captured`. The badge is now `Stacked`, and an unstacked one is `Stack now`, which is the action the prototype specified and §6.5 promised would return. The thumbnail is still a placeholder, and T-6.1 is finally unblocked because there is a JPEG to put in it. 622 JVM tests. |
 | 2026-09-03 | **The auto-edit, and a picture that says flats are not optional (§1.41).** T-7.1–T-7.4 built and run: **the app has produced a photograph** — stars, the Milky Way, and cloud lit orange down one side, as `master/stack_stretched.jpg` beside the linear master. The order is the design: gradient first because everything after reads the background; neutralise *then* balance, because equalising backgrounds makes the sky grey and equalising bright ends makes the stars white; **one stretch measured on luminance**, since per-channel would silently undo the balance; saturation last, because on linear data a boost is invisible in the shadows and violent in the highlights. **The finding: the background is vignetting, not a gradient.** Measured at **21.2 ADU centre against 4.8 in the corners** — a fourfold radial falloff, which is the lens. Falloff follows `cos⁴`, so fourth order is the lowest that holds its shape, and the residuals agree exactly: 8.5 ADU peak-to-peak at degree 2, 4.0 at degree 4. The default moved from 2 to 4 and the JPEG more than doubled. **And it is still not enough**: the sky is only 12 ADU above the dark, so 4 ADU is a third of the picture after the stretch, and no polynomial will do better because past `cos⁴` the freedom describes the subject. **Flats (T-8.3) are now the largest remaining lever on image quality.** Also: the preview OOM'd on its first run, because the stacker held 192 MB of tile buffers it had finished with and the edit then copied the data twice — the third time this project has run out of memory from numbers written in separate files and never added up. 614 JVM tests. |
 | 2026-09-02 | **Threads, and what Amdahl had to say (§1.40).** The lever §1.33 predicted and §1.38 measured: **19.1 minutes to 12.9**. Every pixel of the combine is independent, so which core computes which *cannot* change the answer — and that was checked past the fixtures, on the real session: the threaded master is **sha256-identical** to the serial one, the same 131 909 712 bytes. Each worker gets its own `SigmaClip`, since it carries a scratch buffer and counters, and the counters are summed at the end; a factory handing every worker the same stateful instance is **refused rather than raced**, because it would give a master subtly different every run. Seven cores bought only 1.76× of the combine, and solving Amdahl says why: the combine is **~429 s of parallel compute beside ~425 s of serial I/O and gather**, so the compute fell to about 60 s and the rest did not move. §1.38's profile was right about the arithmetic and never saw the other half, because its pool stays in cache — *the thing that was measured is not the whole of the thing that runs*, which is §1.34's lesson in a third costume. The tile budget also doubled to 192 MB now that `largeHeap` exists, taking tiles from 8 rows to 17 and halving the reads. What is left: the register pass (290 s, still serial and now the largest single block) and overlapping the combine's reads with its compute. 599 JVM tests. |

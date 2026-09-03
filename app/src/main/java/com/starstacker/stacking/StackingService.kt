@@ -140,7 +140,10 @@ class StackingService : Service() {
                 continue
             }
 
-            val job = StackJob(dir, settings, Resample, com.starstacker.edit.BitmapJpeg)
+            val job = StackJob(
+                dir, settings, Resample, com.starstacker.edit.BitmapJpeg,
+                calibrationRoot = getExternalFilesDir(null) ?: filesDir,
+            )
             val result = job.run(
                 cancelled = { cancelRequested.get() },
                 onProgress = { p ->

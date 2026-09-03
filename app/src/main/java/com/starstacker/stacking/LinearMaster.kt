@@ -215,18 +215,24 @@ object LinearMaster {
         height: Int,
         region: Region = Region(0, 0, width, height),
         description: String = "",
+        /**
+         * Three for a master, **one for a flat** — a flat is a per-photosite measurement in CFA
+         * layout (T-5.2 divides by it before the debayer), so it has no colour to interleave.
+         */
+        channels: Int = TiledStacker.CHANNELS,
     ): Long {
+        require(channels == 1 || channels == TiledStacker.CHANNELS) { "channels must be 1 or 3" }
         require(region.left >= 0 && region.top >= 0) { "negative origin" }
         require(region.width > 0 && region.height > 0) { "empty region" }
         require(region.left + region.width <= width) { "region runs past the frame's width" }
         require(region.top + region.height <= height) { "region runs past the frame's height" }
-        require(master.size >= width.toLong() * height * TiledStacker.CHANNELS) {
-            "master is smaller than ${width}x$height"
+        require(master.size >= width.toLong() * height * channels) {
+            "master is smaller than ${width}x${height}x$channels"
         }
 
         file.parentFile?.mkdirs()
         BufferedOutputStream(file.outputStream(), STREAM_BUFFER).use { out ->
-            val bytes = writeTo(out, master, width, region, description)
+            val bytes = writeTo(out, master, width, region, description, channels)
             out.flush()
             return bytes
         }
@@ -238,8 +244,8 @@ object LinearMaster {
         frameWidth: Int,
         region: Region,
         description: String,
+        channels: Int,
     ): Long {
-        val channels = TiledStacker.CHANNELS
         val bytesPerRow = region.width.toLong() * channels * 4
         val pixelBytes = bytesPerRow * region.height
 
@@ -247,8 +253,8 @@ object LinearMaster {
         val descriptionBytes = (description.take(MAX_DESCRIPTION) + NUL_TERMINATOR)
             .toByteArray(Charsets.US_ASCII)
         val softwareBytes = (SOFTWARE + NUL_TERMINATOR).toByteArray(Charsets.US_ASCII)
-        val bitsBytes = shortsOf(32, 32, 32)
-        val sampleFormatBytes = shortsOf(FLOAT_SAMPLES, FLOAT_SAMPLES, FLOAT_SAMPLES)
+        val bitsBytes = shortsOf(*IntArray(channels) { 32 })
+        val sampleFormatBytes = shortsOf(*IntArray(channels) { FLOAT_SAMPLES })
 
         // Tags ascending, as TIFF requires — a reader is entitled to binary-search them.
         val tagCount = 13
@@ -308,9 +314,14 @@ object LinearMaster {
 
         scalar(TAG_IMAGE_WIDTH, LONG, region.width.toLong())
         scalar(TAG_IMAGE_LENGTH, LONG, region.height.toLong())
-        run(TAG_BITS_PER_SAMPLE, SHORT, 3, bitsBytes)
+        run(TAG_BITS_PER_SAMPLE, SHORT, channels, bitsBytes)
         scalar(TAG_COMPRESSION, SHORT, COMPRESSION_NONE)
-        scalar(TAG_PHOTOMETRIC, SHORT, PHOTOMETRIC_RGB)
+        // One channel is greyscale, and saying RGB would have a reader looking for two more.
+        scalar(
+            TAG_PHOTOMETRIC,
+            SHORT,
+            if (channels == 1) PHOTOMETRIC_GREY else PHOTOMETRIC_RGB,
+        )
         run(TAG_IMAGE_DESCRIPTION, ASCII, descriptionBytes.size, descriptionBytes)
         // The strip offset is not known until the payload is complete, so its four value bytes are
         // patched below rather than guessed at.
@@ -323,7 +334,7 @@ object LinearMaster {
         run(TAG_SOFTWARE, ASCII, softwareBytes.size, softwareBytes)
         // 339, last because it is the highest tag number and essential because without it the
         // reader assumes unsigned integers — see the class note.
-        run(TAG_SAMPLE_FORMAT, SHORT, 3, sampleFormatBytes)
+        run(TAG_SAMPLE_FORMAT, SHORT, channels, sampleFormatBytes)
 
         val entryBytes = entries.toByteArray()
         check(entryBytes.size == tagCount * 12) {
@@ -384,7 +395,13 @@ object LinearMaster {
     }
 
     /** A linear master read back off disk, possibly decimated — see [read]. */
-    class Image(val pixels: FloatArray, val width: Int, val height: Int, val step: Int) {
+    class Image(
+        val pixels: FloatArray,
+        val width: Int,
+        val height: Int,
+        val step: Int,
+        val channels: Int = TiledStacker.CHANNELS,
+    ) {
         val description: String get() = "${width}x$height" + if (step > 1) " (1 in $step)" else ""
     }
 
@@ -445,16 +462,17 @@ object LinearMaster {
             // The three that say this is ours: uncompressed, three channels, and — the one that
             // matters — IEEE float rather than the integers TIFF assumes by default.
             if (tags[TAG_COMPRESSION]?.toInt() != COMPRESSION_NONE.toInt()) return null
-            if (tags[TAG_SAMPLES_PER_PIXEL]?.toInt() != TiledStacker.CHANNELS) return null
+            val channels = tags[TAG_SAMPLES_PER_PIXEL]?.toInt() ?: return null
+            if (channels != 1 && channels != TiledStacker.CHANNELS) return null
             if (!isFloat(buffer, tags, counts, header.size)) return null
 
             val step = stepFor(width, maxWidth)
             val outW = (width + step - 1) / step
             val outH = (height + step - 1) / step
-            val rowBytes = width.toLong() * TiledStacker.CHANNELS * 4
+            val rowBytes = width.toLong() * channels * 4
             val row = ByteArray(rowBytes.toInt())
-            val floats = FloatArray(width * TiledStacker.CHANNELS)
-            val out = FloatArray(outW * outH * TiledStacker.CHANNELS)
+            val floats = FloatArray(width * channels)
+            val out = FloatArray(outW * outH * channels)
 
             for (oy in 0 until outH) {
                 raf.seek(start + (oy.toLong() * step) * rowBytes)
@@ -464,14 +482,12 @@ object LinearMaster {
                     .asFloatBuffer()
                     .get(floats)
                 for (ox in 0 until outW) {
-                    val from = ox * step * TiledStacker.CHANNELS
-                    val to = (oy * outW + ox) * TiledStacker.CHANNELS
-                    out[to] = floats[from]
-                    out[to + 1] = floats[from + 1]
-                    out[to + 2] = floats[from + 2]
+                    val from = ox * step * channels
+                    val to = (oy * outW + ox) * channels
+                    for (c in 0 until channels) out[to + c] = floats[from + c]
                 }
             }
-            Image(out, outW, outH, step)
+            Image(out, outW, outH, step, channels)
         }
     }
 
@@ -523,6 +539,9 @@ object LinearMaster {
 
     private const val COMPRESSION_NONE = 1L
     private const val PHOTOMETRIC_RGB = 2L
+
+    /** Greyscale, zero is black — what a single-channel flat is. */
+    private const val PHOTOMETRIC_GREY = 1L
     private const val PLANAR_CHUNKY = 1L
 
     /** IEEE floating point. The value that decides whether this file reads as data or as noise. */

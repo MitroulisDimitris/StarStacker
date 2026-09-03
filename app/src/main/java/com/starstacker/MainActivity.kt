@@ -41,6 +41,7 @@ import com.starstacker.device.Qualification
 import com.starstacker.diag.CameraLifecycleCheck
 import com.starstacker.diag.CombineCheck
 import com.starstacker.diag.FieldDiagnostics
+import com.starstacker.diag.FlatCheck
 import com.starstacker.diag.FieldLog
 import com.starstacker.diag.StackCheck
 import com.starstacker.diag.StorageBenchmark
@@ -986,6 +987,18 @@ class MainActivity : ComponentActivity() {
                         // measured on the phone before JNI is considered.
                         "combine" -> CombineCheck.run(log)
 
+                        // T-8.3 — shoot a flat field into the calibration library. Needs a
+                        // bright even surface in front of the lens, which is the one thing a
+                        // diagnostic cannot check for us.
+                        "flats" -> FlatCheck.run(
+                            access = access,
+                            cameraId = MAIN_CAMERA_ID,
+                            root = getExternalFilesDir(null) ?: filesDir,
+                            frames = frames.coerceAtLeast(8),
+                            iso = iso,
+                            log = log,
+                        )
+
                         // Phase 3 end to end, on real DNGs from a real session. The one thing no
                         // JVM test can reach: OpenCV, a strip table DngCreator wrote, and the cost
                         // of the whole chain on a phone that is warming up while it runs.
@@ -993,13 +1006,14 @@ class MainActivity : ComponentActivity() {
                             root = SessionRoot.fileRoot(this@MainActivity),
                             sessionName = sessionName,
                             settings = StackingSettings.defaults(this@MainActivity),
+                            calibrationRoot = getExternalFilesDir(null) ?: filesDir,
                             log = log,
                         )
 
                         else ->
                             log(
                                 "unknown diag mode '$mode' — expected framing, focus, lens, solve, " +
-                                    "lifecycle, warp, combine or stack",
+                                    "lifecycle, warp, combine, stack or flats",
                             )
                     }
                 }
