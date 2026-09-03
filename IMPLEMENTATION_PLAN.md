@@ -2601,6 +2601,9 @@ genuinely open.
 **Isolating it is one 13-minute run** with the flat disabled and the small band kept. Until that is
 done, the flat's benefit is being bought at a price nobody chose.
 
+Tracked as **OI-25**, and it is the **first thing to do next session** — there is no point
+calibrating anything further while the output is being silently cropped.
+
 ---
 
 ## 2. Decisions
@@ -4152,8 +4155,8 @@ changes whether someone can run one without being surprised.
   **Getting there took three attempts and two were code bugs**: the metering gave up after one probe
   five stops under and blamed the user's screen, and the verdict then misread a 14× falloff — the
   panel being close, not the lens — as one-sided light.
-  *Remaining:* **the crop lost 38% of the field** in the same run (§1.44), cause not yet isolated
-  between the flat and the register-band change. And Settings still says `Calibration — None,
+  *Remaining:* **the crop lost 38% of the field** in the same run (§1.44) — tracked as **OI-25**,
+  and the first thing to do next session. And Settings still says `Calibration — None,
   Phase 6`, which is no longer true.
   **Promoted in importance 2026-09-03 (§1.41): this is the largest remaining lever on image
   quality.** The measured background is 21.2 ADU at the centre and 4.8 in the corners — a fourfold
@@ -4196,18 +4199,38 @@ changes whether someone can run one without being surprised.
 ## 14. Open issues
 
 **Needed-by** is the phase that cannot finish without a resolution.
-**Status: 14 resolved · 8 open pending measurement · 2 deferred · 0 blocking.**
+**Status: 14 resolved · 8 open pending measurement · 2 deferred · 1 blocking.**
 An issue is only "open" here if it can actually change the shape of the code. Questions with an
 obvious default and a defined experiment are listed with that default already in force, so they
 never block work.
 
 ### Blocking now
 
-*Nothing is blocked, on a decision or on anything else.* Every issue below carries its default
-already in force and an experiment that closes it, which is what makes them trackable rather than
-blocking. Three of them — **OI-20**, **OI-21** and **OI-11** — are answered together by a single
-45-minute session on a clear night, which is also Checkpoint 1C. **OI-5** is answerable indoors and
-has been outstanding longest.
+> **OI-25 is the first thing to do next session.** It is one 13-minute run and it decides whether
+> the flat that §1.44 just proved works is costing 38% of the frame to use. Everything else in
+> Phase 6 can wait behind it, because there is no point calibrating further while the output is
+> being silently cropped.
+
+**OI-25 — the stack lost 38% of the field, and two changes could have done it.**
+Measured 2026-09-04 (§1.44): the crop fell from **3887×2828 at (168, 209)** to **2804×2417 at
+(876, 476)** between two runs of the same 114 frames. The left edge moved in by **708 px**, where
+registration displaces at most ~220 rows and ~100 columns — so the frames are not drifting apart,
+something is reducing per-pixel coverage.
+
+**Two things changed in that run and they were not separated:** the calibration flat is now applied
+(T-8.3), and `registerRowsFor`'s budget fix took the register band from 1365 output rows to 232.
+Neither has an obvious mechanism — the flat's minimum gain is 0.193 against a 0.05 hole threshold so
+it cannot be introducing `NaN`, and the band arithmetic checks out on paper for interior bands — so
+the cause is genuinely open rather than merely unconfirmed.
+
+**The experiment:** one stack of `2026-08-23_0006` with the flat removed from the library and the
+small register band kept. If the crop returns to 3887×2828 the band is responsible; if it stays at
+2804×2417 the flat is. Thirteen minutes, and it halves the problem either way.
+
+*Everything else below carries its default already in force and an experiment that closes it, which
+is what makes them trackable rather than blocking.* Three of them — **OI-20**, **OI-21** and
+**OI-11** — are answered together by a single 45-minute session on a clear night, which is also
+Checkpoint 1C. **OI-5** is answerable indoors and has been outstanding longest.
 
 ### Open — resolvable only by measurement
 
@@ -4216,6 +4239,7 @@ when the number comes back.
 
 | ID | Issue | Default until measured | Experiment | Needed by |
 |---|---|---|---|---|
+| **OI-25** | **A stack lost 38% of its field** (§1.44). Same 114 frames, crop fell from 3887×2828 to 2804×2417 with the left edge in by 708 px — far more than registration displaces, so per-pixel coverage is dropping somewhere. The flat and the register-band size both changed in that run | **Blocking.** No default: the output is being cropped by something nobody chose | One stack with the flat removed and the small band kept. Crop returns to 3887×2828 ⇒ the band; stays at 2804×2417 ⇒ the flat. 13 minutes | 6 |
 | **OI-19** | **Will the hidden cameras also *capture*, not just open?** All five IDs open, but only camera 0 has completed a real RAW capture. An ID that opens can still fail session configuration or never deliver a frame | Assume the tele and ultrawide work; verify before promising them to the user | Run the T-1.4 capture against IDs 2, 3 and 4 — cheap now the harness exists | 7 |
 | **OI-20** | **Screen-off capture needs a foreground service, not just a surface-free session.** Measured 2026-08-17: the framing loop is frozen a few seconds after the screen goes off, process still alive. D-22 dissolved the *surface* problem but not the *lifecycle* one (§1.7) | Assume the `camera`-type FGS of D-12 is sufficient — it is what the type exists for | T-3.6's own acceptance: a 45-minute sequence with the screen off and the app backgrounded, then repeated with battery optimisation left on | 1C |
 | **OI-22** | **A configured session occasionally delivers no frames at all.** Measured 2026-08-18 (§1.16): one session in 78 returned 0 of 2 frames inside a 12.4 s budget, immediately after a rapid open/close loop, while the other 77 configured in ~100 ms and delivered at once. It opens, configures and closes cleanly — only the frames never arrive, so nothing throws and nothing downstream is told anything is wrong | Accept and log. At 1 in 78 it costs a framing preview that stays black for a few seconds, not a session | Re-run `--es diag lifecycle --ei sessions 30` several times over and count. If it reproduces, the remedy is a deadline on the first frame and a re-configure, which is a shape change to `FramingSession` rather than a tuning constant | 1B |
