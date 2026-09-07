@@ -3834,6 +3834,35 @@ changes whether someone can run one without being surprised.
   registration has never run under a real sky, and retiring a proven path for an unproven one on
   the same day would be a poor trade. And nothing here has run a real session.
 
+- [ ] **T-4.7** **Whole-image registration fallback**, when asterism matching fails (**new
+  2026-09-07**).
+  **Why, measured rather than supposed.** Session `2026-09-06_0118` is a crescent moon setting over
+  a harbour — shoreline, boats, a moonglade on the water. The app registered 33 of 67 lights and
+  rejected 34 with `could not be registered against the reference frame`. **Whole-image phase
+  correlation puts every one of those 67 frames at a shift of exactly (0, 0)**: the session is
+  aligned to the pixel and there was nothing to fail at.
+  **The scene has two rigid bodies** and star matching cannot serve both: the shore is static and
+  dominates the frame, while the moon and its glade move ~26 px over 79 s (against 48 px predicted
+  for sidereal at this camera's 24.8 ″/px, so the right order). Worse, the detector's *brightest*
+  detections all sit in a ~30 px blob — the moon's disc — and only **34% of detections are stable
+  to 3 px** between frames, because most of the rest are shimmering water. Detections grew
+  1297 → 1668 as glare thickened, and RANSAC eventually lost its quorum.
+  **DeepSkyStacker fails on the same data and fails worse**: it chose a 13-detection frame as its
+  reference, matched 0–4 stars per frame, excluded every light, and produced no `autosave.tif` at
+  all — 0 of 67 against our 33.
+  **The fix:** when `AsterismMatcher`/`RigidFit` cannot produce a transform, fall back to
+  `phaseCorrelate` over the binned plane and accept a translation-only result. It reads the whole
+  image rather than a point list, so a detection set that reshuffles cannot defeat it; OpenCV
+  already ships it and `Resample` already links OpenCV, so the cost is a small amount of code on a
+  path that only runs when the current method has given up. **A normal star session pays nothing.**
+  *Acceptance:* `2026-09-06_0118` keeps **67 of 67**, with the landscape sharp and the moon smeared
+  — which is the right answer for a nightscape. A sharp *moon* is the opposite alignment and a
+  separate mode (T-10.x).
+  *Note the honest limit:* a translation-only fallback cannot correct field rotation, so it must be
+  recorded as such in `session.json` and must not be used to rescue a rotating star field that
+  asterism matching should have handled. It is for scenes that do not move, not for scenes the
+  matcher found hard.
+
 ## 8. Phase 3 — Stacking
 
 - [x] **T-5.1** Add OpenCV Android SDK (D-7); warp/transform primitives only.
@@ -4407,6 +4436,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-09-07 | **T-4.7 raised: a whole-image registration fallback.** Session `2026-09-06_0118` — a crescent moon over a harbour — had 34 of 67 lights rejected as unregisterable, and **whole-image phase correlation puts all 67 at a shift of exactly (0,0)**: they were aligned to the pixel and there was nothing to fail at. The scene holds two rigid bodies, a static shore that dominates the frame and a moon moving ~26 px over 79 s, and star matching can serve only one; the detector's brightest points all sit on the moon's disc and only 34% of detections are stable to 3 px, the rest being shimmering water. **DeepSkyStacker fails on the same frames and fails worse** — it picked a 13-detection reference, matched 0–4 stars per frame, excluded every light and never wrote an `autosave.tif`, 0 of 67 against our 33. The fallback is `phaseCorrelate` on the failure path only, so a normal session pays nothing. Also recorded: a proposed "the field is not moving, so this is not sky" sanity check was **abandoned before it was written** — it would have fired on this very session and declared 32 good frames broken. |
 | 2026-09-04 | **The flat, shot and applied — and 38% of the field gone (§1.44).** T-8.3 run on the phone: sixteen frames through a sheet of paper over the lens, none rejected, **3.98× falloff** against the **4.4×** §1.41 inferred independently from the sky. Applied, the session's sky went from **8.2/16.8/11.9 ADU** per channel to **13.2/12.9/13.2** and the corner blob vanished; the stretched result went from a star field with a shadow in it to thousands of stars with the Milky Way's dust lanes legible. **Two of the three attempts failed on code, not setup**: the metering gave up after one probe five stops under, came back at 2% of full scale, and blamed the user's screen; then the verdict read a 14× falloff as one-sided light when it was the panel being close — inverse-square and cosine on top of the vignette — which the sky measurement had already ruled out. A diffuser *at* the lens fixed it, because it is uniform across the field whatever is beyond it. **A fourth memory failure**: `registerRowsFor` divided its 64 MB budget by one buffer and asked for a band needing 216 MB across five; adding the flat was the last straw. Every buffer is now counted and tested. **And a regression**: the crop fell from 3887×2828 to 2804×2417 — 38% of the field, the left edge moving in 708 px, far more than registration displaces. Two things changed at once and they have not been separated. 645 JVM tests. |
 | 2026-09-04 | **The calibration library, and a flat that is shot once (§1.43).** T-8.3, which §1.41 promoted to the largest remaining lever on image quality. **The applying half already existed** — `DngFrameSource` has read `flats/` since §1.34 and `Calibration` has divided by one since T-5.2, both tested — and *nothing had ever written a flat frame*; the only reference to `SessionLayout.FLATS` in the app was the reader. **Per camera rather than per session**, because vignetting is a property of the lens: darks belong to a night and a flat does not, and shooting flats every night is the thing that makes people stop shooting flats. A session's own flats still win when it has them. Keyed on camera id and honestly not on focus or ISO, both recorded so a later version can tell; a flat of the wrong size is refused rather than resampled, since interpolating a per-photosite measurement blends colours. **The validity checks are the task, and one bit during the build**: saturation has to be judged at the bright end rather than the median, because a vignetted flat's median sits far below its centre, so a frame whose centre is already clipping sails through a median test — and a clipped flat is exactly what *inverts* the vignette. Stored as a single-channel float TIFF through `LinearMaster`, so the user can open their own flat in Siril and see whether it looks like a lens. **No flat has been shot yet**: `--es diag flats` needs the phone and a bright even surface, and the number to watch is whether the directly measured falloff agrees with the ≈4.4× §1.41 inferred from the sky. 641 JVM tests. |
 | 2026-09-03 | **The picture, on the phone, with a slider (§1.42).** T-7.5 and T-7.6, walked on the device rather than reasoned about: opened the session, tapped through to the result, dragged the strength from 55% to 94% and watched the sky lift, saved, and found the file in `Pictures/StarStacker` — confirmed by `content query` on MediaStore, not by looking. **Two resolutions is the whole design**: the master is read back decimated to ~1024 px so a slider movement re-renders 9 MB rather than 132, and the full frame is rendered once on Save. Decimated rather than averaged, deliberately — averaging would reduce the noise, so the stretch measured on the preview would not be the one the full render needs and the slider would lie about what it set. Every render restarts from the linear master, which is what makes it a slider rather than a ratchet. `LinearMaster` can now read its own output, strictly: it checks compression, channels and `SampleFormat` and refuses anything else, because there is one producer and tolerance here would be inventing support for files that do not exist. **And the list was lying** — a session with a master in it still read `Captured`. The badge is now `Stacked`, and an unstacked one is `Stack now`, which is the action the prototype specified and §6.5 promised would return. The thumbnail is still a placeholder, and T-6.1 is finally unblocked because there is a JPEG to put in it. 622 JVM tests. |
