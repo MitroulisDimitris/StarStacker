@@ -4206,10 +4206,10 @@ never block work.
 
 ### Blocking now
 
-> **OI-25 is the first thing to do next session.** It is one 13-minute run and it decides whether
-> the flat that §1.44 just proved works is costing 38% of the frame to use. Everything else in
-> Phase 6 can wait behind it, because there is no point calibrating further while the output is
-> being silently cropped.
+> **OI-25 is half answered as of 2026-09-07: it is the flat, not the register band.** The same
+> session stacked with the small band and the flat removed came back at **exactly** the original
+> 3887×2828 at (168, 209); with the flat it is 2804×2417 at (876, 476), twice each and
+> deterministic. What remains is *why*, and the instrumentation to find out is now in the code.
 
 **OI-25 — the stack lost 38% of the field, and two changes could have done it.**
 Measured 2026-09-04 (§1.44): the crop fell from **3887×2828 at (168, 209)** to **2804×2417 at
@@ -4223,9 +4223,40 @@ Neither has an obvious mechanism — the flat's minimum gain is 0.193 against a 
 it cannot be introducing `NaN`, and the band arithmetic checks out on paper for interior bands — so
 the cause is genuinely open rather than merely unconfirmed.
 
-**The experiment:** one stack of `2026-08-23_0006` with the flat removed from the library and the
-small register band kept. If the crop returns to 3887×2828 the band is responsible; if it stays at
-2804×2417 the flat is. Thirteen minutes, and it halves the problem either way.
+**The experiment, run 2026-09-07: the flat is responsible.** With the flat moved aside and the
+small band kept, the crop came back at exactly 3887×2828 at (168, 209) and the sky at
+8.2/16.8/11.9 — the original numbers to the digit. The register band is innocent.
+
+**What the instrumentation then said, and what it ruled out.** `StackJob` now reports the coverage
+map and the gather's two skip reasons:
+
+    coverage: 94.6% of pixels saw all 114 frames, 683291 short, min 1
+    dropped samples: 0 non-finite, 137246410 sentinel, 4944916 near-sentinel kept
+
+- **Zero non-finite.** The flat is not producing `NaN`, which the flat itself confirms: its minimum
+  gain is 0.193 against a hole threshold of 0.05, so *no* pixel can take that branch. Four separate
+  attempts to pin this on `Calibration.apply` were all wrong.
+- **The shortfall is a border ring, not scattered.** The note prints an example only for a
+  deficient pixel in the central half of the frame, and printed none — so the centre is clean. An
+  earlier reading of the bounding box `(0,0)-(4095,3071)` as "scattered everywhere" was wrong: a
+  ring has exactly that bounding box.
+- **So the flat thickens or reshapes the uncovered ring**, and it does so through the sentinel path
+  rather than through non-finite values.
+
+**What is still unexplained.** Only 683 291 pixels are deficient, yet the crop gives up 5 805 644 —
+so the deficient set must reach inward asymmetrically rather than sitting in a uniform band. And no
+mechanism is known by which dividing by a smooth gain of 0.193–2.31 changes which pixels the warp
+marks as outside the source, since the geometry is identical in both runs.
+
+**The next experiment, one 17-minute run:** the same two counters with the flat removed, so the
+sentinel count can be diffed against 137 246 410. If it is materially lower, the flat is adding
+sentinel hits and the question becomes how; if it is the same, the loss is in the coverage
+bookkeeping rather than in the gather.
+
+**Worth considering either way:** requiring *every* frame to have reached a pixel is a brittle rule.
+One badly-drifted frame dictates the crop for all 114, and a threshold of, say, 95% of frames would
+recover most of the field and be closer to what a desktop stacker does. That is a design change and
+should wait until the mechanism is understood, so that it is a decision rather than a workaround.
 
 *Everything else below carries its default already in force and an experiment that closes it, which
 is what makes them trackable rather than blocking.* Three of them — **OI-20**, **OI-21** and
@@ -4239,7 +4270,7 @@ when the number comes back.
 
 | ID | Issue | Default until measured | Experiment | Needed by |
 |---|---|---|---|---|
-| **OI-25** | **A stack lost 38% of its field** (§1.44). Same 114 frames, crop fell from 3887×2828 to 2804×2417 with the left edge in by 708 px — far more than registration displaces, so per-pixel coverage is dropping somewhere. The flat and the register-band size both changed in that run | **Blocking.** No default: the output is being cropped by something nobody chose | One stack with the flat removed and the small band kept. Crop returns to 3887×2828 ⇒ the band; stays at 2804×2417 ⇒ the flat. 13 minutes | 6 |
+| **OI-25** | **A stack lost 38% of its field** (§1.44). **Half answered 2026-09-07: the flat causes it, the register band does not** — without the flat the crop returns to exactly 3887×2828. Instrumentation rules out `NaN` (zero non-finite samples; the flat's minimum gain is 0.193 against a 0.05 threshold) and shows the shortfall is a border *ring*, not scattered. No mechanism is yet known by which a smooth gain changes which pixels the warp marks as outside the source | **Blocking.** No default: the output is being cropped by something nobody chose | The same two gather counters with the flat removed, to diff against 137 246 410 sentinel drops. 17 minutes | 6 |
 | **OI-19** | **Will the hidden cameras also *capture*, not just open?** All five IDs open, but only camera 0 has completed a real RAW capture. An ID that opens can still fail session configuration or never deliver a frame | Assume the tele and ultrawide work; verify before promising them to the user | Run the T-1.4 capture against IDs 2, 3 and 4 — cheap now the harness exists | 7 |
 | **OI-20** | **Screen-off capture needs a foreground service, not just a surface-free session.** Measured 2026-08-17: the framing loop is frozen a few seconds after the screen goes off, process still alive. D-22 dissolved the *surface* problem but not the *lifecycle* one (§1.7) | Assume the `camera`-type FGS of D-12 is sufficient — it is what the type exists for | T-3.6's own acceptance: a 45-minute sequence with the screen off and the app backgrounded, then repeated with battery optimisation left on | 1C |
 | **OI-22** | **A configured session occasionally delivers no frames at all.** Measured 2026-08-18 (§1.16): one session in 78 returned 0 of 2 frames inside a 12.4 s budget, immediately after a rapid open/close loop, while the other 77 configured in ~100 ms and delivered at once. It opens, configures and closes cleanly — only the frames never arrive, so nothing throws and nothing downstream is told anything is wrong | Accept and log. At 1 in 78 it costs a framing preview that stays black for a few seconds, not a session | Re-run `--es diag lifecycle --ei sessions 30` several times over and count. If it reproduces, the remedy is a deadline on the first frame and a re-configure, which is a shape change to `FramingSession` rather than a tuning constant | 1B |

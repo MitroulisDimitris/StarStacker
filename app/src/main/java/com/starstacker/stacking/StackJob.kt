@@ -255,6 +255,12 @@ class StackJob(
                 return failed(name, "could not write the master: ${it.message}", onProgress, notes)
             }
 
+            // OI-25 — where coverage is being lost. Reasoning about this on paper has now failed
+            // twice, so the run says what it actually saw.
+            coverageMap?.let { notes += coverageNote(it, frames.width, frames.height, frames.count) }
+            notes += "dropped samples: ${stacker.skippedNonFinite} non-finite, " +
+                "${stacker.skippedSentinel} sentinel, ${stacker.nearSentinel} near-sentinel kept"
+
             // The tile buffers are 192 MB and the stack is over; the auto-edit below needs the
             // room far more than the stacker needs to keep them (§1.41).
             stacker.release()
@@ -350,6 +356,52 @@ class StackJob(
         }.getOrElse {
             notes += "the preview failed: ${it.message ?: it::class.simpleName}"
             null
+        }
+    }
+
+    /**
+     * What the coverage map looks like, for OI-25.
+     *
+     * The crop is "the largest rectangle every frame reached", so when it shrinks, coverage has
+     * fallen below the frame count somewhere. This says where and by how much, rather than leaving
+     * it to be deduced.
+     */
+    private fun coverageNote(coverage: ShortArray, width: Int, height: Int, frames: Int): String {
+        var full = 0L
+        var zero = 0L
+        var min = Int.MAX_VALUE
+        var left = width; var right = -1; var top = height; var bottom = -1
+        var sampleX = -1; var sampleY = -1; var sampleN = -1
+        for (y in 0 until height) {
+            val row = y * width
+            for (x in 0 until width) {
+                val n = coverage[row + x].toInt()
+                if (n < min) min = n
+                when {
+                    n >= frames -> full++
+                    else -> {
+                        if (n == 0) zero++
+                        if (x < left) left = x
+                        if (x > right) right = x
+                        if (y < top) top = y
+                        if (y > bottom) bottom = y
+                        // A pixel well inside the frame is the interesting one: an edge shortfall
+                        // is geometry, an interior one is not.
+                        if (sampleN < 0 && x in width / 4..(3 * width / 4) && y in height / 4..(3 * height / 4)) {
+                            sampleX = x; sampleY = y; sampleN = n
+                        }
+                    }
+                }
+            }
+        }
+        val short = width.toLong() * height - full
+        return buildString {
+            append("coverage: %.1f%% of pixels saw all %d frames".format(100.0 * full / (width.toLong() * height), frames))
+            append(", %d short".format(short))
+            if (zero > 0) append(", $zero saw none")
+            append(", min $min")
+            if (right >= 0) append(", shortfall spans (${left},${top})-(${right},${bottom})")
+            if (sampleN >= 0) append(", e.g. ($sampleX,$sampleY) saw $sampleN")
         }
     }
 

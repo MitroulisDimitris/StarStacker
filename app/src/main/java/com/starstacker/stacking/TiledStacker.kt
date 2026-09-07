@@ -215,6 +215,9 @@ class TiledStacker(
         // Decided once for the whole stack rather than per pixel, and a stack with nothing to
         // weight — every stack before T-5.5, and every session whose log has no quality metrics —
         // pays neither the memory nor the branch.
+        skippedNonFinite = 0
+        skippedSentinel = 0
+        nearSentinel = 0
         weights = FloatArray(frames.count) { frames.weight(it) }
         // One per worker, made up front so the hot loop never allocates and so the caller can read
         // their counters back afterwards.
@@ -422,7 +425,11 @@ class TiledStacker(
             if (got <= 0) return false
             for (c in 0 until got * w * CHANNELS) {
                 val v = band[c]
-                if (!v.isFinite() || v == Resample.UNCOVERED.toFloat()) continue
+                // OI-25 — the two reasons a sample is dropped, counted separately, because four
+                // attempts to deduce which one was firing all failed.
+                if (!v.isFinite()) { skippedNonFinite++; continue }
+                if (v == Resample.UNCOVERED.toFloat()) { skippedSentinel++; continue }
+                if (v > -1.5f && v < -0.5f) nearSentinel++
                 val n = counts[c]
                 if (n < frames.count) {
                     store[c * frames.count + n] = v
@@ -543,6 +550,16 @@ class TiledStacker(
         counts = IntArray(0)
         origin = IntArray(0)
     }
+
+    /** OI-25 — why samples were dropped in the gather. Reset per stack. */
+    var skippedNonFinite = 0L
+        private set
+    var skippedSentinel = 0L
+        private set
+
+    /** Values close to the sentinel but not equal to it — cubic undershoot rather than a border. */
+    var nearSentinel = 0L
+        private set
 
     /** T-5.5, resolved once per stack in [stack]. */
     private var weights: FloatArray = FloatArray(0)
