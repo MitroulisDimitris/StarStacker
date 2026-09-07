@@ -2725,15 +2725,81 @@ else is in the frame to expose. **Moon in scene** is the one this section exists
 brackets — a short set metered on the disc, a long set metered on the ground, **interleaved** rather
 than shot back to back so both sets share a time centre.
 
-Interleaving matters because the moon *moves*: ~26 px over 79 s on this camera, measured in §1.45's
-own session. Shooting all the short frames and then all the long ones would put the disc in a
-different place in each master, and the composite would have to guess which is right. Alternating
-them means the two stacks have the same reference epoch and the disc lands where the ground says it
-should.
+Interleaving matters because the moon *moves* — but **how fast is geometry, not a constant**, and
+nothing here may hard-code it:
+
+    drift (px/s) = rate (arcsec/s) / (206265 x pitch / focal)
+    rate         = 15.041 x cos(dec)  -/+ 0.55 for the moon's own eastward motion,
+                   and heavily reduced near the horizon by refraction
+
+The worst case is the sidereal rate at the celestial equator, and it lands very differently on
+different lenses — which is exactly why it is computed per camera from the profile rather than
+looked up:
+
+| camera | arcsec/px | worst-case drift | 1 px takes |
+|---|---|---|---|
+| tele | 24.8 | 0.606 px/s | 1.6 s |
+| main | 74.2 | 0.203 px/s | 4.9 s |
+| ultrawide | 112.8 | 0.133 px/s | 7.5 s |
+
+**The 2026-09-06 measurement is an instance, not the rule.** Its 26 px over 79 s works out at
+8.16 arcsec/s — **54% of sidereal** — because the moon sat at 2° altitude where refraction compresses
+vertical motion severely. Reusing that figure on a moon high in the sky would underestimate the
+drift by nearly half. It belongs in the plan as evidence that the rate varies, not as a number to
+build on.
 
 Registration between the two masters needs no ephemeris and no new maths: **the moon is a clipped
-white blob in the long exposures**, and a clipped blob has a perfectly good centroid. Match it to
-the disc centroid of the short stack and the two layers line up.
+white blob in the long exposures**, and a clipped blob has a perfectly good centroid. Track it in
+*every* long frame, fit the drift, and evaluate at the ground stack's reference epoch — which also
+measures the true rate for that night instead of assuming one.
+
+### Will interleaving actually work?
+
+Three things already measured say the shape is sound, and one is genuinely unknown.
+
+**The short set is nearly free.** Per-frame overhead is **2 ms beyond the exposure** (§4, measured:
+53 frames in 52.0 s at a 1 s sub, the 25 MB DNG write entirely hidden behind the next exposure). So
+120 short frames cost **0.26 s against a 150 s session — 0.2%**. Lucky imaging on the moon is
+essentially a free rider on a nightscape session.
+
+**The drifting moon cleans itself out of the ground stack.** Registered on the static ground, the
+disc sweeps through pixel space, so at any given pixel it is an outlier present in a minority of
+frames — and `SigmaClip` already rejects it. The condition is that the ground set runs long enough
+for the disc to clear its own diameter several times over:
+
+| | disc clears itself | ground set wants |
+|---|---|---|
+| at sidereal, tele | 124 s | ~6 min |
+| at the 2026-09-06 rate | 229 s | ~11 min |
+
+Under that, the moon leaves a smeared streak the composite has to mask around; over it, the sky
+behind the moon comes out clean and the sharp disc drops straight in. **This is computable before
+the shoot** from the profile and a short drift measurement, so it should be shown as a required
+session length rather than discovered afterwards.
+
+**The layers are free.** `LinearMaster` already writes 1 or 3 channels, so a second master is not a
+new format.
+
+**The unknown is per-frame exposure switching.** That 2 ms was measured with a *constant* exposure in
+a repeating request. Alternating 0.13 ms and 2.5 s means a new capture request each frame, and the
+sensor may need to settle. If switching is cheap, strict alternation is fine; if it is not,
+**interleave in blocks** instead:
+
+| switch cost | strict alternation (240x) | blocks of 20 (12x) |
+|---|---|---|
+| 50 ms | 12.0 s — 8% | 0.6 s — 0.4% |
+| 200 ms | 48.0 s — 32% | 2.4 s — 1.6% |
+| 500 ms | 120.0 s — 80% | 6.0 s — 4% |
+
+Blocks preserve what interleaving is actually for — both sets spanning the same interval, so the
+epoch is *interpolated* rather than extrapolated — while cutting the switch count by the block size.
+**So the design is "interleave, with the block size set by a measured switch cost"**, and the
+measurement is OI-26.
+
+*A correction to how this was first written:* consecutive blocks were described as leaving the
+composite "no way to choose" the disc's position. That is too strong. With the blob tracked per
+frame and a drift fitted, back-to-back sets work too — they merely extrapolate across a gap instead
+of interpolating inside one. Interleaving is better, not load-bearing.
 
 The merge is then a feathered luminance mask over the disc — but the mode should hand back **both
 layers as well as the merge**, because a blend is a taste decision and this user finishes in
@@ -4475,18 +4541,29 @@ changes whether someone can run one without being surprised.
   task, moon mode's answer to a landscape is a black frame.**
   - **Two metering targets, one session.** The short set to ~70% of white on the disc (T-11.1); the
     long set metered on the ground exactly as a deep-sky session already is (T-8.3).
-  - **Interleave the sets** — alternate them rather than shooting all of one and then all of the
-    other, so both stacks share a time centre. The moon moves ~26 px over 79 s on this camera
-    (§1.45); consecutive blocks would put the disc in two different places and leave the composite
-    with no way to choose between them.
+  - **Interleave the sets**, so both span the same interval and the composite epoch is
+    interpolated rather than extrapolated. **Block size comes from the measured exposure-switch
+    cost (OI-26)**, not from a guess: the short frames themselves are nearly free at the measured
+    2 ms per-frame overhead (0.2% of a 150 s session), so only switching can make alternation
+    expensive.
+    *Do not hard-code the drift rate.* It is `15.041 x cos(dec)` arcsec/s worst case divided by the
+    profile's own `arcsec/px`, and the 2026-09-06 figure of 26 px over 79 s is **54% of sidereal**
+    because the moon was at 2° altitude — an instance of the geometry, not a constant.
   - **Calibrate them differently.** The ground set is an ordinary long exposure and needs real
     darks, the flat and gradient removal; the short set needs almost none of it. Same pipeline, two
     configurations.
+  - **Tell the user how long the ground set must run.** Registered on the static ground the disc
+    drifts through pixel space, so `SigmaClip` rejects it as an outlier and the sky behind it comes
+    out clean — but only if the set runs several times the disc's own crossing time (~6 min at
+    sidereal on the tele, ~11 min at the rate 2026-09-06 actually saw). Compute it and show it;
+    under it, the composite must mask a streak instead of a disc.
   - *Accept:* a frame holding both a legible ground and an unclipped disc, from a scene whose range
     exceeds what one exposure can carry.
 - [ ] **T-11.10** **Register the two masters to each other.** No ephemeris and no new maths: **the
   moon is a clipped white blob in the long exposures**, and a clipped blob has a good centroid.
-  Match it against the disc centroid of the short stack. Translation-only, as T-11.5.
+  Track it in **every** long frame, fit the drift, and evaluate at the ground stack's reference
+  epoch — which measures the night's true rate as a by-product, rather than assuming one. Match
+  that against the disc centroid of the short stack. Translation-only, as T-11.5.
   *Guard:* if the long set clipped hard enough to bloom past the true limb, the centroid survives
   that but the radius does not — so align on centre, never on edge.
 - [ ] **T-11.11** **Composite, and hand back the layers.** Feathered luminance mask over the disc,
@@ -4509,7 +4586,7 @@ changes whether someone can run one without being surprised.
 ## 14. Open issues
 
 **Needed-by** is the phase that cannot finish without a resolution.
-**Status: 14 resolved · 8 open pending measurement · 2 deferred · 1 blocking.**
+**Status: 14 resolved · 9 open pending measurement · 2 deferred · 1 blocking.**
 An issue is only "open" here if it can actually change the shape of the code. Questions with an
 obvious default and a defined experiment are listed with that default already in force, so they
 never block work.
@@ -4581,6 +4658,7 @@ when the number comes back.
 | ID | Issue | Default until measured | Experiment | Needed by |
 |---|---|---|---|---|
 | **OI-25** | **A stack lost 38% of its field** (§1.44). **Half answered 2026-09-07: the flat causes it, the register band does not** — without the flat the crop returns to exactly 3887×2828. Instrumentation rules out `NaN` (zero non-finite samples; the flat's minimum gain is 0.193 against a 0.05 threshold) and shows the shortfall is a border *ring*, not scattered. No mechanism is yet known by which a smooth gain changes which pixels the warp marks as outside the source | **Blocking.** No default: the output is being cropped by something nobody chose | The same two gather counters with the flat removed, to diff against 137 246 410 sentinel drops. 17 minutes | 6 |
+| **OI-26** | **What does changing exposure between frames cost?** Per-frame overhead is a measured **2 ms** at a *constant* exposure (53 frames in 52.0 s), but T-11.9 alternates 0.13 ms and ~2.5 s, which means a new capture request per frame and possibly a sensor settle. Strict alternation costs 8% at a 50 ms switch and 80% at 500 ms | **Default: interleave in blocks of 20**, which holds the cost under 4% even at a 500 ms switch, while still spanning both sets over the same interval | Time a burst alternating two exposures against a burst at each one alone. Indoors, minutes | 7.5 |
 | **OI-19** | **Will the hidden cameras also *capture*, not just open?** All five IDs open, but only camera 0 has completed a real RAW capture. An ID that opens can still fail session configuration or never deliver a frame | Assume the tele and ultrawide work; verify before promising them to the user | Run the T-1.4 capture against IDs 2, 3 and 4 — cheap now the harness exists | 7 |
 | **OI-20** | **Screen-off capture needs a foreground service, not just a surface-free session.** Measured 2026-08-17: the framing loop is frozen a few seconds after the screen goes off, process still alive. D-22 dissolved the *surface* problem but not the *lifecycle* one (§1.7) | Assume the `camera`-type FGS of D-12 is sufficient — it is what the type exists for | T-3.6's own acceptance: a 45-minute sequence with the screen off and the app backgrounded, then repeated with battery optimisation left on | 1C |
 | **OI-22** | **A configured session occasionally delivers no frames at all.** Measured 2026-08-18 (§1.16): one session in 78 returned 0 of 2 frames inside a 12.4 s budget, immediately after a rapid open/close loop, while the other 77 configured in ~100 ms and delivered at once. It opens, configures and closes cleanly — only the frames never arrive, so nothing throws and nothing downstream is told anything is wrong | Accept and log. At 1 in 78 it costs a framing preview that stays black for a few seconds, not a session | Re-run `--es diag lifecycle --ei sessions 30` several times over and count. If it reproduces, the remedy is a deadline on the first frame and a re-configure, which is a shape change to `FramingSession` rather than a tuning constant | 1B |
@@ -4717,7 +4795,8 @@ to catch them.
 
 | Date | Change |
 |---|---|
-| 2026-09-08 | **Moon mode gets a second exposure: it must expose the ground too (§1.45, T-11.9–T-11.11).** As first proposed the mode metered the disc and would have returned a correct moon on a **black frame**. The scene is simply wider than the sensor: the 2026-09-06 session wanted **2 474.6 ms** for the harbour and **0.13 ms** for the moon, a separation of **19 035× — 14.2 stops**, against 10 stops between this raw's black level of 64 and its white level of 1023. **Stacking closes none of it** — averaging buys `sqrt(N)` in the shadows and nothing in the highlights, and at the moon's exposure a 600 ADU shoreline reads **0.03 ADU** and quantises to black, where the mean of a thousand zeros is still zero. So the mode now has **two shapes**: *disc*, one set, where a black background is the correct answer; and *moon in scene*, two **interleaved** sets so both stacks share a time centre — the disc moves ~26 px over 79 s, so consecutive blocks would disagree about where it is. The two masters register by **the clipped blob's centroid** in the long frames, needing no ephemeris, and ship as **registered layers alongside the merge** because the blend is a taste decision. Also corrected: “calibration nearly vanishes” holds for the disc only — the ground set is an ordinary long exposure wanting darks, flat and gradient removal in full. |
+| 2026-09-08 | **Moon drift is derived, not remembered; and interleaving costed (§1.45, T-11.9, OI-26).** The ~26 px over 79 s from 2026-09-06 had been written into the design as if it were a device constant. It is not: it works out at 8.16 arcsec/s, **54% of sidereal**, because the moon was at 2° altitude where refraction compresses vertical motion — reusing it on a high moon would underestimate the drift by nearly half. The rule is `15.041 × cos(dec)` arcsec/s worst case over the profile's own `arcsec/px`, which is 0.606 px/s on the tele against 0.133 on the ultrawide. **Interleaving then costs almost nothing**: at the measured 2 ms per-frame overhead, 120 short frames are 0.26 s of a 150 s session — 0.2%. What is *not* measured is per-frame exposure switching, since that 2 ms came from a constant exposure; strict alternation costs 8% at a 50 ms switch and 80% at 500 ms, so the design is **interleave in blocks sized by the measured switch cost** (OI-26, default 20, under 4% even at 500 ms). Also found: **the drifting moon cleans itself out of the ground stack** — registered on the static ground it is a per-pixel outlier and `SigmaClip` already rejects it, provided the set runs several times the disc's crossing time (~6 min at sidereal on the tele, ~11 min at 2026-09-06's rate), which the app should require up front rather than let the user discover. **Overclaim corrected:** back-to-back sets were said to leave “no way to choose” the disc's position; with the blob tracked per frame and a drift fitted they work too, merely extrapolating instead of interpolating. Interleaving is better, not load-bearing. |
+| 2026-09-08 | **Moon mode gets a second exposure: it must expose the ground too (§1.45, T-11.9–T-11.11).** As first proposed the mode metered the disc and would have returned a correct moon on a **black frame**. The scene is simply wider than the sensor: the 2026-09-06 session wanted **2 474.6 ms** for the harbour and **0.13 ms** for the moon, a separation of **19 035× — 14.2 stops**, against 10 stops between this raw's black level of 64 and its white level of 1023. **Stacking closes none of it** — averaging buys `sqrt(N)` in the shadows and nothing in the highlights, and at the moon's exposure a 600 ADU shoreline reads **0.03 ADU** and quantises to black, where the mean of a thousand zeros is still zero. So the mode now has **two shapes**: *disc*, one set, where a black background is the correct answer; and *moon in scene*, two **interleaved** sets so both stacks span the same interval and the composite epoch is interpolated rather than extrapolated. The two masters register by **the clipped blob's centroid** in the long frames, needing no ephemeris, and ship as **registered layers alongside the merge** because the blend is a taste decision. Also corrected: “calibration nearly vanishes” holds for the disc only — the ground set is an ordinary long exposure wanting darks, flat and gradient removal in full. |
 | 2026-09-08 | **Moon mode proposed as Phase 7.5 (§1.45).** The 2026-09-06 session clipped 1 597 pixels of the lunar disc flat, and the arithmetic says why: camera 3 at `f/2.55` gathers 18.6× more light than `f/11`, so a correct ISO 400 exposure is **0.13 ms** against the **2 474.6 ms** actually shot — **14.2 stops over**, and still nine stops over after crediting a crescent and 2° of atmospheric extinction. No stacking recovers a clipped pixel. **A mode rather than a setting**, because metering, focus, frame count, registration, quality metric and the edit all differ together. **The camera stays the user's choice** — the mode computes `arcsec/px` from the measured profile, reports the moon's size for every camera the probe found and recommends the largest with that number as the reason (FR-11.3), but never imposes it, because a tight disc and a moon in a landscape are different pictures and nothing here may assume one handset's lens line-up. Exposure is **metered rather than calculated**, reusing `FlatCheck`'s probe loop, because phase and altitude moved the truth five stops on this very session. Lucky imaging falls out of T-5.5's existing keep-best cut given a sharpness metric, which doubles as the focus signal. The open tension is storage: 25 MB a frame for an object filling 0.03% of it. **It does not replace T-4.7** — both need alignment without stars, so the primitive is built once and consumed twice. |
 | 2026-09-07 | **T-4.7 raised: a whole-image registration fallback.** Session `2026-09-06_0118` — a crescent moon over a harbour — had 34 of 67 lights rejected as unregisterable, and **whole-image phase correlation puts all 67 at a shift of exactly (0,0)**: they were aligned to the pixel and there was nothing to fail at. The scene holds two rigid bodies, a static shore that dominates the frame and a moon moving ~26 px over 79 s, and star matching can serve only one; the detector's brightest points all sit on the moon's disc and only 34% of detections are stable to 3 px, the rest being shimmering water. **DeepSkyStacker fails on the same frames and fails worse** — it picked a 13-detection reference, matched 0–4 stars per frame, excluded every light and never wrote an `autosave.tif`, 0 of 67 against our 33. The fallback is `phaseCorrelate` on the failure path only, so a normal session pays nothing. Also recorded: a proposed "the field is not moving, so this is not sky" sanity check was **abandoned before it was written** — it would have fired on this very session and declared 32 good frames broken. |
 | 2026-09-04 | **The flat, shot and applied — and 38% of the field gone (§1.44).** T-8.3 run on the phone: sixteen frames through a sheet of paper over the lens, none rejected, **3.98× falloff** against the **4.4×** §1.41 inferred independently from the sky. Applied, the session's sky went from **8.2/16.8/11.9 ADU** per channel to **13.2/12.9/13.2** and the corner blob vanished; the stretched result went from a star field with a shadow in it to thousands of stars with the Milky Way's dust lanes legible. **Two of the three attempts failed on code, not setup**: the metering gave up after one probe five stops under, came back at 2% of full scale, and blamed the user's screen; then the verdict read a 14× falloff as one-sided light when it was the panel being close — inverse-square and cosine on top of the vignette — which the sky measurement had already ruled out. A diffuser *at* the lens fixed it, because it is uniform across the field whatever is beyond it. **A fourth memory failure**: `registerRowsFor` divided its 64 MB budget by one buffer and asked for a band needing 216 MB across five; adding the flat was the last straw. Every buffer is now counted and tested. **And a regression**: the crop fell from 3887×2828 to 2804×2417 — 38% of the field, the left edge moving in 708 px, far more than registration displaces. Two things changed at once and they have not been separated. 645 JVM tests. |
