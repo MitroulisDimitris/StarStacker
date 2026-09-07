@@ -70,6 +70,7 @@ Two consequences to accept deliberately:
 | **5** | Auto-edit | M6 | Shareable stretched JPEG without a desktop |
 | **6** | Calibration library | M2 | Flats, noise model, hot pixels, intrinsics; Full tier reachable |
 | **7** | Wide-field & second camera | M7 | De-project/re-project; per-camera calibration; recommendation |
+| **7.5** | Moon mode *(proposed §1.45)* | new | A moon that is not clipped: metered short exposures, lucky imaging, aligned on the disc |
 | **8** | Post-v1 | §14 deferred | Dithering, star trails, framing assistance |
 
 **Phases 0 → 1C are the priority.** Everything after 1C is sequenced but not yet scheduled.
@@ -2606,6 +2607,104 @@ calibrating anything further while the output is being silently cropped.
 
 ---
 
+## 1.45 Moon mode, proposed — and why it is a mode rather than a setting — 2026-09-08
+
+Session `2026-09-06_0118` caught a crescent moon over a harbour and **destroyed it**: 1 597 pixels
+of the disc pinned at the sensor's white level of 1023, with the histogram showing a hard spike at
+the top and almost nothing between 200 and 1000 ADU. No amount of stacking recovers a clipped
+pixel. The frames are a fine landscape and a ruined moon.
+
+This proposes the mode that would have prevented it.
+
+### How far out the exposure was, exactly
+
+The moon is not a faint object. It is a sunlit rock at the same distance from the sun as we are, so
+its surface brightness is roughly that of a grey card in daylight — the "Looney 11" rule, `f/11` at
+`1/ISO` seconds.
+
+| | |
+|---|---|
+| camera 3 is `f/2.55`, gathering `(11/2.55)² = 18.6×` more light than `f/11` | **4.22 stops** |
+| so a correct exposure at ISO 100 is | **0.54 ms** |
+| at ISO 400, what the session used | **0.13 ms** |
+| what the session actually shot | **2 474.6 ms** |
+| overexposed by | **18 419× — 14.2 stops** |
+
+Even crediting a thin crescent (~2 stops, because the low sun angle across the surface dims it) and
+2° altitude (~3 stops of atmospheric extinction), it is still **nine stops over**. This is not a
+tuning error. It is the deep-sky exposure engine being pointed at a daylit object, and no session
+planner built around sky background and trailing limits will ever produce the right answer for it.
+
+**That is the argument for a mode rather than a setting.** Every stage differs — metering, focus,
+frame count, registration, quality metric, and the edit — and they differ *together*.
+
+### The sensor can do it, and only one camera should
+
+| camera | focal | f/ | arcsec/px | moon across | min exposure |
+|---|---|---|---|---|---|
+| 0 / 4 (main) | 5.56 mm | 1.88 | 74.2 | **25 px** | 0.042 / 0.102 ms |
+| 2 (ultrawide) | 1.64 mm | 2.2 | 112.8 | 17 px | 0.013 ms |
+| **3 (tele)** | **13.3 mm** | **2.55** | **24.8** | **75 px** | **0.102 ms** |
+
+**Camera 3, and the mode should choose it rather than offer it.** Three times the moon of the main
+camera, and the 0.102 ms floor sits comfortably below the 0.54 ms the exposure wants — there is
+headroom to go to ISO 50 at ~1.1 ms if a crescent needs it.
+
+Seventy-five pixels is small — a dedicated scope gives a thousand — and that ceiling should be said
+out loud in the UI rather than discovered. It is still the best this phone can do, and a stack of
+seventy-five-pixel moons is a real picture.
+
+### Metered, not calculated
+
+Looney 11 gives 0.54 ms; phase and altitude moved the truth by five stops on this very session. So
+the mode **probes and measures**, targeting the brightest part of the disc at about **70%** of white
+— below clipping, with margin for the seeing to flicker.
+
+That loop already exists and has already proved itself: `FlatCheck`'s metering went 2 ms → 45.9 ms →
+52% of full scale in two probes (§1.44). It was written for flats and it is the same problem.
+
+### Lucky imaging, which the codebase is oddly well set up for
+
+Lunar detail is limited by atmospheric seeing, and the answer is *many short frames, keep the
+sharpest few*. **T-5.5's keep-best-N% cut already does exactly this** — it needs only a different
+quality metric, because HFR and star count mean nothing on a lunar disc. Sharpness does: gradient
+energy or Laplacian variance over the disc, which rewards a crisp terminator.
+
+The same metric doubles as the **focus** signal, replacing T-2.4's HFR star sweep with contrast
+maximisation on the moon itself.
+
+### The tension worth stating before anyone starts
+
+**Storage.** At 0.5 ms the sensor could deliver hundreds of frames in seconds, and lucky imaging
+wants them — but this app writes a 25 MB DNG per frame, so 500 frames is 12.5 GB for an object
+occupying 0.03% of the frame. Real lunar imaging uses cropped video for exactly this reason.
+
+Three ways out, and the choice should be made deliberately: cap the frame count and accept less
+luck; crop on write, which means a new on-disk shape; or keep full frames and treat the moon as a
+short session. **The first is the honest v1** and the third is what a nightscape wants anyway.
+
+### What gets simpler, for once
+
+- **Darks are nearly free.** At 0.5 ms dark current is negligible and a dark is essentially a bias
+  frame, so a handful suffices.
+- **Flats barely matter.** A 75 px object in the middle of the frame sees almost none of the 4×
+  vignetting that dominates a wide-field sky (§1.41).
+- **Field rotation is irrelevant** over a run measured in seconds, and the object is small.
+- **No gradient to remove.** The sky is black; T-7.1's polynomial has nothing to model and the
+  autostretch would only lift noise. The moon wants a mild stretch and, if anything, sharpening.
+
+### Its relationship to T-4.7, which is not "instead of"
+
+Moon mode **needs non-star alignment** — a lunar frame has no star field to match — and that is
+precisely what T-4.7's fallback is. They want the same primitive: align two frames without stars,
+by phase correlation or centroid.
+
+So the honest sequencing is **build the primitive once**. T-4.7 becomes its first consumer (rescue
+a session star matching could not handle) and T-11.5 its second (align on a chosen object by
+design). Doing moon mode does not make T-4.7 redundant; it makes it cheap.
+
+---
+
 ## 2. Decisions
 
 | ID | Decision | Rationale | Reversal cost |
@@ -4215,6 +4314,44 @@ changes whether someone can run one without being surprised.
 - [ ] **T-9.2** Full per-camera isolation audit — nothing transfers between cameras (FR-11.1).
 - [ ] **T-9.3** Camera recommendation with a stated reason (FR-11.3).
 
+## 12.5 Phase 7.5 — Moon mode *(proposed, §1.45)*
+
+> **Why a mode and not a setting.** The 2026-09-06 session overexposed the moon by **14.2 stops**
+> and clipped 1 597 pixels of the disc flat. Metering, focus, frame count, registration, quality
+> metric and the edit all differ from deep sky, and they differ *together*. **Schedulable
+> independently** of Phases 4–7; it shares the alignment primitive with **T-4.7** and the metering
+> loop with **T-8.3**, so most of its foundations already exist.
+
+- [ ] **T-11.1** **Lunar exposure, metered.** Probe and correct until the brightest part of the disc
+  sits at ~70% of white — below clipping, with margin for seeing. Reuses `FlatCheck`'s iterative
+  loop (§1.44), which settled a five-stop error in two probes. Looney 11 (`0.54 ms` at ISO 100 on
+  `f/2.55`) is the *starting* guess only: phase and altitude moved the truth five stops on the very
+  session that motivated this.
+  *Accept:* no pixel of the disc at the white level, and the peak within 60–80% of it.
+- [ ] **T-11.2** **Pick the camera, do not offer it.** Camera 3 gives a **75 px** moon against 25 px
+  on the main camera and 17 px on the ultrawide. The mode selects it. State the 75 px ceiling in the
+  UI rather than letting it be discovered — it is the honest limit of the hardware.
+- [ ] **T-11.3** **Lunar focus.** Contrast/sharpness maximisation on the disc, replacing T-2.4's HFR
+  star sweep, which has nothing to measure here. Same metric as T-11.6, so it is written once.
+- [ ] **T-11.4** **Lucky-imaging capture.** Many short frames in quick succession.
+  *The open decision:* 25 MB per DNG against an object occupying 0.03% of the frame — 500 frames is
+  12.5 GB. Cap the count for v1; crop-on-write is a later optimisation and a new on-disk shape.
+- [ ] **T-11.5** **Align on the disc.** Centroid or phase correlation over the lunar bounding box —
+  **the same primitive as T-4.7**, which should therefore be built once and consumed twice.
+  Translation-only is sufficient: field rotation over a run of seconds is negligible and the object
+  is small.
+- [ ] **T-11.6** **Sharpness as the quality metric**, feeding T-5.5's existing keep-best-N% cut,
+  which needs no other change. Gradient energy or Laplacian variance over the disc; HFR and star
+  count are meaningless on a lunar frame. Lucky imaging wants a far harsher cut than deep sky —
+  think 10–25% kept rather than 95%.
+- [ ] **T-11.7** **A lunar edit profile.** No gradient removal — the sky is black and T-7.1's
+  polynomial has nothing to model. A mild stretch rather than T-7.3's aggressive one, which would
+  only lift noise, and sharpening rather than saturation.
+- [ ] **T-11.8** **Target type at session setup**, choosing between deep sky and moon, and carried
+  into `session.json` so a restack knows which pipeline made the master.
+  *Note what it simplifies:* darks at 0.5 ms are essentially bias frames, and a 75 px object in the
+  frame centre sees almost none of the 4× vignetting §1.41 measured. Calibration nearly vanishes.
+
 ## 13. Phase 8 — Post-v1
 
 - [-] **T-10.1** OIS dithering (FR-6.5) — investigate controllability during Phase 1A.
@@ -4436,6 +4573,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-09-08 | **Moon mode proposed as Phase 7.5 (§1.45).** The 2026-09-06 session clipped 1 597 pixels of the lunar disc flat, and the arithmetic says why: camera 3 at `f/2.55` gathers 18.6× more light than `f/11`, so a correct ISO 400 exposure is **0.13 ms** against the **2 474.6 ms** actually shot — **14.2 stops over**, and still nine stops over after crediting a crescent and 2° of atmospheric extinction. No stacking recovers a clipped pixel. **A mode rather than a setting**, because metering, focus, frame count, registration, quality metric and the edit all differ together. **Camera 3 is chosen, not offered** — 75 px of moon against 25 on the main camera — and its 0.102 ms floor leaves headroom under the 0.54 ms wanted. Exposure is **metered rather than calculated**, reusing `FlatCheck`'s probe loop, because phase and altitude moved the truth five stops on this very session. Lucky imaging falls out of T-5.5's existing keep-best cut given a sharpness metric, which doubles as the focus signal. The open tension is storage: 25 MB a frame for an object filling 0.03% of it. **It does not replace T-4.7** — both need alignment without stars, so the primitive is built once and consumed twice. |
 | 2026-09-07 | **T-4.7 raised: a whole-image registration fallback.** Session `2026-09-06_0118` — a crescent moon over a harbour — had 34 of 67 lights rejected as unregisterable, and **whole-image phase correlation puts all 67 at a shift of exactly (0,0)**: they were aligned to the pixel and there was nothing to fail at. The scene holds two rigid bodies, a static shore that dominates the frame and a moon moving ~26 px over 79 s, and star matching can serve only one; the detector's brightest points all sit on the moon's disc and only 34% of detections are stable to 3 px, the rest being shimmering water. **DeepSkyStacker fails on the same frames and fails worse** — it picked a 13-detection reference, matched 0–4 stars per frame, excluded every light and never wrote an `autosave.tif`, 0 of 67 against our 33. The fallback is `phaseCorrelate` on the failure path only, so a normal session pays nothing. Also recorded: a proposed "the field is not moving, so this is not sky" sanity check was **abandoned before it was written** — it would have fired on this very session and declared 32 good frames broken. |
 | 2026-09-04 | **The flat, shot and applied — and 38% of the field gone (§1.44).** T-8.3 run on the phone: sixteen frames through a sheet of paper over the lens, none rejected, **3.98× falloff** against the **4.4×** §1.41 inferred independently from the sky. Applied, the session's sky went from **8.2/16.8/11.9 ADU** per channel to **13.2/12.9/13.2** and the corner blob vanished; the stretched result went from a star field with a shadow in it to thousands of stars with the Milky Way's dust lanes legible. **Two of the three attempts failed on code, not setup**: the metering gave up after one probe five stops under, came back at 2% of full scale, and blamed the user's screen; then the verdict read a 14× falloff as one-sided light when it was the panel being close — inverse-square and cosine on top of the vignette — which the sky measurement had already ruled out. A diffuser *at* the lens fixed it, because it is uniform across the field whatever is beyond it. **A fourth memory failure**: `registerRowsFor` divided its 64 MB budget by one buffer and asked for a band needing 216 MB across five; adding the flat was the last straw. Every buffer is now counted and tested. **And a regression**: the crop fell from 3887×2828 to 2804×2417 — 38% of the field, the left edge moving in 708 px, far more than registration displaces. Two things changed at once and they have not been separated. 645 JVM tests. |
 | 2026-09-04 | **The calibration library, and a flat that is shot once (§1.43).** T-8.3, which §1.41 promoted to the largest remaining lever on image quality. **The applying half already existed** — `DngFrameSource` has read `flats/` since §1.34 and `Calibration` has divided by one since T-5.2, both tested — and *nothing had ever written a flat frame*; the only reference to `SessionLayout.FLATS` in the app was the reader. **Per camera rather than per session**, because vignetting is a property of the lens: darks belong to a night and a flat does not, and shooting flats every night is the thing that makes people stop shooting flats. A session's own flats still win when it has them. Keyed on camera id and honestly not on focus or ISO, both recorded so a later version can tell; a flat of the wrong size is refused rather than resampled, since interpolating a per-photosite measurement blends colours. **The validity checks are the task, and one bit during the build**: saturation has to be judged at the bright end rather than the median, because a vignetted flat's median sits far below its centre, so a frame whose centre is already clipping sails through a median test — and a clipped flat is exactly what *inverts* the vignette. Stored as a single-channel float TIFF through `LinearMaster`, so the user can open their own flat in Siril and see whether it looks like a lens. **No flat has been shot yet**: `--es diag flats` needs the phone and a bright even surface, and the number to watch is whether the directly measured falloff agrees with the ≈4.4× §1.41 inferred from the sky. 641 JVM tests. |
