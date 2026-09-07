@@ -70,7 +70,7 @@ Two consequences to accept deliberately:
 | **5** | Auto-edit | M6 | Shareable stretched JPEG without a desktop |
 | **6** | Calibration library | M2 | Flats, noise model, hot pixels, intrinsics; Full tier reachable |
 | **7** | Wide-field & second camera | M7 | De-project/re-project; per-camera calibration; recommendation |
-| **7.5** | Moon mode *(proposed §1.45)* | new | A moon that is not clipped: metered short exposures, lucky imaging, aligned on the disc |
+| **7.5** | Moon mode *(proposed §1.45)* | new | A moon that is not clipped: metered short exposures, lucky imaging, aligned on the disc — and bracketed against the ground when the scene is wider than the sensor |
 | **8** | Post-v1 | §14 deferred | Dithering, star trails, framing assistance |
 
 **Phases 0 → 1C are the priority.** Everything after 1C is sequenced but not yet scheduled.
@@ -2681,6 +2681,64 @@ camera cannot expose the moon without clipping; here is one that can" — rather
 white blob and calling it a stack. On the reference tele the 0.102 ms floor leaves comfortable room
 under the 0.54 ms wanted, but that is a fact about this phone and not a fact about phones.
 
+### One exposure cannot hold both the moon and the ground
+
+A metered moon exposure gives a correct moon on a **black** frame. That is not a shortcoming of the
+metering; it is the scene. The gap is measurable from the session itself:
+
+| | |
+|---|---|
+| what the landscape wanted | **2 474.6 ms** @ ISO 400 |
+| what the moon wanted | **0.13 ms** @ ISO 400 |
+| separation | **19 035x — 14.2 stops** |
+
+Against that, a 10-bit raw spans 10 stops between the black level of 64 and the white level of 1023,
+and rather less than that in usable signal. **The scene is wider than the sensor**, so one exposure
+must sacrifice one end.
+
+*And stacking does not rescue it.* Averaging buys `sqrt(N)` in the shadows — 3.3 stops at 100
+frames — and **nothing at all** in the highlights, because a clipped pixel carries no information to
+average. Worse, at the moon's exposure the ground does not merely go noisy, it goes to *zero*:
+
+    bright shoreline   600 ADU at 2474.6 ms  ->  0.03 ADU at 0.13 ms
+    mid harbour water  300 ADU               ->  0.016 ADU
+    dark foreground     80 ADU               ->  0.004 ADU
+
+All three quantise to the black level. **The mean of a thousand zeros is zero**, so no frame count
+recovers a ground that was never recorded. Clipping and quantising-to-black are the same kind of
+loss at opposite ends, and 2026-09-06 chose the wrong end of the two.
+
+### So moon mode shoots two exposures, not one
+
+The mode therefore has **two shapes**, and the user picks which picture they are taking:
+
+| | **Disc** | **Moon in scene** |
+|---|---|---|
+| what is in frame | the moon, nearly filling it | moon *and* a landscape or skyline |
+| exposures | one set, metered on the disc | **two interleaved sets** |
+| the black sky is | **correct** — there is nothing else there | a bug |
+| stacking | lucky imaging, harsh cut | lucky imaging for the moon, deep-sky for the ground |
+| output | one master | two registered masters, plus a merged preview |
+
+**Disc** is the mode as first proposed, and a black background is the right answer for it: nothing
+else is in the frame to expose. **Moon in scene** is the one this section exists to add, and it
+brackets — a short set metered on the disc, a long set metered on the ground, **interleaved** rather
+than shot back to back so both sets share a time centre.
+
+Interleaving matters because the moon *moves*: ~26 px over 79 s on this camera, measured in §1.45's
+own session. Shooting all the short frames and then all the long ones would put the disc in a
+different place in each master, and the composite would have to guess which is right. Alternating
+them means the two stacks have the same reference epoch and the disc lands where the ground says it
+should.
+
+Registration between the two masters needs no ephemeris and no new maths: **the moon is a clipped
+white blob in the long exposures**, and a clipped blob has a perfectly good centroid. Match it to
+the disc centroid of the short stack and the two layers line up.
+
+The merge is then a feathered luminance mask over the disc — but the mode should hand back **both
+layers as well as the merge**, because a blend is a taste decision and this user finishes in
+Photoshop.
+
 ### Metered, not calculated
 
 Looney 11 gives 0.54 ms; phase and altitude moved the truth by five stops on this very session. So
@@ -2719,6 +2777,11 @@ short session. **The first is the honest v1** and the third is what a nightscape
 - **Field rotation is irrelevant** over a run measured in seconds, and the object is small.
 - **No gradient to remove.** The sky is black; T-7.1's polynomial has nothing to model and the
   autostretch would only lift noise. The moon wants a mild stretch and, if anything, sharpening.
+
+**All four hold for *Disc* and none of them hold for the ground set of *Moon in scene***, which is
+an ordinary deep-sky exposure pointed at a landscape and wants the full treatment: real darks, the
+flat, gradient removal, the lot. That is the strongest argument for the two shapes sharing one
+pipeline with two configurations rather than forking into two programs.
 
 ### Its relationship to T-4.7, which is not "instead of"
 
@@ -4352,6 +4415,12 @@ changes whether someone can run one without being surprised.
 > **The camera stays the user's choice.** The mode changes how the app meters and stacks, never
 > what it lets you point. Every number here is derived from the measured profile, so it holds on a
 > phone with one camera or five.
+>
+> **And it has two shapes, because one exposure cannot hold both ends of this scene.** *Disc* is a
+> single metered set, where a black background is correct. *Moon in scene* brackets two interleaved
+> sets, because moon and ground are **14.2 stops** apart against a sensor spanning 10 — and stacking
+> buys `sqrt(N)` in the shadows but nothing in the highlights. **T-11.9–T-11.11 are required**, not
+> optional: without them the mode's answer to a landscape is a correctly-exposed moon on black.
 
 
 
@@ -4386,22 +4455,46 @@ changes whether someone can run one without being surprised.
 - [ ] **T-11.7** **A lunar edit profile.** No gradient removal — the sky is black and T-7.1's
   polynomial has nothing to model. A mild stretch rather than T-7.3's aggressive one, which would
   only lift noise, and sharpening rather than saturation.
-- [ ] **T-11.8** **Target type at session setup**, choosing between deep sky and moon, and carried
-  into `session.json` so a restack knows which pipeline made the master. The camera picker stays
-  exactly where it is — the target type changes how the app *meters and stacks*, not what the user
-  is allowed to point.
+- [ ] **T-11.8** **Target type at session setup** — **deep sky**, **moon: disc**, or **moon in
+  scene** — carried into `session.json` so a restack knows which pipeline made the master. The
+  camera picker stays exactly where it is: the target type changes how the app *meters and stacks*,
+  not what the user is allowed to point.
+  *The third choice is not a variant of the second.* Disc shoots one exposure and a black background
+  is the correct answer; moon-in-scene shoots two and a black background is a failure. Offer the
+  distinction in those words, because it is the one thing a user cannot infer from a viewfinder.
   *Note what it simplifies:* darks at sub-millisecond exposures are essentially bias frames, and a
   small object in the frame centre sees little of the vignetting §1.41 measured at the corners.
   Calibration nearly vanishes — for a *tight* moon. A wide-field moon-in-landscape shot needs the
   full deep-sky calibration, which is another reason the two modes share a pipeline rather than
   forking it.
-- [ ] **T-11.9** **Bracketed moon-and-landscape** *(extension, raised 2026-09-08)*. The moon wants
-  sub-millisecond frames and the landscape wants seconds; both are the same scene and neither is
-  wrong. Shoot both sets in one session, stack each with its own mode, and hand the user two
-  registered layers to combine — which is what 2026-09-06 was actually trying to be, and what it
-  could not become because one exposure was asked to do both jobs.
-  *Falls out of having both modes rather than needing new machinery*, once T-11.5's alignment can
-  put the two stacks in the same frame.
+- [ ] **T-11.9** **Bracketed capture for *moon in scene*** *(raised 2026-09-08 — **required**, not
+  an extension)*. The moon wants sub-millisecond frames, the ground wants seconds, the separation is
+  **14.2 stops** against a 10-bit sensor's 10, and stacking closes none of it: averaging buys
+  `sqrt(N)` in the shadows and nothing in the highlights, while at the moon's exposure the ground
+  quantises to the black level, where the mean of a thousand zeros is still zero. **Without this
+  task, moon mode's answer to a landscape is a black frame.**
+  - **Two metering targets, one session.** The short set to ~70% of white on the disc (T-11.1); the
+    long set metered on the ground exactly as a deep-sky session already is (T-8.3).
+  - **Interleave the sets** — alternate them rather than shooting all of one and then all of the
+    other, so both stacks share a time centre. The moon moves ~26 px over 79 s on this camera
+    (§1.45); consecutive blocks would put the disc in two different places and leave the composite
+    with no way to choose between them.
+  - **Calibrate them differently.** The ground set is an ordinary long exposure and needs real
+    darks, the flat and gradient removal; the short set needs almost none of it. Same pipeline, two
+    configurations.
+  - *Accept:* a frame holding both a legible ground and an unclipped disc, from a scene whose range
+    exceeds what one exposure can carry.
+- [ ] **T-11.10** **Register the two masters to each other.** No ephemeris and no new maths: **the
+  moon is a clipped white blob in the long exposures**, and a clipped blob has a good centroid.
+  Match it against the disc centroid of the short stack. Translation-only, as T-11.5.
+  *Guard:* if the long set clipped hard enough to bloom past the true limb, the centroid survives
+  that but the radius does not — so align on centre, never on edge.
+- [ ] **T-11.11** **Composite, and hand back the layers.** Feathered luminance mask over the disc,
+  and **export the two registered masters alongside the merge**. The blend is a taste decision and
+  the merged preview is a starting point rather than a verdict — this workflow ends in Photoshop,
+  where two aligned layers are worth more than one opinionated flatten.
+  *Reuses `LinearMaster`'s writer unchanged*: it already takes 1 or 3 channels, so a layer is just
+  another master.
 
 ## 13. Phase 8 — Post-v1
 
@@ -4624,6 +4717,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-09-08 | **Moon mode gets a second exposure: it must expose the ground too (§1.45, T-11.9–T-11.11).** As first proposed the mode metered the disc and would have returned a correct moon on a **black frame**. The scene is simply wider than the sensor: the 2026-09-06 session wanted **2 474.6 ms** for the harbour and **0.13 ms** for the moon, a separation of **19 035× — 14.2 stops**, against 10 stops between this raw's black level of 64 and its white level of 1023. **Stacking closes none of it** — averaging buys `sqrt(N)` in the shadows and nothing in the highlights, and at the moon's exposure a 600 ADU shoreline reads **0.03 ADU** and quantises to black, where the mean of a thousand zeros is still zero. So the mode now has **two shapes**: *disc*, one set, where a black background is the correct answer; and *moon in scene*, two **interleaved** sets so both stacks share a time centre — the disc moves ~26 px over 79 s, so consecutive blocks would disagree about where it is. The two masters register by **the clipped blob's centroid** in the long frames, needing no ephemeris, and ship as **registered layers alongside the merge** because the blend is a taste decision. Also corrected: “calibration nearly vanishes” holds for the disc only — the ground set is an ordinary long exposure wanting darks, flat and gradient removal in full. |
 | 2026-09-08 | **Moon mode proposed as Phase 7.5 (§1.45).** The 2026-09-06 session clipped 1 597 pixels of the lunar disc flat, and the arithmetic says why: camera 3 at `f/2.55` gathers 18.6× more light than `f/11`, so a correct ISO 400 exposure is **0.13 ms** against the **2 474.6 ms** actually shot — **14.2 stops over**, and still nine stops over after crediting a crescent and 2° of atmospheric extinction. No stacking recovers a clipped pixel. **A mode rather than a setting**, because metering, focus, frame count, registration, quality metric and the edit all differ together. **The camera stays the user's choice** — the mode computes `arcsec/px` from the measured profile, reports the moon's size for every camera the probe found and recommends the largest with that number as the reason (FR-11.3), but never imposes it, because a tight disc and a moon in a landscape are different pictures and nothing here may assume one handset's lens line-up. Exposure is **metered rather than calculated**, reusing `FlatCheck`'s probe loop, because phase and altitude moved the truth five stops on this very session. Lucky imaging falls out of T-5.5's existing keep-best cut given a sharpness metric, which doubles as the focus signal. The open tension is storage: 25 MB a frame for an object filling 0.03% of it. **It does not replace T-4.7** — both need alignment without stars, so the primitive is built once and consumed twice. |
 | 2026-09-07 | **T-4.7 raised: a whole-image registration fallback.** Session `2026-09-06_0118` — a crescent moon over a harbour — had 34 of 67 lights rejected as unregisterable, and **whole-image phase correlation puts all 67 at a shift of exactly (0,0)**: they were aligned to the pixel and there was nothing to fail at. The scene holds two rigid bodies, a static shore that dominates the frame and a moon moving ~26 px over 79 s, and star matching can serve only one; the detector's brightest points all sit on the moon's disc and only 34% of detections are stable to 3 px, the rest being shimmering water. **DeepSkyStacker fails on the same frames and fails worse** — it picked a 13-detection reference, matched 0–4 stars per frame, excluded every light and never wrote an `autosave.tif`, 0 of 67 against our 33. The fallback is `phaseCorrelate` on the failure path only, so a normal session pays nothing. Also recorded: a proposed "the field is not moving, so this is not sky" sanity check was **abandoned before it was written** — it would have fired on this very session and declared 32 good frames broken. |
 | 2026-09-04 | **The flat, shot and applied — and 38% of the field gone (§1.44).** T-8.3 run on the phone: sixteen frames through a sheet of paper over the lens, none rejected, **3.98× falloff** against the **4.4×** §1.41 inferred independently from the sky. Applied, the session's sky went from **8.2/16.8/11.9 ADU** per channel to **13.2/12.9/13.2** and the corner blob vanished; the stretched result went from a star field with a shadow in it to thousands of stars with the Milky Way's dust lanes legible. **Two of the three attempts failed on code, not setup**: the metering gave up after one probe five stops under, came back at 2% of full scale, and blamed the user's screen; then the verdict read a 14× falloff as one-sided light when it was the panel being close — inverse-square and cosine on top of the vignette — which the sky measurement had already ruled out. A diffuser *at* the lens fixed it, because it is uniform across the field whatever is beyond it. **A fourth memory failure**: `registerRowsFor` divided its 64 MB budget by one buffer and asked for a band needing 216 MB across five; adding the flat was the last straw. Every buffer is now counted and tested. **And a regression**: the crop fell from 3887×2828 to 2804×2417 — 38% of the field, the left edge moving in 708 px, far more than registration displaces. Two things changed at once and they have not been separated. 645 JVM tests. |
