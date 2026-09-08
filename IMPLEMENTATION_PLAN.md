@@ -2757,10 +2757,12 @@ measures the true rate for that night instead of assuming one.
 
 Three things already measured say the shape is sound, and one is genuinely unknown.
 
-**The short set is nearly free.** Per-frame overhead is **2 ms beyond the exposure** (§4, measured:
-53 frames in 52.0 s at a 1 s sub, the 25 MB DNG write entirely hidden behind the next exposure). So
-120 short frames cost **0.26 s against a 150 s session — 0.2%**. Lucky imaging on the moon is
-essentially a free rider on a nightscape session.
+**The short set is cheap, though not as cheap as first claimed.** The §4 figure of **2 ms beyond
+the exposure** was measured at a 1 s sub, where the 25 MB DNG write hides entirely behind the next
+frame. At 0.13 ms there is no exposure to hide behind, and the sensor's own floor takes over:
+`getOutputMinFrameDuration` for a full RAW is **33.2 ms**, and the measured cadence is **32.8 ms**
+— readout is the limit, not the exposure. So 120 short frames cost **3.9 s of a 150 s session**,
+not the 0.26 s first written here. Still a free rider, at 2.6% rather than 0.2%.
 
 **The drifting moon cleans itself out of the ground stack.** Registered on the static ground, the
 disc sweeps through pixel space, so at any given pixel it is an outlier present in a minority of
@@ -2780,21 +2782,44 @@ session length rather than discovered afterwards.
 **The layers are free.** `LinearMaster` already writes 1 or 3 channels, so a second master is not a
 new format.
 
-**The unknown is per-frame exposure switching.** That 2 ms was measured with a *constant* exposure in
-a repeating request. Alternating 0.13 ms and 2.5 s means a new capture request each frame, and the
-sensor may need to settle. If switching is cheap, strict alternation is fine; if it is not,
-**interleave in blocks** instead:
+**Switching exposures was the unknown, and it is now measured (OI-26, `--es diag switch`).** The
+answer is that *how* you ask matters far more than the block size, and the block idea this section
+originally proposed was solving the wrong problem. Four mechanisms, on the reference device:
 
-| switch cost | strict alternation (240x) | blocks of 20 (12x) |
+| mechanism | cost | exposure honoured? |
 |---|---|---|
-| 50 ms | 12.0 s — 8% | 0.6 s — 0.4% |
-| 200 ms | 48.0 s — 32% | 2.4 s — 1.6% |
-| 500 ms | 120.0 s — 80% | 6.0 s — 4% |
+| `apply` per frame (replace the repeating request) | **7.6 s per switch**, 5.7 frames discarded | yes |
+| the same in blocks of 4 | 10.9 s per switch — no better | yes |
+| `setRepeatingBurst` of a 2-request cycle | paces the cycle correctly, 2 533 ms | **no** |
+| **`captureBurst` injected over a live repeating request** | **−1.2 ms per frame** | **yes** |
 
-Blocks preserve what interleaving is actually for — both sets spanning the same interval, so the
-epoch is *interpolated* rather than extrapolated — while cutting the switch count by the block size.
-**So the design is "interleave, with the block size set by a measured switch cost"**, and the
-measurement is OI-26.
+**Why per-frame `apply` is so expensive.** A repeating request is *replaced*, and this HAL's
+pipeline is ten frames deep (§1.7), so every switch waits for everything already in flight to come
+back at the old exposure. At 2.5 s that is 5.7 wasted frames. **No block size fixes this** — blocks
+cut the number of switches but not the price of one, and 20 of them still add 30% to a session.
+
+**Why `setRepeatingBurst` looked perfect and is not.** Submitting `[short, long]` as a repeating
+cycle should be the whole feature in one call. It paced the cycle exactly right — frames arrived
+2 533 ms apart, which is 33.2 ms + 2 500 ms to the millisecond — but **every frame came back at
+0.130 ms**, the *first* request's exposure. The cycle runs; the per-request exposure does not. That
+is a HAL defect of the same family as D-21, and it is silent: the metadata says 0.130 ms and the
+frames look fine.
+
+**And `stopRepeating` + `captureBurst` delivers nothing at all**, because this HAL will not stream
+RAW without a repeating request driving it (D-20/D-23). Nothing is declined and nothing is logged;
+the caller simply waits forever. `onCaptureFailed` was added to `SequenceSession` while chasing
+this, since a rejected request previously produced no image, no result and no clue.
+
+**What works: leave a cheap repeating request up, and inject the expensive frames as one-shots.**
+The short exposure repeats continuously — it is what keeps RAW flowing, and it *is* the moon set —
+and each ground frame is a `captureBurst` request dropped into that stream. Measured: five injected
+frames at **2 499.998 ms** for a 2 500 ms ask, arriving 2 500–2 502 ms apart, **zero at the wrong
+exposure, and −1.2 ms per frame against the steady baseline** — which is to say free, within noise.
+The one real cost is **5.19 s to the first frame of a submission**, paid once per burst rather than
+per frame, so T-11.9 submits the ground set as one burst and never pays it again.
+
+**So the interleave is not a block size at all.** It is one repeating short request with long frames
+injected against it, and both sets span the same interval by construction.
 
 *A correction to how this was first written:* consecutive blocks were described as leaving the
 composite "no way to choose" the disc's position. That is too strong. With the blob tracked per
@@ -4541,14 +4566,20 @@ changes whether someone can run one without being surprised.
   task, moon mode's answer to a landscape is a black frame.**
   - **Two metering targets, one session.** The short set to ~70% of white on the disc (T-11.1); the
     long set metered on the ground exactly as a deep-sky session already is (T-8.3).
-  - **Interleave the sets**, so both span the same interval and the composite epoch is
-    interpolated rather than extrapolated. **Block size comes from the measured exposure-switch
-    cost (OI-26)**, not from a guess: the short frames themselves are nearly free at the measured
-    2 ms per-frame overhead (0.2% of a 150 s session), so only switching can make alternation
-    expensive.
+  - **Interleave by injection, not by switching** (OI-26, measured 2026-09-08). Keep the *short*
+    exposure as the repeating request — it is what keeps RAW streaming on this HAL, and it is the
+    moon set — and submit the ground frames as a `captureBurst` against it
+    (`SequenceSession.injectBurst`). Measured at **−1.2 ms per frame and zero frames at the wrong
+    exposure**, against **7.6 s per switch** for the obvious approach of re-applying a repeating
+    request. Submit the ground set as **one burst**: the 5.19 s to a submission's first frame is
+    paid once, not per frame.
+    *Do not use `setRepeatingBurst`.* It paces a `[short, long]` cycle correctly and then applies
+    the first request's exposure to every frame in it — silently, with the metadata agreeing.
     *Do not hard-code the drift rate.* It is `15.041 x cos(dec)` arcsec/s worst case divided by the
     profile's own `arcsec/px`, and the 2026-09-06 figure of 26 px over 79 s is **54% of sidereal**
     because the moon was at 2° altitude — an instance of the geometry, not a constant.
+    *Budget the short set honestly:* full-RAW readout floors at **33.2 ms**, so 120 moon frames are
+    3.9 s of session, not the 0.26 s that a 2 ms per-frame overhead would imply.
   - **Calibrate them differently.** The ground set is an ordinary long exposure and needs real
     darks, the flat and gradient removal; the short set needs almost none of it. Same pipeline, two
     configurations.
@@ -4586,7 +4617,7 @@ changes whether someone can run one without being surprised.
 ## 14. Open issues
 
 **Needed-by** is the phase that cannot finish without a resolution.
-**Status: 14 resolved · 9 open pending measurement · 2 deferred · 1 blocking.**
+**Status: 15 resolved · 8 open pending measurement · 2 deferred · 1 blocking.**
 An issue is only "open" here if it can actually change the shape of the code. Questions with an
 obvious default and a defined experiment are listed with that default already in force, so they
 never block work.
@@ -4658,7 +4689,6 @@ when the number comes back.
 | ID | Issue | Default until measured | Experiment | Needed by |
 |---|---|---|---|---|
 | **OI-25** | **A stack lost 38% of its field** (§1.44). **Half answered 2026-09-07: the flat causes it, the register band does not** — without the flat the crop returns to exactly 3887×2828. Instrumentation rules out `NaN` (zero non-finite samples; the flat's minimum gain is 0.193 against a 0.05 threshold) and shows the shortfall is a border *ring*, not scattered. No mechanism is yet known by which a smooth gain changes which pixels the warp marks as outside the source | **Blocking.** No default: the output is being cropped by something nobody chose | The same two gather counters with the flat removed, to diff against 137 246 410 sentinel drops. 17 minutes | 6 |
-| **OI-26** | **What does changing exposure between frames cost?** Per-frame overhead is a measured **2 ms** at a *constant* exposure (53 frames in 52.0 s), but T-11.9 alternates 0.13 ms and ~2.5 s, which means a new capture request per frame and possibly a sensor settle. Strict alternation costs 8% at a 50 ms switch and 80% at 500 ms | **Default: interleave in blocks of 20**, which holds the cost under 4% even at a 500 ms switch, while still spanning both sets over the same interval | Time a burst alternating two exposures against a burst at each one alone. Indoors, minutes | 7.5 |
 | **OI-19** | **Will the hidden cameras also *capture*, not just open?** All five IDs open, but only camera 0 has completed a real RAW capture. An ID that opens can still fail session configuration or never deliver a frame | Assume the tele and ultrawide work; verify before promising them to the user | Run the T-1.4 capture against IDs 2, 3 and 4 — cheap now the harness exists | 7 |
 | **OI-20** | **Screen-off capture needs a foreground service, not just a surface-free session.** Measured 2026-08-17: the framing loop is frozen a few seconds after the screen goes off, process still alive. D-22 dissolved the *surface* problem but not the *lifecycle* one (§1.7) | Assume the `camera`-type FGS of D-12 is sufficient — it is what the type exists for | T-3.6's own acceptance: a 45-minute sequence with the screen off and the app backgrounded, then repeated with battery optimisation left on | 1C |
 | **OI-22** | **A configured session occasionally delivers no frames at all.** Measured 2026-08-18 (§1.16): one session in 78 returned 0 of 2 frames inside a 12.4 s budget, immediately after a rapid open/close loop, while the other 77 configured in ~100 ms and delivered at once. It opens, configures and closes cleanly — only the frames never arrive, so nothing throws and nothing downstream is told anything is wrong | Accept and log. At 1 in 78 it costs a framing preview that stays black for a few seconds, not a session | Re-run `--es diag lifecycle --ei sessions 30` several times over and count. If it reproduces, the remedy is a deadline on the first frame and a re-configure, which is a shape change to `FramingSession` rather than a tuning constant | 1B |
@@ -4695,6 +4725,7 @@ the driver, and not one that blocks work.
 | ID | Issue | Resolution | Closed |
 |---|---|---|---|
 | **OI-18** | Can the unpublished cameras be opened? | **Yes — all five IDs open**, including the ultrawide, tele and logical camera. Phase 7 stays reachable on this device (T-1.3) | 2026-08-16 |
+| **OI-26** | What does changing exposure between frames cost? T-11.9 interleaves 0.13 ms and 2.5 s, and §4's 2 ms per-frame overhead was measured at a *constant* exposure | **Measured on device 2026-09-08 (`--es diag switch`): ask the right way and it costs nothing.** Re-applying a repeating request costs **7.6 s and 5.7 discarded frames per switch**, because this HAL's pipeline is ten deep and drains at the old exposure — blocks cut the count, not the price, and 20 of them still add 30%. `setRepeatingBurst` paces a `[short, long]` cycle to the millisecond but applies the **first request's exposure to every frame**, silently. `stopRepeating` + `captureBurst` delivers **no frames at all** (D-20/D-23: no RAW without a repeating request). What works is **injecting one-shot requests over a cheap repeating one**: 2 499.998 ms for a 2 500 ms ask, **−1.2 ms per frame, zero at the wrong exposure**, with 5.19 s to a submission's first frame paid once. Also measured: full-RAW readout floors at **33.2 ms**, so short frames cost 3.9 s per 120, not 0.26 s | 2026-09-08 |
 | **OI-1** | DNG readback contradicts §12.1 — "RAW decoding not needed" is incompatible with FR-10.1's decoupled stacking, which must read frames back off disk the next morning | **D-13:** minimal Kotlin TIFF/DNG reader. `DngCreator` accepts only `RAW_SENSOR` at 16 bpp and writes uncompressed strips, and the requirements' own storage figures corroborate it (24 MB/frame ⇒ 3.6 GB per 150 frames ≈ the prototype's "3.8 GB"; compressed would be about half). Confirmed cheaply by an `exiftool` tag dump in T-1.5, with the lossless-JPEG fallback named and costed if `Compression ≠ 1` | 2026-08-16 |
 | **OI-2** | Foreground service types for capture and stacking | **D-12:** capture = `camera` (while-in-use restricted, started from the Start tap, **no time limit** — so hours-long sessions are fine); stacking = `mediaProcessing` (API 35+) or `dataSync` (API 34), both 6 h / 24 h with a mandatory `onTimeout()` → `stopSelf()`. OEM battery-manager survival stays as a T-3.6 acceptance test rather than an open issue | 2026-08-16 |
 | **OI-3** | Can preview + RAW + analysis be configured concurrently? | Not a risk, and the framing was wrong: don't reason from the published table at all — the device publishes its own guaranteed list as `SCALER_MANDATORY_STREAM_COMBINATIONS` (API 29+, and minSdk is 30), confirmable per-configuration with `isSessionConfigurationSupported()`. The RAW-capability table guarantees `PRIV(PREVIEW) + YUV(PREVIEW) + RAW(MAXIMUM)`, so **D-9**'s direct-RAW analysis and the YUV fallback are both available | 2026-08-16 |
@@ -4764,7 +4795,7 @@ streams, and whether a HAL honours what it was asked.
 **A sixth level, added 2026-08-17: the `--es diag` harness.** Camera acceptances are driven from
 `adb` rather than from the UI — `am start -n com.starstacker/.MainActivity --es diag <mode>`,
 where the modes are now `framing`, `focus`, `lens` and `solve` (`diag/FieldDiagnostics.kt`),
-`lifecycle` (`diag/CameraLifecycleCheck.kt`, T-1.3), `storage` (`diag/StorageBenchmark.kt`, T-0.5),
+`lifecycle` (`diag/CameraLifecycleCheck.kt`, T-1.3), `switch` (`diag/ExposureSwitchCheck.kt`, OI-26), `storage` (`diag/StorageBenchmark.kt`, T-0.5),
 plus `capture`, `openability` and `crash` — writing a per-frame record to a file, because CamX
 floods the log buffer and evicts our lines within seconds. This is
 what made §1.7 findable: at roughly one frame per second, watching a preview cannot tell you that
@@ -4795,6 +4826,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-09-08 | **OI-26 resolved on device: interleave by injection, not by switching (`--es diag switch`).** The plan had assumed the question was *block size*. It was not — it was which Camera2 call to use, and three of the four available get it wrong on this HAL. Re-applying a repeating request per frame costs **7.6 s and 5.7 discarded frames per switch**, because the pipeline is ten deep (§1.7) and drains at the old exposure; blocking cuts the number of switches but not the price of one, so blocks of 20 still add **30%** to a session. `setRepeatingBurst` of a `[short, long]` cycle paces it perfectly — frames 2 533 ms apart, exactly 33.2 + 2 500 — and then applies the **first request's exposure to every frame**, silently, with the metadata agreeing. `stopRepeating` + `captureBurst` delivers **nothing at all**, since this HAL will not stream RAW without a repeating request driving it (D-20/D-23), and it fails with no exception and no log — which is why `onCaptureFailed` is now handled in `SequenceSession`. **What works is injecting one-shots over a cheap repeating request:** the short exposure repeats (keeping RAW alive, and it *is* the moon set) while ground frames go in as a `captureBurst`. Measured **2 499.998 ms for a 2 500 ms ask, −1.2 ms per frame, zero frames at the wrong exposure**, with 5.19 s to a submission's first frame paid once rather than per frame. **Correction to yesterday's arithmetic:** short frames are not 2 ms — full-RAW readout floors at **33.2 ms** and the measured cadence is 32.8 ms, so 120 moon frames cost **3.9 s, not 0.26 s** (2.6% of a session rather than 0.2%). The 2 ms figure was real but only at a 1 s sub, where the DNG write hides behind the exposure. |
 | 2026-09-08 | **Moon drift is derived, not remembered; and interleaving costed (§1.45, T-11.9, OI-26).** The ~26 px over 79 s from 2026-09-06 had been written into the design as if it were a device constant. It is not: it works out at 8.16 arcsec/s, **54% of sidereal**, because the moon was at 2° altitude where refraction compresses vertical motion — reusing it on a high moon would underestimate the drift by nearly half. The rule is `15.041 × cos(dec)` arcsec/s worst case over the profile's own `arcsec/px`, which is 0.606 px/s on the tele against 0.133 on the ultrawide. **Interleaving then costs almost nothing**: at the measured 2 ms per-frame overhead, 120 short frames are 0.26 s of a 150 s session — 0.2%. What is *not* measured is per-frame exposure switching, since that 2 ms came from a constant exposure; strict alternation costs 8% at a 50 ms switch and 80% at 500 ms, so the design is **interleave in blocks sized by the measured switch cost** (OI-26, default 20, under 4% even at 500 ms). Also found: **the drifting moon cleans itself out of the ground stack** — registered on the static ground it is a per-pixel outlier and `SigmaClip` already rejects it, provided the set runs several times the disc's crossing time (~6 min at sidereal on the tele, ~11 min at 2026-09-06's rate), which the app should require up front rather than let the user discover. **Overclaim corrected:** back-to-back sets were said to leave “no way to choose” the disc's position; with the blob tracked per frame and a drift fitted they work too, merely extrapolating instead of interpolating. Interleaving is better, not load-bearing. |
 | 2026-09-08 | **Moon mode gets a second exposure: it must expose the ground too (§1.45, T-11.9–T-11.11).** As first proposed the mode metered the disc and would have returned a correct moon on a **black frame**. The scene is simply wider than the sensor: the 2026-09-06 session wanted **2 474.6 ms** for the harbour and **0.13 ms** for the moon, a separation of **19 035× — 14.2 stops**, against 10 stops between this raw's black level of 64 and its white level of 1023. **Stacking closes none of it** — averaging buys `sqrt(N)` in the shadows and nothing in the highlights, and at the moon's exposure a 600 ADU shoreline reads **0.03 ADU** and quantises to black, where the mean of a thousand zeros is still zero. So the mode now has **two shapes**: *disc*, one set, where a black background is the correct answer; and *moon in scene*, two **interleaved** sets so both stacks span the same interval and the composite epoch is interpolated rather than extrapolated. The two masters register by **the clipped blob's centroid** in the long frames, needing no ephemeris, and ship as **registered layers alongside the merge** because the blend is a taste decision. Also corrected: “calibration nearly vanishes” holds for the disc only — the ground set is an ordinary long exposure wanting darks, flat and gradient removal in full. |
 | 2026-09-08 | **Moon mode proposed as Phase 7.5 (§1.45).** The 2026-09-06 session clipped 1 597 pixels of the lunar disc flat, and the arithmetic says why: camera 3 at `f/2.55` gathers 18.6× more light than `f/11`, so a correct ISO 400 exposure is **0.13 ms** against the **2 474.6 ms** actually shot — **14.2 stops over**, and still nine stops over after crediting a crescent and 2° of atmospheric extinction. No stacking recovers a clipped pixel. **A mode rather than a setting**, because metering, focus, frame count, registration, quality metric and the edit all differ together. **The camera stays the user's choice** — the mode computes `arcsec/px` from the measured profile, reports the moon's size for every camera the probe found and recommends the largest with that number as the reason (FR-11.3), but never imposes it, because a tight disc and a moon in a landscape are different pictures and nothing here may assume one handset's lens line-up. Exposure is **metered rather than calculated**, reusing `FlatCheck`'s probe loop, because phase and altitude moved the truth five stops on this very session. Lucky imaging falls out of T-5.5's existing keep-best cut given a sharpness metric, which doubles as the focus signal. The open tension is storage: 25 MB a frame for an object filling 0.03% of it. **It does not replace T-4.7** — both need alignment without stars, so the primitive is built once and consumed twice. |

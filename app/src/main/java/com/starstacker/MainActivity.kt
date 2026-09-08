@@ -41,6 +41,7 @@ import com.starstacker.device.Qualification
 import com.starstacker.diag.CameraLifecycleCheck
 import com.starstacker.diag.CombineCheck
 import com.starstacker.diag.FieldDiagnostics
+import com.starstacker.diag.ExposureSwitchCheck
 import com.starstacker.diag.FlatCheck
 import com.starstacker.diag.FieldLog
 import com.starstacker.diag.StackCheck
@@ -980,6 +981,21 @@ class MainActivity : ComponentActivity() {
                             log = log,
                         )
 
+                        // OI-26 — T-11.9 interleaves two exposures four orders of magnitude
+                        // apart, and the 2 ms per-frame overhead §4 measured came from a
+                        // *constant* exposure. Nothing but the sensor can say what a switch costs.
+                        "switch" -> ExposureSwitchCheck.run(
+                            access = access,
+                            cameraId = intent?.getStringExtra("camera") ?: MAIN_CAMERA_ID,
+                            iso = iso,
+                            shortNs = (intent?.getIntExtra("shortUs", 130) ?: 130) * 1_000L,
+                            longNs = exposureMs * 1_000_000L,
+                            frames = frames,
+                            block = intent?.getIntExtra("block", ExposureSwitchCheck.DEFAULT_BLOCK)
+                                ?: ExposureSwitchCheck.DEFAULT_BLOCK,
+                            log = log,
+                        )
+
                         // T-5.1 — OpenCV cannot run in a JVM test, so its acceptance lives here.
                         "warp" -> WarpCheck.run(log)
 
@@ -1014,7 +1030,7 @@ class MainActivity : ComponentActivity() {
                         else ->
                             log(
                                 "unknown diag mode '$mode' — expected framing, focus, lens, solve, " +
-                                    "lifecycle, warp, combine, stack or flats",
+                                    "lifecycle, switch, warp, combine, stack or flats",
                             )
                     }
                 }

@@ -4,6 +4,7 @@ import android.graphics.ImageFormat
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
+import android.hardware.camera2.CaptureFailure
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.DngCreator
@@ -157,6 +158,24 @@ class SequenceSession private constructor(
                 }
             }
         }
+
+        /**
+         * A request the HAL declines produces no image and no result, so without this the only
+         * symptom is a caller waiting for a frame that will never arrive — which is exactly how
+         * OI-26's first burst attempt presented (a 40 s timeout and nothing in the log).
+         */
+        override fun onCaptureFailed(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            failure: CaptureFailure,
+        ) {
+            Log.w(
+                TAG,
+                "capture request rejected: reason ${failure.reason}, frame ${failure.frameNumber}, " +
+                    "exposure ${request.get(CaptureRequest.SENSOR_EXPOSURE_TIME)} ns, " +
+                    "frame duration ${request.get(CaptureRequest.SENSOR_FRAME_DURATION)} ns",
+            )
+        }
     }
 
     init {
@@ -223,6 +242,98 @@ class SequenceSession private constructor(
         ).apply { setTag(next) }.build()
         generation = next
         captureSession.setRepeatingRequest(built, captureCallback, access.handler)
+    }
+
+    /**
+     * Repeats [exposuresNs] as a cycle — frame 1 at the first exposure, frame 2 at the second, and
+     * back round — until [stopRepeating] or another [apply].
+     *
+     * **Why this exists next to [apply], which looks like it would do.** A repeating request is
+     * *replaced*, and this HAL's pipeline is ten frames deep (§1.7), so changing exposure that way
+     * means waiting for everything already in flight to come back at the old setting. OI-26
+     * measured that as **7.4 s and 5.9 discarded frames per switch** at a 2.5 s exposure — enough
+     * to make T-11.9's moon-and-ground interleave unaffordable at any block size.
+     *
+     * A repeating *burst* carries the exposure on each request in the cycle, so the sensor changes
+     * it frame to frame with nothing to drain. One submission covers a whole interleaved session.
+     *
+     * **Why not `captureBurst`,** which is the obvious way to send a list of one-shot requests: it
+     * needs [stopRepeating] first to keep the order, and this HAL will not stream RAW without a
+     * repeating request driving it (D-20/D-23). Measured: a `stopRepeating` + `captureBurst` pair
+     * delivered no frames at all and timed out at 120 s, with nothing declined and nothing logged.
+     *
+     * Returns the generation these frames carry, so a caller can tell them from whatever was still
+     * in flight when the cycle was submitted.
+     */
+    fun burst(
+        iso: Int,
+        exposuresNs: List<Long>,
+        focusDiopters: Float?,
+        minFrameDurationNs: Long = 0L,
+    ): Int {
+        check(!closed) { "sequence session is closed" }
+        require(exposuresNs.isNotEmpty()) { "a burst needs at least one exposure" }
+        val next = generation + 1
+        val requests = exposuresNs.map { ns ->
+            ManualRequest.builder(
+                device = device,
+                chars = chars,
+                targets = listOf(rawReader.surface, secondaryReader.surface),
+                iso = iso,
+                exposureNs = ns,
+                focusDiopters = focusDiopters ?: 0f,
+                // A repeating request is clamped up to the stream's floor for us; a burst request
+                // below it is simply declined, and a declined request yields no frame at all.
+                // 0.13 ms against this sensor's 33.2 ms RAW floor is how OI-26 first hung.
+                frameDurationNs = maxOf(ns, minFrameDurationNs),
+            ).apply { setTag(next) }.build()
+        }
+        generation = next
+        captureSession.setRepeatingBurst(requests, captureCallback, access.handler)
+        return next
+    }
+
+    /**
+     * Injects [exposuresNs] as one-shot requests **over** whatever repeating request is running.
+     *
+     * The third mechanism OI-26 tried, and the only one that can work on this HAL if either can:
+     *
+     * - [apply] per frame replaces the repeating request, so a ten-deep pipeline drains at the old
+     *   exposure first — **7.6 s and 6.0 frames per switch** at 2.5 s.
+     * - [burst] (`setRepeatingBurst`) paces its cycle correctly but applies the *first* request's
+     *   exposure to every frame in it: measured 12 frames all at 0.130 ms arriving 2 533 ms apart,
+     *   which is exactly 33.2 ms + 2 500 ms. The cycle runs; the per-request exposure does not.
+     * - `stopRepeating` then `captureBurst` delivers nothing at all, because this HAL will not
+     *   stream RAW without a repeating request driving it (D-20/D-23).
+     *
+     * So the repeating request stays up as the thing that keeps RAW flowing, and the exposures
+     * that matter are submitted as one-shots against it.
+     *
+     * Returns the generation the injected frames carry.
+     */
+    fun injectBurst(
+        iso: Int,
+        exposuresNs: List<Long>,
+        focusDiopters: Float?,
+        minFrameDurationNs: Long = 0L,
+    ): Int {
+        check(!closed) { "sequence session is closed" }
+        require(exposuresNs.isNotEmpty()) { "a burst needs at least one exposure" }
+        val next = generation + 1
+        val requests = exposuresNs.map { ns ->
+            ManualRequest.builder(
+                device = device,
+                chars = chars,
+                targets = listOf(rawReader.surface, secondaryReader.surface),
+                iso = iso,
+                exposureNs = ns,
+                focusDiopters = focusDiopters ?: 0f,
+                frameDurationNs = maxOf(ns, minFrameDurationNs),
+            ).apply { setTag(next) }.build()
+        }
+        generation = next
+        captureSession.captureBurst(requests, captureCallback, access.handler)
+        return next
     }
 
     /** The next captured frame. The caller owns it and must close it. */
