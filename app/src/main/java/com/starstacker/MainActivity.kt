@@ -43,6 +43,7 @@ import com.starstacker.diag.CombineCheck
 import com.starstacker.diag.FieldDiagnostics
 import com.starstacker.diag.ExposureSwitchCheck
 import com.starstacker.diag.FlatCheck
+import com.starstacker.diag.MoonCheck
 import com.starstacker.diag.FieldLog
 import com.starstacker.diag.StackCheck
 import com.starstacker.diag.StorageBenchmark
@@ -996,6 +997,20 @@ class MainActivity : ComponentActivity() {
                             log = log,
                         )
 
+                        // T-11.1/T-11.2/T-11.3 — the arithmetic is tested against a synthetic
+                        // disc; whether the metering converges on a *real* moon, whose brightness
+                        // depends on phase and altitude, only the sky can say.
+                        "moon" -> MoonCheck.run(
+                            access = access,
+                            cameraId = intent?.getStringExtra("camera") ?: MAIN_CAMERA_ID,
+                            cameras = profile?.cameras.orEmpty(),
+                            root = getExternalFilesDir(null) ?: filesDir,
+                            iso = iso,
+                            frames = frames,
+                            freeBytes = (getExternalFilesDir(null) ?: filesDir).usableSpace,
+                            log = log,
+                        )
+
                         // T-5.1 — OpenCV cannot run in a JVM test, so its acceptance lives here.
                         "warp" -> WarpCheck.run(log)
 
@@ -1030,7 +1045,7 @@ class MainActivity : ComponentActivity() {
                         else ->
                             log(
                                 "unknown diag mode '$mode' — expected framing, focus, lens, solve, " +
-                                    "lifecycle, switch, warp, combine, stack or flats",
+                                    "lifecycle, switch, moon, warp, combine, stack or flats",
                             )
                     }
                 }

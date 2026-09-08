@@ -2668,8 +2668,12 @@ a rule to be shipped:
 | camera | focal | f/ | arcsec/px | moon across | min exposure |
 |---|---|---|---|---|---|
 | main | 5.56 mm | 1.88 | 74.2 | 25 px | 0.042 ms |
-| ultrawide | 1.64 mm | 2.2 | 112.8 | 17 px | 0.013 ms |
+| ultrawide | 1.64 mm | 2.2 | 140.7 | 13 px | 0.013 ms |
 | tele | 13.3 mm | 2.55 | 24.8 | 75 px | 0.102 ms |
+
+*(The ultrawide's row first read 112.8 and 17 px. Both were wrong: §2's own device table records
+that sensor as 3.67 mm over 3280 px = 1.12 um, which gives 140.7. Caught by `LunarGeometryTest`
+2026-09-09, which computes the table from the measured profile rather than transcribing it.)*
 
 The tele is three times the moon of the main camera — so it is what the mode should *say*, with the
 numbers beside it, and what it should default to. Seventy-five pixels is also small, a scope gives a
@@ -2740,7 +2744,7 @@ looked up:
 |---|---|---|---|
 | tele | 24.8 | 0.606 px/s | 1.6 s |
 | main | 74.2 | 0.203 px/s | 4.9 s |
-| ultrawide | 112.8 | 0.133 px/s | 7.5 s |
+| ultrawide | 140.7 | 0.107 px/s | 9.4 s |
 
 **The 2026-09-06 measurement is an instance, not the rule.** Its 26 px over 79 s works out at
 8.16 arcsec/s — **54% of sidereal** — because the moon sat at 2° altitude where refraction compresses
@@ -4495,7 +4499,7 @@ changes whether someone can run one without being surprised.
 - [ ] **T-9.2** Full per-camera isolation audit — nothing transfers between cameras (FR-11.1).
 - [ ] **T-9.3** Camera recommendation with a stated reason (FR-11.3).
 
-## 12.5 Phase 7.5 — Moon mode *(proposed, §1.45)*
+## 12.5 Phase 7.5 — Moon mode *(T-11.1–T-11.7 done 2026-09-09; §1.45)*
 
 > **Why a mode and not a setting.** The 2026-09-06 session overexposed the moon by **14.2 stops**
 > and clipped 1 597 pixels of the disc flat. Metering, focus, frame count, registration, quality
@@ -4515,13 +4519,23 @@ changes whether someone can run one without being surprised.
 
 
 
-- [ ] **T-11.1** **Lunar exposure, metered.** Probe and correct until the brightest part of the disc
+- [x] **T-11.1** **Lunar exposure, metered.** Probe and correct until the brightest part of the disc
   sits at ~70% of white — below clipping, with margin for seeing. Reuses `FlatCheck`'s iterative
   loop (§1.44), which settled a five-stop error in two probes. Looney 11 is the *starting* guess
   only, computed from the profile's own aperture and ISO range rather than from any assumed lens:
   phase and altitude moved the truth five stops on the very session that motivated this.
   *Accept:* no pixel of the disc at the white level, and the peak within 60–80% of it.
-- [ ] **T-11.2** **Report what each camera will give; let the user choose.** From the profile,
+  **Done 2026-09-09** — `moon/LunarExposure.kt`, `moon/Disc.kt`, `diag/MoonCheck.kt`.
+  Looney 11 reproduces §1.45's worked example to the digit (0.537 ms at ISO 100 on f/2.55) from the
+  profile's own aperture, and the loop converges from 2026-09-06's **14.2 stops** of error inside
+  its probe budget — asserted against a simulated sensor in `LunarExposureTest`.
+  *The bug worth recording:* a clipped frame reads peak == white whether it is one stop over or
+  fourteen, so the obvious `target / measured` correction asks for **0.7x — a third of a stop** on
+  a frame 14 stops out, and the loop would still be clipping after every probe it had. A clipped
+  probe therefore ignores its own measurement and steps down a fixed four stops instead.
+  *Acceptance still needs a moon:* `--es diag moon` reports PASS/FAIL against "no clipped pixel,
+  peak 60–80%".
+- [x] **T-11.2** **Report what each camera will give; let the user choose.** From the profile,
   `arcsec/px = 206265 × pitch / focal`, so the moon is `1865 / that` pixels across. Show it for every
   camera the probe found, **recommend the largest with the number as the reason** (FR-11.3, T-9.3),
   and default to it — but never override a choice. A tight disc and a moon small in a landscape are
@@ -4530,22 +4544,70 @@ changes whether someone can run one without being surprised.
   disc, say so and name one that would not, rather than returning a white blob.
   *No device may be assumed.* Everything here is computed from the measured profile — one camera or
   five, tele better than main or worse.
-- [ ] **T-11.3** **Lunar focus.** Contrast/sharpness maximisation on the disc, replacing T-2.4's HFR
+  **Done 2026-09-09** — `moon/LunarGeometry.kt`. Every camera ranked from the measured profile,
+  the largest disc recommended with its pixel count as the reason, and a camera that cannot expose
+  the moon excluded from the recommendation and named against the one that can.
+  `LunarGeometryTest` covers a one-camera phone, a phone whose tele is *worse* than its main
+  sensor, and a device where nothing can expose the moon — the three shapes the rule exists for.
+- [x] **T-11.3** **Lunar focus.** Contrast/sharpness maximisation on the disc, replacing T-2.4's HFR
   star sweep, which has nothing to measure here. Same metric as T-11.6, so it is written once.
-- [ ] **T-11.4** **Lucky-imaging capture.** Many short frames in quick succession.
+  **Done 2026-09-09** — `moon/Sharpness.kt`, `moon/LunarFocus.kt`, `moon/LunarFocusRunner.kt`.
+  The motor discipline is unchanged and reused: `FocusSweep`'s position generators, the overshoot
+  that takes up backlash, and `parabolaVertex` — negated, because the lunar curve is maximised
+  where the HFR curve is minimised, and one interpolation is better than two that can disagree.
+  *The failure mode it is built against:* sensor noise is high-frequency, so a sharpness metric
+  measured over a mostly-black frame ranks the **noisiest** frame as the sharpest. Every reading is
+  taken over `Disc`'s bounding box for that reason, and `SharpnessTest` asserts both that the bug
+  is real when the region is wrong and that this is not.
+- [x] **T-11.4** **Lucky-imaging capture.** Many short frames in quick succession.
   *The open decision:* 25 MB per DNG against an object occupying 0.03% of the frame — 500 frames is
   12.5 GB. Cap the count for v1; crop-on-write is a later optimisation and a new on-disk shape.
-- [ ] **T-11.5** **Align on the disc.** Centroid or phase correlation over the lunar bounding box —
+  **Decided and done 2026-09-09** — `moon/LunarPlan.kt`. **Option 1, the cap**, as the plan
+  proposed: the count comes from a storage *budget* (a quarter of free space) under a hard ceiling
+  of 400 frames, and the note says which of the two bound the run — "120 frames" and "120 frames
+  because your phone is nearly full" being different news.
+  *The ceiling is a diminishing-returns limit, not a storage one.* `sqrt(N)` has flattened by a few
+  hundred frames on a subject this bright, while the disc keeps moving: 400 frames at OI-26's
+  measured 33.2 ms readout floor is 13.3 s and 8 px of drift, which alignment absorbs.
+  *And the cadence is readout, not exposure* — a planner using the 0.13 ms exposure would promise
+  400 frames in 0.05 s.
+- [x] **T-11.5** **Align on the disc.** Centroid or phase correlation over the lunar bounding box —
   **the same primitive as T-4.7**, which should therefore be built once and consumed twice.
   Translation-only is sufficient: field rotation over a run of seconds is negligible and the object
   is small.
-- [ ] **T-11.6** **Sharpness as the quality metric**, feeding T-5.5's existing keep-best-N% cut,
+  **Done 2026-09-09** — `moon/DiscAlign.kt`. Centroid difference, translation only, returned as
+  the existing `RigidTransform` so nothing downstream knows it came from a different matcher.
+  Rejects a detection whose area moved by more than 2x (cloud, or the threshold catching something
+  else) and one that moved further than a quarter of the frame.
+  *`fitDrift` is here too*, ahead of T-11.10 needing it: least squares over every frame's centroid
+  rather than a first-to-last slope, which would inherit all of two frames' seeing noise. It also
+  measures the night's true drift rate as a by-product, which is what §1.45 insists on.
+  **Still owed to T-4.7:** the whole-frame phase-correlation primitive. This is the cheap case —
+  one dominant object — and does not replace it.
+- [x] **T-11.6** **Sharpness as the quality metric**, feeding T-5.5's existing keep-best-N% cut,
   which needs no other change. Gradient energy or Laplacian variance over the disc; HFR and star
   count are meaningless on a lunar frame. Lucky imaging wants a far harsher cut than deep sky —
   think 10–25% kept rather than 95%.
-- [ ] **T-11.7** **A lunar edit profile.** No gradient removal — the sky is black and T-7.1's
+  **Done 2026-09-09** — `FrameQuality.Mode.LUNAR`, `FrameRecord.sharpness`,
+  `FrameQuality.LUNAR_KEEP_PERCENT = 20`. The cut itself needed no change, as predicted.
+  *The exponent is 1 here against HFR's 2, and that is not an inconsistency:* HFR is a radius, so
+  flux density goes as `1/r²`; a Laplacian variance is already a squared quantity, so using it
+  linearly applies the same physical exponent. Squaring again would double-count the geometry.
+  *Star count and background are dropped rather than defaulted* — the first is meaningless on a
+  lunar frame and the second is read noise over black sky, while the haze it would catch already
+  shows up in sharpness.
+- [x] **T-11.7** **A lunar edit profile.** No gradient removal — the sky is black and T-7.1's
   polynomial has nothing to model. A mild stretch rather than T-7.3's aggressive one, which would
   only lift noise, and sharpening rather than saturation.
+  **Done 2026-09-09** — `moon/LunarEdit.kt`. Gradient removal off at **every** slider position
+  (there is no sky background to model, so the polynomial is unconstrained), saturation pinned at
+  1.0 (the moon is grey; a nebula boost turns its noise into confetti), background at 0.02–0.04
+  against deep sky's 0.08–0.35, and a harder shadow clip because there is nothing below the sky but
+  read noise.
+  *Plus the one step deep sky never wants:* unsharp masking. Sharpening point sources makes rings,
+  which is why the deep-sky path does not do it; an extended object with real recovered detail is
+  the case where it earns its place. Conservative by default and applied to the 8-bit render, so
+  FR-8.2's master stays sacred and the choice is re-doable without re-stacking.
 - [ ] **T-11.8** **Target type at session setup** — **deep sky**, **moon: disc**, or **moon in
   scene** — carried into `session.json` so a restack knows which pipeline made the master. The
   camera picker stays exactly where it is: the target type changes how the app *meters and stacks*,
@@ -4795,7 +4857,7 @@ streams, and whether a HAL honours what it was asked.
 **A sixth level, added 2026-08-17: the `--es diag` harness.** Camera acceptances are driven from
 `adb` rather than from the UI — `am start -n com.starstacker/.MainActivity --es diag <mode>`,
 where the modes are now `framing`, `focus`, `lens` and `solve` (`diag/FieldDiagnostics.kt`),
-`lifecycle` (`diag/CameraLifecycleCheck.kt`, T-1.3), `switch` (`diag/ExposureSwitchCheck.kt`, OI-26), `storage` (`diag/StorageBenchmark.kt`, T-0.5),
+`lifecycle` (`diag/CameraLifecycleCheck.kt`, T-1.3), `switch` (`diag/ExposureSwitchCheck.kt`, OI-26), `moon` (`diag/MoonCheck.kt`, T-11.1–T-11.4), `storage` (`diag/StorageBenchmark.kt`, T-0.5),
 plus `capture`, `openability` and `crash` — writing a per-frame record to a file, because CamX
 floods the log buffer and evicts our lines within seconds. This is
 what made §1.7 findable: at roughly one frame per second, watching a preview cannot tell you that
@@ -4826,8 +4888,9 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-09-09 | **Moon mode's disc half built: T-11.1–T-11.7 done, with tests.** A new `moon` package — `LunarGeometry` (ranks every camera from the measured profile and refuses to recommend one that cannot expose the disc), `LunarExposure` (Looney 11 from the profile's own aperture, then metered), `Disc`, `Sharpness`, `LunarFocus` + `LunarFocusRunner`, `LunarPlan`, `LunarEdit` — plus `FrameQuality.Mode.LUNAR`, `FrameRecord.sharpness` and `diag/MoonCheck.kt` (`--es diag moon`). Tested against a new `SyntheticMoon` generator with limb darkening, craters, phase, blur and noise, because none of this can be checked on a star field. **Three bugs the tests caught before the sky could.** *One:* a clipped frame reads peak == white whether it is one stop over or fourteen, so `target / measured` asks for **0.7x** on a frame 14.2 stops out — a clipped probe now ignores its own measurement and steps down four stops. *Two:* `Disc` first accepted **pure noise as a moon**, because on a noise-only frame the threshold lands at the median and half the frame passes; an area floor cannot fix that (a moon filling the frame is the goal of *disc* mode), so the guard is contrast against a MAD noise estimate. *Three:* **§1.45's ultrawide row was wrong** — 112.8 arcsec/px and 17 px against the 140.7 and 13 px that §2's own measured device table implies. Corrected, along with the drift table that inherited it. **T-11.4's open decision is settled:** cap the frame count, from a storage budget under a 400-frame diminishing-returns ceiling, with the cadence taken from OI-26's measured 33.2 ms readout floor rather than the 0.13 ms exposure. **Deferred honestly:** T-11.8–T-11.11 (the *moon in scene* half) wait on OI-25, since their ground stack runs through the pipeline that is losing 38% of the field. |
 | 2026-09-08 | **OI-26 resolved on device: interleave by injection, not by switching (`--es diag switch`).** The plan had assumed the question was *block size*. It was not — it was which Camera2 call to use, and three of the four available get it wrong on this HAL. Re-applying a repeating request per frame costs **7.6 s and 5.7 discarded frames per switch**, because the pipeline is ten deep (§1.7) and drains at the old exposure; blocking cuts the number of switches but not the price of one, so blocks of 20 still add **30%** to a session. `setRepeatingBurst` of a `[short, long]` cycle paces it perfectly — frames 2 533 ms apart, exactly 33.2 + 2 500 — and then applies the **first request's exposure to every frame**, silently, with the metadata agreeing. `stopRepeating` + `captureBurst` delivers **nothing at all**, since this HAL will not stream RAW without a repeating request driving it (D-20/D-23), and it fails with no exception and no log — which is why `onCaptureFailed` is now handled in `SequenceSession`. **What works is injecting one-shots over a cheap repeating request:** the short exposure repeats (keeping RAW alive, and it *is* the moon set) while ground frames go in as a `captureBurst`. Measured **2 499.998 ms for a 2 500 ms ask, −1.2 ms per frame, zero frames at the wrong exposure**, with 5.19 s to a submission's first frame paid once rather than per frame. **Correction to yesterday's arithmetic:** short frames are not 2 ms — full-RAW readout floors at **33.2 ms** and the measured cadence is 32.8 ms, so 120 moon frames cost **3.9 s, not 0.26 s** (2.6% of a session rather than 0.2%). The 2 ms figure was real but only at a 1 s sub, where the DNG write hides behind the exposure. |
-| 2026-09-08 | **Moon drift is derived, not remembered; and interleaving costed (§1.45, T-11.9, OI-26).** The ~26 px over 79 s from 2026-09-06 had been written into the design as if it were a device constant. It is not: it works out at 8.16 arcsec/s, **54% of sidereal**, because the moon was at 2° altitude where refraction compresses vertical motion — reusing it on a high moon would underestimate the drift by nearly half. The rule is `15.041 × cos(dec)` arcsec/s worst case over the profile's own `arcsec/px`, which is 0.606 px/s on the tele against 0.133 on the ultrawide. **Interleaving then costs almost nothing**: at the measured 2 ms per-frame overhead, 120 short frames are 0.26 s of a 150 s session — 0.2%. What is *not* measured is per-frame exposure switching, since that 2 ms came from a constant exposure; strict alternation costs 8% at a 50 ms switch and 80% at 500 ms, so the design is **interleave in blocks sized by the measured switch cost** (OI-26, default 20, under 4% even at 500 ms). Also found: **the drifting moon cleans itself out of the ground stack** — registered on the static ground it is a per-pixel outlier and `SigmaClip` already rejects it, provided the set runs several times the disc's crossing time (~6 min at sidereal on the tele, ~11 min at 2026-09-06's rate), which the app should require up front rather than let the user discover. **Overclaim corrected:** back-to-back sets were said to leave “no way to choose” the disc's position; with the blob tracked per frame and a drift fitted they work too, merely extrapolating instead of interpolating. Interleaving is better, not load-bearing. |
+| 2026-09-08 | **Moon drift is derived, not remembered; and interleaving costed (§1.45, T-11.9, OI-26).** The ~26 px over 79 s from 2026-09-06 had been written into the design as if it were a device constant. It is not: it works out at 8.16 arcsec/s, **54% of sidereal**, because the moon was at 2° altitude where refraction compresses vertical motion — reusing it on a high moon would underestimate the drift by nearly half. The rule is `15.041 × cos(dec)` arcsec/s worst case over the profile's own `arcsec/px`, which is 0.606 px/s on the tele against 0.107 on the ultrawide. **Interleaving then costs almost nothing**: at the measured 2 ms per-frame overhead, 120 short frames are 0.26 s of a 150 s session — 0.2%. What is *not* measured is per-frame exposure switching, since that 2 ms came from a constant exposure; strict alternation costs 8% at a 50 ms switch and 80% at 500 ms, so the design is **interleave in blocks sized by the measured switch cost** (OI-26, default 20, under 4% even at 500 ms). Also found: **the drifting moon cleans itself out of the ground stack** — registered on the static ground it is a per-pixel outlier and `SigmaClip` already rejects it, provided the set runs several times the disc's crossing time (~6 min at sidereal on the tele, ~11 min at 2026-09-06's rate), which the app should require up front rather than let the user discover. **Overclaim corrected:** back-to-back sets were said to leave “no way to choose” the disc's position; with the blob tracked per frame and a drift fitted they work too, merely extrapolating instead of interpolating. Interleaving is better, not load-bearing. |
 | 2026-09-08 | **Moon mode gets a second exposure: it must expose the ground too (§1.45, T-11.9–T-11.11).** As first proposed the mode metered the disc and would have returned a correct moon on a **black frame**. The scene is simply wider than the sensor: the 2026-09-06 session wanted **2 474.6 ms** for the harbour and **0.13 ms** for the moon, a separation of **19 035× — 14.2 stops**, against 10 stops between this raw's black level of 64 and its white level of 1023. **Stacking closes none of it** — averaging buys `sqrt(N)` in the shadows and nothing in the highlights, and at the moon's exposure a 600 ADU shoreline reads **0.03 ADU** and quantises to black, where the mean of a thousand zeros is still zero. So the mode now has **two shapes**: *disc*, one set, where a black background is the correct answer; and *moon in scene*, two **interleaved** sets so both stacks span the same interval and the composite epoch is interpolated rather than extrapolated. The two masters register by **the clipped blob's centroid** in the long frames, needing no ephemeris, and ship as **registered layers alongside the merge** because the blend is a taste decision. Also corrected: “calibration nearly vanishes” holds for the disc only — the ground set is an ordinary long exposure wanting darks, flat and gradient removal in full. |
 | 2026-09-08 | **Moon mode proposed as Phase 7.5 (§1.45).** The 2026-09-06 session clipped 1 597 pixels of the lunar disc flat, and the arithmetic says why: camera 3 at `f/2.55` gathers 18.6× more light than `f/11`, so a correct ISO 400 exposure is **0.13 ms** against the **2 474.6 ms** actually shot — **14.2 stops over**, and still nine stops over after crediting a crescent and 2° of atmospheric extinction. No stacking recovers a clipped pixel. **A mode rather than a setting**, because metering, focus, frame count, registration, quality metric and the edit all differ together. **The camera stays the user's choice** — the mode computes `arcsec/px` from the measured profile, reports the moon's size for every camera the probe found and recommends the largest with that number as the reason (FR-11.3), but never imposes it, because a tight disc and a moon in a landscape are different pictures and nothing here may assume one handset's lens line-up. Exposure is **metered rather than calculated**, reusing `FlatCheck`'s probe loop, because phase and altitude moved the truth five stops on this very session. Lucky imaging falls out of T-5.5's existing keep-best cut given a sharpness metric, which doubles as the focus signal. The open tension is storage: 25 MB a frame for an object filling 0.03% of it. **It does not replace T-4.7** — both need alignment without stars, so the primitive is built once and consumed twice. |
 | 2026-09-07 | **T-4.7 raised: a whole-image registration fallback.** Session `2026-09-06_0118` — a crescent moon over a harbour — had 34 of 67 lights rejected as unregisterable, and **whole-image phase correlation puts all 67 at a shift of exactly (0,0)**: they were aligned to the pixel and there was nothing to fail at. The scene holds two rigid bodies, a static shore that dominates the frame and a moon moving ~26 px over 79 s, and star matching can serve only one; the detector's brightest points all sit on the moon's disc and only 34% of detections are stable to 3 px, the rest being shimmering water. **DeepSkyStacker fails on the same frames and fails worse** — it picked a 13-detection reference, matched 0–4 stars per frame, excluded every light and never wrote an `autosave.tif`, 0 of 67 against our 33. The fallback is `phaseCorrelate` on the failure path only, so a normal session pays nothing. Also recorded: a proposed "the field is not moving, so this is not sky" sanity check was **abandoned before it was written** — it would have fired on this very session and declared 32 good frames broken. |

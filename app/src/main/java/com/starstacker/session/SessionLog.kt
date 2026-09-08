@@ -51,6 +51,14 @@ data class FrameRecord(
     val starCount: Int?,
     val eccentricity: Double?,
     val backgroundAdu: Double?,
+    /**
+     * T-11.6 — normalised sharpness over the lunar disc, for moon mode's keep-best cut.
+     *
+     * Null on a deep-sky frame, where [hfr] is the sharpness measure and this would be meaningless:
+     * measured over a star field rather than an extended object, the number would be dominated by
+     * sensor noise, which is high-frequency and would rank the *noisiest* frame as the sharpest.
+     */
+    val sharpness: Double? = null,
     val accepted: Boolean,
     val rejectReason: RejectReason? = null,
     /** Free text alongside the reason — the actual numbers that tripped it. */
@@ -73,6 +81,7 @@ data class FrameRecord(
         "starCount" to starCount,
         "eccentricity" to eccentricity,
         "backgroundAdu" to backgroundAdu,
+        "sharpness" to sharpness,
         "accepted" to accepted,
         "rejectReason" to rejectReason?.name,
         "rejectDetail" to rejectDetail,
@@ -95,6 +104,7 @@ data class FrameRecord(
             starCount = map.int("starCount"),
             eccentricity = map.double("eccentricity"),
             backgroundAdu = map.double("backgroundAdu"),
+            sharpness = map.double("sharpness"),
             accepted = map.boolean("accepted") ?: true,
             rejectReason = map.string("rejectReason")
                 ?.let { runCatching { RejectReason.valueOf(it) }.getOrNull() },

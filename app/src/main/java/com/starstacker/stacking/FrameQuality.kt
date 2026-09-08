@@ -51,6 +51,23 @@ import kotlin.math.ceil
  */
 object FrameQuality {
 
+    /**
+     * Which set of metrics a session's frames should be judged on — T-11.6.
+     *
+     * Not a tuning knob: the two modes read *different fields*, because a lunar frame and a
+     * deep-sky frame have nothing measurable in common. HFR and star count do not exist on the
+     * moon, and [FrameRecord.sharpness] is null on a star field. Choosing the wrong one does not
+     * degrade the ranking, it removes it — every term falls back to 1.0 and every frame weighs the
+     * same.
+     */
+    enum class Mode {
+        /** HFR, star count and background — the three terms FR-7.6 was written around. */
+        DEEP_SKY,
+
+        /** Sharpness over the disc, and nothing else. See [scoreLunar] for why nothing else. */
+        LUNAR,
+    }
+
     /** One frame's score and the terms behind it, so the UI can say *why* rather than just rank. */
     data class Score(
         val index: Int,
@@ -68,8 +85,9 @@ object FrameQuality {
      *
      * @return one [Score] per input, in the same order. Weights are in `(0, 1]`.
      */
-    fun score(frames: List<FrameRecord>): List<Score> {
+    fun score(frames: List<FrameRecord>, mode: Mode = Mode.DEEP_SKY): List<Score> {
         if (frames.isEmpty()) return emptyList()
+        if (mode == Mode.LUNAR) return scoreLunar(frames)
 
         // The references are the best *observed* values, so the scale is the session's own. An
         // absolute scale would need to know what a good HFR is for this focal length and pixel
@@ -93,6 +111,49 @@ object FrameQuality {
                 sharpness = sharpness,
                 transparency = transparency,
                 darkness = darkness,
+            )
+        }
+    }
+
+    /**
+     * T-11.6 — lucky imaging's ranking: sharpness over the disc, and deliberately nothing else.
+     *
+     * ### Why the exponent is 1 here and 2 for HFR, which is not an inconsistency
+     *
+     * The deep-sky term squares HFR because HFR is a *radius*: a star's flux spreads over an area
+     * going as `r²`, so peak signal goes as `1/r²`. [FrameRecord.sharpness] is a Laplacian
+     * variance — already a squared quantity — so using it linearly applies the *same* physical
+     * exponent. Squaring it again would double-count the geometry and make the cut far harsher
+     * than intended.
+     *
+     * ### Why star count and background are dropped rather than defaulted
+     *
+     * Star count is meaningless on a lunar frame; the detector returns crater rims. Background is
+     * measurable but nearly useless: the sky is black, so the number is dominated by read noise
+     * rather than by sky brightness, and the one thing it would catch — haze — already shows up in
+     * sharpness, because [Sharpness] normalises by the region's own variance and haze flattens it.
+     * Including either would add noise to the ranking while looking like rigour.
+     *
+     * ### Why every frame still gets a weight
+     *
+     * A frame with no sharpness recorded scores 1.0, exactly as a missing HFR does, so a session
+     * logged before this existed stacks unweighted rather than being reordered by which fields
+     * happened to be populated.
+     */
+    private fun scoreLunar(frames: List<FrameRecord>): List<Score> {
+        val best = frames.mapNotNull { it.sharpness }.filter { it.isFinite() && it > 0 }.maxOrNull()
+
+        return frames.map { frame ->
+            val sharpness = ratio(best, frame.sharpness) { b, value -> value / b }
+            Score(
+                index = frame.index,
+                fileName = frame.fileName,
+                weight = sharpness.coerceIn(MIN_WEIGHT, 1.0),
+                sharpness = sharpness,
+                // Named in the type and not measurable here. Reported as 1.0 rather than 0 so the
+                // UI's "why" reads as "not applicable" rather than "this frame was terrible".
+                transparency = 1.0,
+                darkness = 1.0,
             )
         }
     }
@@ -155,4 +216,20 @@ object FrameQuality {
 
     /** FR-7.6's default: drop the worst 5%, which on a long run is the cloud and the aeroplanes. */
     const val DEFAULT_KEEP_PERCENT = 95
+
+    /**
+     * T-11.6 — moon mode's default, and it is a *far* harsher cut for a different reason.
+     *
+     * Deep sky drops 5% because the bad frames are anomalies: a plane went over, cloud arrived.
+     * Everything else is equally good and throwing it away throws away integration time, which is
+     * the one thing a faint target cannot spare.
+     *
+     * Lunar frames are not scarce and are not equally good. The moon is bright enough that
+     * hundreds of frames cost seconds, and atmospheric seeing means their sharpness varies wildly
+     * over that time — the point of lucky imaging is that a handful of moments happen to be steady
+     * and the rest are not worth averaging in. Keeping 20% of 200 frames still stacks 40, which is
+     * ample signal for a daylight-bright subject, and it is the difference between a sharp result
+     * and a soft one.
+     */
+    const val LUNAR_KEEP_PERCENT = 20
 }
