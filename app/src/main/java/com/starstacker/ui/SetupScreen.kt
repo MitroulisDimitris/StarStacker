@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -32,6 +33,7 @@ import com.starstacker.exposure.ExposureCompensation
 import com.starstacker.exposure.PredictedHistogram
 import com.starstacker.exposure.ExposureSolver
 import com.starstacker.exposure.SessionPlanner
+import com.starstacker.session.TargetType
 import com.starstacker.pointing.Astro
 import com.starstacker.pointing.PointingFix
 import com.starstacker.ui.theme.Night
@@ -89,6 +91,17 @@ fun SetupScreen(
                 Spacer(Modifier.weight(1f))
                 Mono("SESSION SETUP", color = Night.Dim, size = 9.5.sp)
             }
+        }
+
+        // T-11.8 — first, because it changes what every number below it means: a lunar session
+        // meters on a sunlit rock rather than on the sky, and stacks on sharpness rather than on
+        // stars.
+        item { Eyebrow("Target") }
+        item {
+            TargetTypePicker(
+                selected = controller.targetType,
+                onSelect = { controller.targetType = it },
+            )
         }
 
         item { Eyebrow("Pointing") }
@@ -650,6 +663,54 @@ private fun StopScale(stops: Double) {
                     color = if (mark == nearest) Night.Txt2 else Night.Dim,
                     size = 9.sp,
                 )
+            }
+        }
+    }
+}
+
+/**
+ * T-11.8 — deep sky, a moon disc, or a moon in a scene.
+ *
+ * ### Why it is asked rather than inferred
+ *
+ * The app cannot tell these apart from a viewfinder, and they are not variations on one another.
+ * *Disc* shoots a single metered set where a **black background is the correct answer**, because
+ * nothing else is in the frame. *Moon in scene* shoots two, because the moon and a landscape are
+ * **14.2 stops apart** against a sensor spanning ten and one exposure has to sacrifice an end —
+ * which is exactly what ruined 2026-09-06. A black background there is a failure, not a result.
+ *
+ * ### And it is not a camera choice
+ *
+ * The camera picker is untouched by this. The target type changes how the app *meters and stacks*,
+ * never what the user is allowed to point: someone shooting a moon in a landscape on an ultrawide
+ * is making a framing decision, and the mode's job is to expose it correctly rather than to argue
+ * (section 1.45).
+ */
+@Composable
+private fun TargetTypePicker(selected: TargetType, onSelect: (TargetType) -> Unit) {
+    Card {
+        TargetType.entries.forEach { type ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { onSelect(type) }
+                    .padding(vertical = 6.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Mono(
+                    if (type == selected) "●" else "○",
+                    color = if (type == selected) Night.Hot else Night.Dim,
+                    size = 11.sp,
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        type.label,
+                        fontSize = 13.sp,
+                        color = if (type == selected) Night.Txt else Night.Txt2,
+                    )
+                    Mono(type.summary, color = Night.Txt3, size = 9.5.sp, lineHeight = 13.sp)
+                }
             }
         }
     }

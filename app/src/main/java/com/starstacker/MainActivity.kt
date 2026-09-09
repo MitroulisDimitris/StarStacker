@@ -653,6 +653,9 @@ class MainActivity : ComponentActivity() {
                                         ?.takeIf { !it.fixedFocus }?.diopters,
                                     lightCount = plan.lightCount,
                                     darkCount = plan.darkCount,
+                                    // T-11.8 — what the session is pointed at, which decides
+                                    // whether the engine brackets and which pipeline stacks it.
+                                    targetType = setup.targetType,
                                     // Frozen here, at Start. The compass is not polled during
                                     // capture, and the pointing that matters is the one the
                                     // exposure was solved against — re-reading it an hour later

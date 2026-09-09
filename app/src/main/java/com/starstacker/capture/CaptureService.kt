@@ -20,6 +20,7 @@ import com.starstacker.session.SessionPointing
 import com.starstacker.session.SessionRoot
 import com.starstacker.session.SessionStore
 import com.starstacker.session.SessionInfo
+import com.starstacker.session.TargetType
 import com.starstacker.session.SessionLayout
 import com.starstacker.session.SessionLog
 import com.starstacker.session.SessionState
@@ -154,6 +155,14 @@ class CaptureService : Service() {
                     plannedLightCount = request.lightCount,
                     plannedDarkCount = request.darkCount,
                     focusDiopters = request.focusDiopters,
+                    // T-11.8 — which pipeline this session belongs to. Recorded because a restack
+                    // must *reproduce* a master rather than approximate it (FR-10.4), and a moon
+                    // session run back through the deep-sky path would be stretched, gradient
+                    // corrected and ranked on star counts that do not exist.
+                    targetType = request.targetType,
+                    groundIso = request.groundIso,
+                    groundExposureNs = request.groundExposureNs,
+                    groundLightCount = request.groundLightCount.takeIf { it > 0 },
                     // FR-9.2: the declination is the one input to the sub length that leaves no
                     // trace in the result, so a log without it cannot say whether the trailing
                     // limit was relaxed or worst-cased at the equator.
@@ -291,6 +300,13 @@ private fun Intent.toRequest(): CaptureEngine.Request? {
             focusDiopters = getFloatExtra(EXTRA_FOCUS, Float.NaN).takeIf { !it.isNaN() },
             lightCount = getIntExtra(EXTRA_LIGHTS, 0),
             darkCount = getIntExtra(EXTRA_DARKS, 0),
+            // T-11.8. Absent means the default, which is what every session before this was.
+            targetType = getStringExtra(EXTRA_TARGET)
+                ?.let { runCatching { TargetType.valueOf(it) }.getOrNull() }
+                ?: TargetType.DEEP_SKY,
+            groundIso = getIntExtra(EXTRA_GROUND_ISO, -1).takeIf { it > 0 },
+            groundExposureNs = getLongExtra(EXTRA_GROUND_EXPOSURE, -1L).takeIf { it > 0 },
+            groundLightCount = getIntExtra(EXTRA_GROUND_LIGHTS, 0),
             pointing = SessionPointing(
                 latitudeDeg = optDouble(EXTRA_LAT),
                 longitudeDeg = optDouble(EXTRA_LON),
@@ -325,6 +341,10 @@ private fun Intent.toRequest(): CaptureEngine.Request? {
         private const val EXTRA_FOCUS = "focus"
         private const val EXTRA_LIGHTS = "lights"
         private const val EXTRA_DARKS = "darks"
+        private const val EXTRA_TARGET = "targetType"
+        private const val EXTRA_GROUND_ISO = "groundIso"
+        private const val EXTRA_GROUND_EXPOSURE = "groundExposureNs"
+        private const val EXTRA_GROUND_LIGHTS = "groundLights"
         private const val EXTRA_LABEL = "label"
         private const val EXTRA_LAT = "lat"
         private const val EXTRA_LON = "lon"
@@ -365,6 +385,10 @@ private fun Intent.toRequest(): CaptureEngine.Request? {
                 request.focusDiopters?.let { putExtra(EXTRA_FOCUS, it) }
                 putExtra(EXTRA_LIGHTS, request.lightCount)
                 putExtra(EXTRA_DARKS, request.darkCount)
+                putExtra(EXTRA_TARGET, request.targetType.name)
+                request.groundIso?.let { putExtra(EXTRA_GROUND_ISO, it) }
+                request.groundExposureNs?.let { putExtra(EXTRA_GROUND_EXPOSURE, it) }
+                putExtra(EXTRA_GROUND_LIGHTS, request.groundLightCount)
                 putExtra(EXTRA_LABEL, label)
                 request.pointing?.let { p ->
                     p.latitudeDeg?.let { putExtra(EXTRA_LAT, it) }

@@ -70,7 +70,7 @@ Two consequences to accept deliberately:
 | **5** | Auto-edit | M6 | Shareable stretched JPEG without a desktop |
 | **6** | Calibration library | M2 | Flats, noise model, hot pixels, intrinsics; Full tier reachable |
 | **7** | Wide-field & second camera | M7 | De-project/re-project; per-camera calibration; recommendation |
-| **7.5** | Moon mode *(built 2026-09-09, §1.45)* | new | A moon that is not clipped: metered short exposures, lucky imaging, aligned on the disc — and bracketed against the ground when the scene is wider than the sensor |
+| **7.5** | Moon mode *(built, mostly not yet wired — §12.5's audit)* | new | A moon that is not clipped: metered short exposures, lucky imaging, aligned on the disc — and bracketed against the ground when the scene is wider than the sensor |
 | **8** | Post-v1 | §14 deferred | Dithering, star trails, framing assistance |
 
 **Phases 0 → 1C are the priority.** Everything after 1C is sequenced but not yet scheduled.
@@ -4638,7 +4638,7 @@ changes whether someone can run one without being surprised.
 - [ ] **T-9.2** Full per-camera isolation audit — nothing transfers between cameras (FR-11.1).
 - [ ] **T-9.3** Camera recommendation with a stated reason (FR-11.3).
 
-## 12.5 Phase 7.5 — Moon mode *(T-11.1–T-11.11 done 2026-09-09; §1.45)*
+## 12.5 Phase 7.5 — Moon mode *(built and tested; only T-11.8 is reachable — see the audit below)*
 
 > **Why a mode and not a setting.** The 2026-09-06 session overexposed the moon by **14.2 stops**
 > and clipped 1 597 pixels of the disc flat. Metering, focus, frame count, registration, quality
@@ -4658,7 +4658,46 @@ changes whether someone can run one without being surprised.
 
 
 
-- [x] **T-11.1** **Lunar exposure, metered.** Probe and correct until the brightest part of the disc
+> ### Reachability audit, 2026-09-09 — every one of these was ticked too early
+>
+> The user ran the app and could not find moon mode. They were right, and the tick was mine: I
+> marked these done on the strength of the *code* being written and tested, and none of it was on a
+> path anyone could take. A `grep` for production callers is what should have been run before the
+> box was ticked:
+>
+> | component | called from |
+> |---|---|
+> | `LunarExposure`, `LunarGeometry`, `LunarPlan` | `diag/MoonCheck` only — an adb command, not a mode |
+> | `LunarFocusRunner` | **nothing** |
+> | `LunarEdit` | **nothing** |
+> | `BracketedStack` (and so `MasterAlign`, `Composite`, `DiscAlign`) | **nothing** |
+> | `BracketPlan` | `CaptureEngine.captureBracketed`, which could never fire |
+>
+> **T-11.8 is now genuinely wired** — a target picker on the setup screen, threaded to
+> `CaptureEngine.Request`, recorded in `session.json`, and carried across the service's intent
+> round-trip so a restart does not forget the mode. That is what makes the rest *reachable in
+> principle*; it does not make them reached.
+>
+> **What still has no path**, and this is the honest remaining work:
+>
+> 1. **Nothing meters the moon at setup.** `SetupController` solves an exposure from the *sky*
+>    background. A lunar session needs `LunarExposure`'s probe loop instead, and a bracketed one
+>    needs a second exposure metered on the ground — without which `captureBracketed` falls back to
+>    a single set and a *moon in scene* session is silently an ordinary one.
+> 2. **Nothing focuses on the disc.** `LunarFocusRunner` exists and is never constructed.
+> 3. **Nothing measures per-frame sharpness.** `FrameRecord.sharpness` is read by
+>    `FrameQuality.Mode.LUNAR` and written by nobody, so the lucky-imaging cut has no input and
+>    every frame weighs 1.
+> 4. **Nothing routes a lunar stack.** `StackingService` always builds a plain `StackJob`;
+>    `BracketedStack` is never called, so T-11.9–T-11.11 cannot run.
+> 5. **Nothing applies the lunar edit.** `StackJob` always uses `AutoEdit.Settings()`.
+>
+> *The one thing the picker did fix by itself:* `DngFrameSource` already chose
+> `FrameQuality.Mode.LUNAR` from `targetType`, and `targetType` was always `DEEP_SKY` because
+> nothing set it. It now can be.
+
+
+- [~] **T-11.1** **Lunar exposure, metered.** Probe and correct until the brightest part of the disc
   sits at ~70% of white — below clipping, with margin for seeing. Reuses `FlatCheck`'s iterative
   loop (§1.44), which settled a five-stop error in two probes. Looney 11 is the *starting* guess
   only, computed from the profile's own aperture and ISO range rather than from any assumed lens:
@@ -4674,7 +4713,7 @@ changes whether someone can run one without being surprised.
   probe therefore ignores its own measurement and steps down a fixed four stops instead.
   *Acceptance still needs a moon:* `--es diag moon` reports PASS/FAIL against "no clipped pixel,
   peak 60–80%".
-- [x] **T-11.2** **Report what each camera will give; let the user choose.** From the profile,
+- [~] **T-11.2** **Report what each camera will give; let the user choose.** From the profile,
   `arcsec/px = 206265 × pitch / focal`, so the moon is `1865 / that` pixels across. Show it for every
   camera the probe found, **recommend the largest with the number as the reason** (FR-11.3, T-9.3),
   and default to it — but never override a choice. A tight disc and a moon small in a landscape are
@@ -4688,7 +4727,7 @@ changes whether someone can run one without being surprised.
   the moon excluded from the recommendation and named against the one that can.
   `LunarGeometryTest` covers a one-camera phone, a phone whose tele is *worse* than its main
   sensor, and a device where nothing can expose the moon — the three shapes the rule exists for.
-- [x] **T-11.3** **Lunar focus.** Contrast/sharpness maximisation on the disc, replacing T-2.4's HFR
+- [~] **T-11.3** **Lunar focus.** Contrast/sharpness maximisation on the disc, replacing T-2.4's HFR
   star sweep, which has nothing to measure here. Same metric as T-11.6, so it is written once.
   **Done 2026-09-09** — `moon/Sharpness.kt`, `moon/LunarFocus.kt`, `moon/LunarFocusRunner.kt`.
   The motor discipline is unchanged and reused: `FocusSweep`'s position generators, the overshoot
@@ -4698,7 +4737,7 @@ changes whether someone can run one without being surprised.
   measured over a mostly-black frame ranks the **noisiest** frame as the sharpest. Every reading is
   taken over `Disc`'s bounding box for that reason, and `SharpnessTest` asserts both that the bug
   is real when the region is wrong and that this is not.
-- [x] **T-11.4** **Lucky-imaging capture.** Many short frames in quick succession.
+- [~] **T-11.4** **Lucky-imaging capture.** Many short frames in quick succession.
   *The open decision:* 25 MB per DNG against an object occupying 0.03% of the frame — 500 frames is
   12.5 GB. Cap the count for v1; crop-on-write is a later optimisation and a new on-disk shape.
   **Decided and done 2026-09-09** — `moon/LunarPlan.kt`. **Option 1, the cap**, as the plan
@@ -4710,7 +4749,7 @@ changes whether someone can run one without being surprised.
   measured 33.2 ms readout floor is 13.3 s and 8 px of drift, which alignment absorbs.
   *And the cadence is readout, not exposure* — a planner using the 0.13 ms exposure would promise
   400 frames in 0.05 s.
-- [x] **T-11.5** **Align on the disc.** Centroid or phase correlation over the lunar bounding box —
+- [~] **T-11.5** **Align on the disc.** Centroid or phase correlation over the lunar bounding box —
   **the same primitive as T-4.7**, which should therefore be built once and consumed twice.
   Translation-only is sufficient: field rotation over a run of seconds is negligible and the object
   is small.
@@ -4723,7 +4762,7 @@ changes whether someone can run one without being surprised.
   measures the night's true drift rate as a by-product, which is what §1.45 insists on.
   **Still owed to T-4.7:** the whole-frame phase-correlation primitive. This is the cheap case —
   one dominant object — and does not replace it.
-- [x] **T-11.6** **Sharpness as the quality metric**, feeding T-5.5's existing keep-best-N% cut,
+- [~] **T-11.6** **Sharpness as the quality metric**, feeding T-5.5's existing keep-best-N% cut,
   which needs no other change. Gradient energy or Laplacian variance over the disc; HFR and star
   count are meaningless on a lunar frame. Lucky imaging wants a far harsher cut than deep sky —
   think 10–25% kept rather than 95%.
@@ -4735,7 +4774,7 @@ changes whether someone can run one without being surprised.
   *Star count and background are dropped rather than defaulted* — the first is meaningless on a
   lunar frame and the second is read noise over black sky, while the haze it would catch already
   shows up in sharpness.
-- [x] **T-11.7** **A lunar edit profile.** No gradient removal — the sky is black and T-7.1's
+- [~] **T-11.7** **A lunar edit profile.** No gradient removal — the sky is black and T-7.1's
   polynomial has nothing to model. A mild stretch rather than T-7.3's aggressive one, which would
   only lift noise, and sharpening rather than saturation.
   **Done 2026-09-09** — `moon/LunarEdit.kt`. Gradient removal off at **every** slider position
@@ -4754,6 +4793,13 @@ changes whether someone can run one without being surprised.
   *The third choice is not a variant of the second.* Disc shoots one exposure and a black background
   is the correct answer; moon-in-scene shoots two and a black background is a failure. Offer the
   distinction in those words, because it is the one thing a user cannot infer from a viewfinder.
+  **Screen done 2026-09-09**, after the user pointed out moon mode was nowhere to be found. A
+  three-way picker at the top of session setup — first, because it changes what every number below
+  it means — held in `SetupController` so it survives the trip out to framing and back, threaded
+  into `CaptureEngine.Request`, written into `session.json`, and carried as an intent extra so a
+  service restart does not forget the mode. The camera picker is untouched, per §1.45.
+  *Previously ticked on the strength of the record alone*, which is exactly the "logic done, screen
+  pending" split marked honestly for T-6.x an hour later and not applied here.
   *Note what it simplifies:* darks at sub-millisecond exposures are essentially bias frames, and a
   small object in the frame centre sees little of the vignetting §1.41 measured at the corners.
   Calibration nearly vanishes — for a *tight* moon. A wide-field moon-in-landscape shot needs the
@@ -4765,7 +4811,7 @@ changes whether someone can run one without being surprised.
   no target type round-trips as `DEEP_SKY` and unbracketed.
   `ExposureSet` is a **separate axis from `FrameKind`**, deliberately — light-versus-dark and
   moon-versus-ground are independent questions, and a bracketed session has darks for both.
-- [x] **T-11.9** **Bracketed capture for *moon in scene*** *(raised 2026-09-08 — **required**, not
+- [~] **T-11.9** **Bracketed capture for *moon in scene*** *(raised 2026-09-08 — **required**, not
   an extension)*. The moon wants sub-millisecond frames, the ground wants seconds, the separation is
   **14.2 stops** against a 10-bit sensor's 10, and stacking closes none of it: averaging buys
   `sqrt(N)` in the shadows and nothing in the highlights, while at the moon's exposure the ground
@@ -4810,7 +4856,7 @@ changes whether someone can run one without being surprised.
   *And the required session length is stated up front* — `~6 min` at sidereal on the reference tele,
   `~11 min` at the rate 2026-09-06 saw — because under it the disc leaves a streak the composite
   has to mask instead of clean sky it can drop into.
-- [x] **T-11.10** **Register the two masters to each other.** No ephemeris and no new maths: **the
+- [~] **T-11.10** **Register the two masters to each other.** No ephemeris and no new maths: **the
   moon is a clipped white blob in the long exposures**, and a clipped blob has a good centroid.
   Track it in **every** long frame, fit the drift, and evaluate at the ground stack's reference
   epoch — which measures the night's true rate as a by-product, rather than assuming one. Match
@@ -4827,7 +4873,7 @@ changes whether someone can run one without being surprised.
   every real bracketed session. It is there to catch a detection that is not the moon at all.
   *And it measures the night's true drift rate as a by-product*, which is what §1.45 insists on
   after the 2026-09-06 figure turned out to be 54% of sidereal purely because the moon was low.
-- [x] **T-11.11** **Composite, and hand back the layers.** Feathered luminance mask over the disc,
+- [~] **T-11.11** **Composite, and hand back the layers.** Feathered luminance mask over the disc,
   and **export the two registered masters alongside the merge**. The blend is a taste decision and
   the merged preview is a starting point rather than a verdict — this workflow ends in Photoshop,
   where two aligned layers are worth more than one opinionated flatten.
@@ -5150,6 +5196,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-09-09 | **Moon mode was unreachable, and every T-11.x tick was wrong except one.** The user ran the app and could not find moon mode. A `grep` for production callers says why: `LunarFocusRunner`, `LunarEdit` and `BracketedStack` are called from **nothing**; `LunarExposure`, `LunarGeometry` and `LunarPlan` only from `diag/MoonCheck`, which is an adb command rather than a mode; and `BracketPlan` from a branch that could never fire because nothing ever set `targetType`. **I ticked all eleven on the strength of the code being written and tested** — the same “logic done, screen pending” split that was marked honestly for T-6.x an hour later, and not applied here. Ten are demoted to `[~]` with a reachability audit naming each gap. **T-11.8 is now genuinely wired:** a three-way target picker at the top of session setup, held in `SetupController` so it survives the trip out to framing, threaded into `CaptureEngine.Request`, recorded in `session.json` (FR-10.4 — a restack must know which pipeline made the master) and carried as an intent extra so a service restart does not forget the mode. That fixed one thing by itself: `DngFrameSource` already selected `FrameQuality.Mode.LUNAR` from `targetType`, which was permanently `DEEP_SKY` because nothing set it. **Five gaps remain and are listed in §12.5** — nothing meters the moon at setup, nothing focuses on the disc, nothing writes `FrameRecord.sharpness`, nothing routes a lunar stack, nothing applies the lunar edit. |
 | 2026-09-09 | **Phase 4's screens: the session library is usable.** `ui/SessionLibrary.kt` and `ui/SessionThumbnails.kt`, wired through `SessionsController` and the two existing screens. Filter chips over the list, thumbnails in the row slot that has said `NO STACK` since the prototype, and in the detail screen: a staleness banner, the master versions with their settings, per-directory storage with actions, and tap-to-toggle on every light frame. **Choices worth recording.** *Thumbnails cache their absences* — otherwise the cheapest state, no previews at all, is the most expensive to draw, re-decoded on every scroll — and decode through `inSampleSize`, since a stretched master is a full-resolution JPEG and drawing one at full size in a 44 dp box is how a list dies rather than how it is slow. *The frame row is drawn against the override but still shows the gate's reasoning*, because hiding why a frame was cut would leave someone unable to see what they overrode; a rescued frame reads “kept · by hand”. *A blocked storage action states its reason rather than greying out* — “there is no master yet, this would delete the whole session” is the answer to the question a disabled button provokes. *The staleness banner appears only for `STALE`*: `UNKNOWN` is what every session stacked before today is, and dressing it as either answer is the lie the check exists to prevent. *And the multi-night card is a preview, not an action* — it says combining is not built rather than offering a button that does nothing. `SessionStore` gained `sizeBytes(directory)` and `deleteDirectory(directory)`, both taking **named directories and never a pattern** (§1.29); the SAF implementation returns `false` rather than a false success, because reporting space reclaimed while the files remain is the worse failure. **None of this has been on a phone** — it compiles and the logic under it is tested, but no screen here has been looked at. |
 | 2026-09-09 | **Phase 4's session library: the logic behind T-6.1–T-6.3 and T-6.5–T-6.8.** `SessionFilter` (sort/filter), `FrameRecord.included` + `SessionLog.stackable` (manual include/exclude), `MasterVersions` (versioned non-destructive restacking), `Staleness` (calibration drift), `StoragePlan` (what is safe to delete) and `MultiNight` (combining nights). All pure and tested; the screens are what remain. **Four decisions worth keeping.** *The manual override is a separate field from `accepted`*, because `accepted` plus `rejectReason` is the record of why the gate dropped a frame, and overwriting it would destroy the reasoning a restack needs — and an override that *agrees* with the gate is cleared rather than stored, or it would silently pin the frame against a later improvement. *Masters now live in `master/vN/`*, so a restack cannot destroy the one someone is still deciding about; sessions stacked before today keep working because `currentDir` falls back to `master/` itself. *“No calibration recorded” is `UNKNOWN`, not `FRESH`* — every session stacked before today is in that state and calling it fresh would be the exact lie the check exists to prevent. *And “delete subs, keep the master” is offered only where a master exists*: a master is derived and the subs are a night that happened, so without one that action deletes the session. **T-6.8's cold-start wide search is T-4.7's `PhaseCorrelation` unchanged** — between nights there is no seed to start from, which is the case it was built for. Three consumers now, one implementation. |
 | 2026-09-09 | **T-4.7 done: whole-image registration for scenes with no stars in them.** `PhaseCorrelation` is pure Kotlin down to the radix-2 FFT, so it is JVM-testable rather than needing OpenCV and a phone, and `LiveRegistration` falls back to it on both star-path failures — a normal session never reaches it. **The tests had to be corrected twice about the same thing, and it is the interesting part.** A synthetic nightscape built from smooth sinusoids let the *moon* win the correlation; so did one with more sinusoids. That is not a quirk of the test: phase correlation normalises every frequency to unit magnitude, so a feature's weight is **the number of frequencies it occupies**, not its brightness or area — six sinusoids occupy six, one hard-edged disc occupies thousands. Only with **broadband** landscape texture, which a real shoreline has, did the scene reproduce the real session and put a moving moon at (0, 0). Worth knowing as a limit of the method. Measurement also moved two numbers: the **sign was inverted** (`A · conj(B)` peaks at the shift taking target back onto reference, the negative of what callers want, and silent when wrong), and `MIN_PEAK_RATIO` was **guessed at 4.0 and would have accepted pure noise**, which measures 8.8 against 207–10 000 for a real translation — now 50. The honest limit is enforced rather than merely written down: a rotating field smears the peak, the confidence collapses, and the fallback refuses it. The log says “translation only” in as many words, and the residual monitor is not fed, since it tracks a star residual and a starless frame would poison the baseline. |

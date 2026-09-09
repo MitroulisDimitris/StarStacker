@@ -12,6 +12,7 @@ import com.starstacker.exposure.ExposureCompensation
 import com.starstacker.exposure.ExposureSolver
 import com.starstacker.exposure.PredictedHistogram
 import com.starstacker.exposure.SessionPlanner
+import com.starstacker.session.TargetType
 import com.starstacker.exposure.SkyProbe
 import com.starstacker.exposure.TrailingLimit
 import com.starstacker.pointing.PointingFix
@@ -92,6 +93,18 @@ class SetupController(
      * is rounded to a frame count regardless, and carrying the minutes as well means rounding
      * twice.
      */
+    /**
+     * T-11.8 — what this session is pointed at.
+     *
+     * Held here rather than in the screen so it survives the trip out to framing and back, which
+     * is the trip that would otherwise silently reset a moon session to deep sky between choosing
+     * the mode and pressing Start.
+     *
+     * **It does not touch the camera picker.** The target type changes how the app meters and
+     * stacks, never what the user is allowed to point (section 1.45).
+     */
+    var targetType by mutableStateOf(TargetType.DEEP_SKY)
+
     var frameCount by mutableStateOf(DEFAULT_FRAMES)
         private set
 
