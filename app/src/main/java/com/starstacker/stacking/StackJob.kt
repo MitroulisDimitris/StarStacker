@@ -2,6 +2,7 @@ package com.starstacker.stacking
 
 import com.starstacker.edit.AutoEdit
 import com.starstacker.edit.StretchedImage
+import com.starstacker.calibration.Staleness
 import com.starstacker.session.ExposureSet
 import com.starstacker.session.SessionLayout
 import com.starstacker.session.SessionLog
@@ -252,7 +253,10 @@ class StackJob(
             val region = LinearMaster.regionFor(
                 master, frames.width, frames.height, settings.crop, coverageMap, frames.count,
             )
-            val target = File(File(sessionDir, SessionLayout.MASTER), masterFileName())
+            // T-6.5 — each stack writes into its own version directory, so a restack cannot
+            // destroy the master someone is still deciding about (FR-10.4.1).
+            val (versionDir, versionId) = MasterVersions.allocate(sessionDir)
+            val target = File(versionDir, masterFileName())
             val written = runCatching {
                 LinearMaster.write(
                     file = target,
@@ -284,9 +288,10 @@ class StackJob(
             // T-7.x — the picture, from the linear master that has just been written. Deliberately
             // after it: FR-8.2 makes the linear result the artefact, so a failure to render a
             // preview must not cost the thing the session was actually for.
+            previewDir = versionDir
             val preview = renderPreview(master, frames, region, notes, onProgress, name)
 
-            record(log, frames, stacker, region, preview)
+            record(log, frames, stacker, region, preview, versionId, versionDir)
 
             onProgress(Progress(State.DONE, name, message = "Done"))
             return Result(
@@ -355,6 +360,9 @@ class StackJob(
      * what FR-8.2 calls sacred; a preview that would not render is a missing convenience, not a
      * lost night — and the reason is put in the notes rather than swallowed.
      */
+    /** Set for the duration of one run, so the preview lands beside its own master. */
+    private var previewDir: File? = null
+
     private fun renderPreview(
         master: FloatArray,
         frames: DngFrameSource,
@@ -372,7 +380,7 @@ class StackJob(
             // One copy, not two: the crop already owns its data, so the edit runs in place on it.
             val cropped = crop(master, frames.width, region)
             val (rgb, report) = AutoEdit.renderInPlace(cropped, region.width, region.height)
-            val file = File(File(sessionDir, SessionLayout.MASTER), StretchedImage.FILE_NAME)
+            val file = File(previewDir ?: File(sessionDir, SessionLayout.MASTER), StretchedImage.FILE_NAME)
             val bytes = encoder.writeJpeg(file, rgb, region.width, region.height)
             if (bytes <= 0) {
                 notes += "the preview could not be encoded"
@@ -549,22 +557,49 @@ class StackJob(
         stacker: TiledStacker,
         region: LinearMaster.Region,
         preview: Pair<File, AutoEdit.Report>?,
+        versionId: Int,
+        versionDir: File,
     ) {
+        val now = System.currentTimeMillis()
         val stacking = settings.toMap() + buildMap {
             put("region", region.describe())
             put("frames", frames.count.toString())
             put("calibration", frames.masters.describe())
-            put("master", LinearMaster.FILE_NAME)
+            put("version", versionId.toString())
+            put("master", "${versionDir.name}/${masterFileName()}")
             preview?.let {
-                put("preview", StretchedImage.FILE_NAME)
+                put("preview", "${versionDir.name}/${StretchedImage.FILE_NAME}")
                 put("edit", it.second.describe())
             }
-            put("stackedAt", System.currentTimeMillis().toString())
+            put("stackedAt", now.toString())
             rejectionOf(stacker)?.let { put("rejection", it) }
         }
+
+        // T-6.6 — what this master was calibrated with, so a later change to the library can be
+        // *noticed* (FR-10.4.2). Recorded here rather than looked up later, because the library
+        // replaces rather than versions: by the time anyone asks, the old flat is gone.
+        val calibration = Staleness.versionsFor(calibrationRoot, log.info.cameraId)
+
         runCatching {
-            File(sessionDir, SessionLayout.SESSION_JSON)
-                .writeText(log.copy(info = log.info.copy(stacking = stacking)).encode())
+            MasterVersions.record(
+                sessionDir,
+                MasterVersions.Version(
+                    id = versionId,
+                    createdAtEpochMs = now,
+                    settings = settings.toMap(),
+                    label = settings.describe(),
+                    frames = frames.count,
+                    region = region.describe(),
+                ),
+            )
+        }
+
+        runCatching {
+            File(sessionDir, SessionLayout.SESSION_JSON).writeText(
+                log.copy(
+                    info = log.info.copy(stacking = stacking, calibrationVersions = calibration),
+                ).encode(),
+            )
         }
         // Deliberately not fatal. The TIFF is on disk and is the thing that matters; losing the
         // log entry costs reproducibility, not the night's work.

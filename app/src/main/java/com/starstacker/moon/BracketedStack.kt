@@ -5,6 +5,7 @@ import com.starstacker.session.ExposureSet
 import com.starstacker.session.SessionLayout
 import com.starstacker.session.SessionLog
 import com.starstacker.stacking.LinearMaster
+import com.starstacker.stacking.MasterVersions
 import com.starstacker.stacking.StackJob
 import com.starstacker.stacking.StackSettings
 import java.io.File
@@ -177,7 +178,7 @@ object BracketedStack {
         }
 
         // The layer first, because it is the deliverable that survives a taste change.
-        val layerFile = File(File(sessionDir, SessionLayout.MASTER), LAYER_FILE_NAME)
+        val layerFile = File(MasterVersions.currentDir(sessionDir), LAYER_FILE_NAME)
         val layer = Composite.alignedLayer(
             moonImage.pixels, width, height, matched.dx, matched.dy, moonImage.channels,
         )
@@ -204,7 +205,7 @@ object BracketedStack {
         )
         note(report.describe())
 
-        val compositeFile = File(File(sessionDir, SessionLayout.MASTER), COMPOSITE_FILE_NAME)
+        val compositeFile = File(MasterVersions.currentDir(sessionDir), COMPOSITE_FILE_NAME)
         val written = runCatching {
             LinearMaster.write(
                 file = compositeFile, master = groundImage.pixels, width = width, height = height,

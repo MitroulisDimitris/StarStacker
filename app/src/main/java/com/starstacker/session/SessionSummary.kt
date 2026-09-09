@@ -35,6 +35,24 @@ data class SessionSummary(
     val sizeBytes: Long = 0L,
     /** T-5.6 — whether a master has been produced from this session. */
     val stacked: Boolean = false,
+    /** T-6.2 — which camera shot it, so the list can be filtered by lens rather than by name. */
+    val cameraId: String = "",
+    /**
+     * T-6.1 — the stretched preview, when one has been written.
+     *
+     * A path *relative to the session's `master/` folder*, not a bitmap — the row that shows it may
+     * never be scrolled to, and a list that decoded every thumbnail up front would pay for a season
+     * of nights to draw five rows. Relative rather than absolute because a session that has been to
+     * a PC and back has a different absolute path and the same contents.
+     */
+    val previewFileName: String? = null,
+    /**
+     * T-6.6 — how many light frames the user overrode by hand.
+     *
+     * Worth surfacing in the list because it changes what a restack would do, and because a
+     * session someone has curated is one they care about.
+     */
+    val overriddenFrames: Int = 0,
 ) {
     /** `9 Aug · 142/150 · 28m 24s` — the prototype's second line. */
     fun describe(): String = "${DATE.format(Date(startedAtEpochMs))} · ${counts()}"
@@ -130,7 +148,12 @@ data class SessionSummary(
             else -> "$bytes B"
         }
 
-        fun of(folderName: String, log: SessionLog, sizeBytes: Long = 0L): SessionSummary =
+        fun of(
+            folderName: String,
+            log: SessionLog,
+            sizeBytes: Long = 0L,
+            previewFileName: String? = null,
+        ): SessionSummary =
             SessionSummary(
             folderName = folderName,
             // T-3.30 put the name in the log, so that is where it is read from. The two fallbacks
@@ -153,6 +176,12 @@ data class SessionSummary(
             // The log is the source of truth (D-5), so a folder that has been to a PC and back
             // still reports what was done to it.
             stacked = log.info.stacking.isNotEmpty(),
+            cameraId = log.info.cameraId,
+            // From the log rather than the filesystem (D-5): it is the source of truth, it
+            // survives a trip to a PC and back, and the list must not stat a file per row on a
+            // root holding a season of nights.
+            previewFileName = previewFileName ?: log.info.stacking["preview"],
+            overriddenFrames = log.overridden.size,
         )
     }
 }

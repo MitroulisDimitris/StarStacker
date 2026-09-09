@@ -11,6 +11,7 @@ import com.starstacker.edit.Gallery
 import com.starstacker.edit.StretchedImage
 import com.starstacker.session.SessionLayout
 import com.starstacker.stacking.LinearMaster
+import com.starstacker.stacking.MasterVersions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -78,7 +79,7 @@ class ResultController(
         state = State(folderName = dir.name, loading = true, settings = defaults)
         scope.launch {
             val loaded = withContext(Dispatchers.IO) {
-                LinearMaster.read(File(File(dir, SessionLayout.MASTER), LinearMaster.FILE_NAME), PREVIEW_WIDTH)
+                LinearMaster.read(File(MasterVersions.currentDir(dir), LinearMaster.FILE_NAME), PREVIEW_WIDTH)
             }
             if (loaded == null) {
                 state = state.copy(loading = false, error = "no linear master in this session")
@@ -147,12 +148,12 @@ class ResultController(
         scope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    val master = File(File(dir, SessionLayout.MASTER), LinearMaster.FILE_NAME)
+                    val master = File(MasterVersions.currentDir(dir), LinearMaster.FILE_NAME)
                     val full = LinearMaster.read(master) ?: error("the linear master will not open")
                     val (rgb, _) = AutoEdit.renderInPlace(
                         full.pixels, full.width, full.height, state.settings,
                     )
-                    val jpeg = File(File(dir, SessionLayout.MASTER), StretchedImage.FILE_NAME)
+                    val jpeg = File(MasterVersions.currentDir(dir), StretchedImage.FILE_NAME)
                     val bytes = BitmapJpeg.writeJpeg(jpeg, rgb, full.width, full.height)
                     if (bytes <= 0) error("the JPEG could not be written")
                     Gallery.publish(context, jpeg, dir.name)?.let { "Pictures/${Gallery.ALBUM}" }

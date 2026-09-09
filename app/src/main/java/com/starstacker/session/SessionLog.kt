@@ -117,6 +117,16 @@ data class FrameRecord(
     /** T-11.9 — which half of a bracketed session this frame belongs to. Null when unbracketed. */
     val exposureSet: ExposureSet? = null,
     val accepted: Boolean,
+    /**
+     * T-6.3 / FR-10.2.2 — the user's manual override of [accepted]. Null means "no opinion".
+     *
+     * **Separate from [accepted], and it has to be.** `accepted` is the gate's verdict together
+     * with [rejectReason] and [rejectDetail], which is the record of *why* a frame was dropped.
+     * Overwriting it to include a frame would destroy that reasoning, and a later restack could
+     * never get back to what the app actually thought. So the override sits alongside it and wins
+     * only where it is set.
+     */
+    val included: Boolean? = null,
     val rejectReason: RejectReason? = null,
     /** Free text alongside the reason — the actual numbers that tripped it. */
     val rejectDetail: String? = null,
@@ -141,6 +151,7 @@ data class FrameRecord(
         "sharpness" to sharpness,
         "exposureSet" to exposureSet?.name,
         "accepted" to accepted,
+        "included" to included,
         "rejectReason" to rejectReason?.name,
         "rejectDetail" to rejectDetail,
         "transform" to transform,
@@ -166,6 +177,7 @@ data class FrameRecord(
             exposureSet = map.string("exposureSet")
                 ?.let { runCatching { ExposureSet.valueOf(it) }.getOrNull() },
             accepted = map.boolean("accepted") ?: true,
+            included = map.boolean("included"),
             rejectReason = map.string("rejectReason")
                 ?.let { runCatching { RejectReason.valueOf(it) }.getOrNull() },
             rejectDetail = map.string("rejectDetail"),
@@ -281,6 +293,37 @@ data class SessionLog(
     val lights: List<FrameRecord> get() = frames.filter { it.kind == FrameKind.LIGHT }
     val darks: List<FrameRecord> get() = frames.filter { it.kind == FrameKind.DARK }
     val accepted: List<FrameRecord> get() = lights.filter { it.accepted }
+
+    /**
+     * T-6.3 — the frames a stack should actually use: the gate's verdict, overridden where the user
+     * has said otherwise.
+     *
+     * This, not [accepted], is what the stacker reads. The two differ only where someone has
+     * looked at a frame and disagreed, which is the entire point of FR-10.2.2 — the gate is a
+     * heuristic and the person holding the phone saw the sky.
+     */
+    val stackable: List<FrameRecord> get() = lights.filter { it.included ?: it.accepted }
+
+    /** Frames the user overrode, either way — for saying so in the UI rather than silently. */
+    val overridden: List<FrameRecord>
+        get() = lights.filter { it.included != null && it.included != it.accepted }
+
+    /**
+     * Sets or clears the manual override on one frame, returning a new log.
+     *
+     * Setting it to match [FrameRecord.accepted] *clears* it rather than storing agreement: an
+     * override that says the same thing as the gate is not an override, and keeping it would make
+     * a later change to the gate silently unable to move that frame.
+     */
+    fun withOverride(index: Int, include: Boolean?): SessionLog = copy(
+        frames = frames.map { frame ->
+            if (frame.index != index || frame.kind != FrameKind.LIGHT) {
+                frame
+            } else {
+                frame.copy(included = if (include == frame.accepted) null else include)
+            }
+        },
+    )
 
     /** Integration actually banked, seconds — accepted lights only. */
     val acceptedIntegrationSeconds: Double

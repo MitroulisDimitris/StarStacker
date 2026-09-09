@@ -44,8 +44,9 @@ class StackJobTest {
 
         assertTrue(result.succeeded, "failed: ${result.error}")
         assertEquals(2, result.frames)
+        // T-6.5: masters live in a version directory now, so a restack cannot overwrite one.
         assertEquals(
-            File(File(dir, SessionLayout.MASTER), LinearMaster.FILE_NAME).path,
+            File(MasterVersions.currentDir(dir), LinearMaster.FILE_NAME).path,
             result.masterFile?.path,
         )
         assertTrue(result.masterFile!!.isFile)
@@ -58,7 +59,30 @@ class StackJobTest {
     fun `the master lands in the session's own master folder`() {
         val dir = session(lights = 1)
         job(dir).run()
-        assertTrue(File(dir, "${SessionLayout.MASTER}/${LinearMaster.FILE_NAME}").isFile)
+        assertTrue(File(dir, "${SessionLayout.MASTER}/v1/${LinearMaster.FILE_NAME}").isFile)
+        // And a reader that knows nothing about versions still finds it.
+        assertTrue(File(MasterVersions.currentDir(dir), LinearMaster.FILE_NAME).isFile)
+    }
+
+    /**
+     * T-6.5 / FR-10.4.1 — the point of versioning: a restack must not destroy what it replaces.
+     */
+    @Test
+    fun `a restack keeps the previous master rather than overwriting it`() {
+        val dir = session(lights = 2)
+        job(dir).run()
+        job(dir, StackSettings(method = Combine.Method.MEDIAN)).run()
+
+        assertTrue(File(dir, "${SessionLayout.MASTER}/v1/${LinearMaster.FILE_NAME}").isFile)
+        assertTrue(File(dir, "${SessionLayout.MASTER}/v2/${LinearMaster.FILE_NAME}").isFile)
+
+        val index = MasterVersions.read(dir)
+        assertEquals(listOf(1, 2), index.versions.map { it.id })
+        assertEquals(2, index.current?.id, "the newest becomes current")
+
+        // And the comparison FR-10.4 asks for can actually be made.
+        val diff = MasterVersions.differences(index.versions[0], index.versions[1])
+        assertTrue(diff.any { it.contains("MEDIAN") }, diff.toString())
     }
 
     @Test
@@ -115,7 +139,8 @@ class StackJobTest {
         // rather than living only in the app's preferences, which can change.
         assertEquals(settings, StackSettings.fromMap(reread.info.stacking))
         assertEquals("2", reread.info.stacking["frames"])
-        assertEquals(LinearMaster.FILE_NAME, reread.info.stacking["master"])
+        assertEquals("v1/${LinearMaster.FILE_NAME}", reread.info.stacking["master"])
+        assertEquals("1", reread.info.stacking["version"])
     }
 
     @Test
@@ -180,7 +205,7 @@ class StackJobTest {
     fun `a cancelled run leaves any earlier master alone`() {
         val dir = session(lights = 2)
         job(dir).run()
-        val master = File(dir, "${SessionLayout.MASTER}/${LinearMaster.FILE_NAME}")
+        val master = File(dir, "${SessionLayout.MASTER}/v1/${LinearMaster.FILE_NAME}")
         val firstLength = master.length()
 
         job(dir).run(cancelled = { true })

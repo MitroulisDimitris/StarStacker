@@ -153,12 +153,14 @@ class DngFrameSource private constructor(
             val skipped = mutableListOf<String>()
             val lightsDir = File(sessionDir, SessionLayout.LIGHTS)
 
-            val accepted = log.accepted
+            // T-6.3: the *stackable* set, not the accepted one — the gate's verdict with the
+            // user's manual include/exclude applied over it (FR-10.2.2).
+            val accepted = log.stackable
                 .let { all ->
                     if (exposureSet == null) all else all.filter { it.exposureSet == exposureSet }
                 }
             if (accepted.isEmpty()) {
-                skipped += "no accepted light frames in the log"
+                skipped += "no light frames left to stack after the gate and any manual exclusions"
                 return null
             }
 
