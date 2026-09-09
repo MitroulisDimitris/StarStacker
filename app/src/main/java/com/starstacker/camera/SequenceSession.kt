@@ -13,6 +13,7 @@ import android.location.Location
 import android.media.Image
 import android.media.ImageReader
 import android.util.Log
+import android.util.Size
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
@@ -380,6 +381,24 @@ class SequenceSession private constructor(
         }
         @Suppress("UNREACHABLE_CODE")
         error("unreachable")
+    }
+
+    /**
+     * The shortest frame duration the sensor will hold for a full-size RAW stream.
+     *
+     * OI-26 measured this at **33.2 ms** on the reference device, and it is the floor a
+     * sub-millisecond exposure actually runs at: at 0.13 ms there is nothing for readout to hide
+     * behind. A repeating request is clamped up to it for free; a *burst* request below it is
+     * silently declined and yields no frame at all, which is why [burst] and [injectBurst] take it.
+     *
+     * Zero when the device does not report one, which the callers treat as "no floor to clear".
+     */
+    val minRawFrameDurationNs: Long by lazy {
+        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            ?: return@lazy 0L
+        runCatching {
+            map.getOutputMinFrameDuration(ImageFormat.RAW_SENSOR, Size(plan.raw.width, plan.raw.height))
+        }.getOrNull()?.takeIf { it > 0 } ?: 0L
     }
 
     /** The generation the next [apply] will produce — for callers that must not accept older. */

@@ -37,6 +37,61 @@ enum class RejectReason {
 
 enum class FrameKind { LIGHT, DARK }
 
+/**
+ * T-11.8 — what the session is pointed at, which decides how the app meters and stacks.
+ *
+ * **Not a camera choice.** The camera picker is untouched by this: the target type changes how the
+ * app *meters and stacks*, never what the user is allowed to point (§1.45). Someone shooting a
+ * moon-in-scene on an ultrawide is making a framing decision, and the mode's job is to expose it
+ * correctly, not to argue.
+ *
+ * **Why three and not two.** [MOON_DISC] and [MOON_SCENE] differ by more than framing: one shoots
+ * a single metered set where a black background is the *correct* answer, and the other brackets two
+ * interleaved sets because a black background would be a failure. The scene is 14.2 stops wide
+ * against a sensor spanning 10, so no single exposure serves both — which makes this a choice the
+ * app cannot infer from a viewfinder and must therefore ask.
+ *
+ * Recorded in `session.json` because FR-10.4 requires a restack to *reproduce* a master rather than
+ * approximate it, and a moon session run back through the deep-sky pipeline would be stretched,
+ * gradient-corrected and ranked on star counts that do not exist.
+ */
+enum class TargetType(val label: String, val summary: String) {
+    DEEP_SKY(
+        "Deep sky",
+        "Faint extended targets. Long subs, gradient removal, HFR-ranked frames.",
+    ),
+    MOON_DISC(
+        "Moon: disc",
+        "The moon filling the frame. One metered set; a black background is correct.",
+    ),
+    MOON_SCENE(
+        "Moon in scene",
+        "The moon and a landscape together. Two interleaved sets, because one exposure " +
+            "cannot hold both.",
+    ),
+    ;
+
+    val isLunar: Boolean get() = this != DEEP_SKY
+
+    /** True when the session shoots two exposures rather than one — T-11.9. */
+    val isBracketed: Boolean get() = this == MOON_SCENE
+}
+
+/**
+ * Which half of a bracketed session a frame belongs to — T-11.9.
+ *
+ * A separate axis from [FrameKind], deliberately: light-versus-dark and moon-versus-ground are
+ * independent questions, and a bracketed session has darks for *both* exposures. Null on an
+ * unbracketed session, where there is only one set and naming it would be noise.
+ */
+enum class ExposureSet(val label: String) {
+    /** Short, metered on the disc. */
+    MOON("moon"),
+
+    /** Long, metered on the ground — an ordinary deep-sky exposure pointed at a landscape. */
+    GROUND("ground"),
+}
+
 /** One frame, exactly as FR-9.2 enumerates it. */
 data class FrameRecord(
     val index: Int,
@@ -59,6 +114,8 @@ data class FrameRecord(
      * sensor noise, which is high-frequency and would rank the *noisiest* frame as the sharpest.
      */
     val sharpness: Double? = null,
+    /** T-11.9 — which half of a bracketed session this frame belongs to. Null when unbracketed. */
+    val exposureSet: ExposureSet? = null,
     val accepted: Boolean,
     val rejectReason: RejectReason? = null,
     /** Free text alongside the reason — the actual numbers that tripped it. */
@@ -82,6 +139,7 @@ data class FrameRecord(
         "eccentricity" to eccentricity,
         "backgroundAdu" to backgroundAdu,
         "sharpness" to sharpness,
+        "exposureSet" to exposureSet?.name,
         "accepted" to accepted,
         "rejectReason" to rejectReason?.name,
         "rejectDetail" to rejectDetail,
@@ -105,6 +163,8 @@ data class FrameRecord(
             eccentricity = map.double("eccentricity"),
             backgroundAdu = map.double("backgroundAdu"),
             sharpness = map.double("sharpness"),
+            exposureSet = map.string("exposureSet")
+                ?.let { runCatching { ExposureSet.valueOf(it) }.getOrNull() },
             accepted = map.boolean("accepted") ?: true,
             rejectReason = map.string("rejectReason")
                 ?.let { runCatching { RejectReason.valueOf(it) }.getOrNull() },
@@ -137,6 +197,22 @@ data class SessionInfo(
     val plannedExposureNs: Long,
     val plannedLightCount: Int,
     val plannedDarkCount: Int,
+    /**
+     * T-11.8 — what this session was pointed at, and therefore which pipeline made its master.
+     *
+     * Defaulted rather than nullable: every session written before this existed was a deep-sky
+     * session, so the default is the truth about them rather than a guess.
+     */
+    val targetType: TargetType = TargetType.DEEP_SKY,
+    /**
+     * T-11.9 — the *second* exposure of a bracketed session, metered on the ground.
+     *
+     * [plannedIso] and [plannedExposureNs] describe the moon set, which is the one the session is
+     * named for. Null unless [targetType] is bracketed.
+     */
+    val groundIso: Int? = null,
+    val groundExposureNs: Long? = null,
+    val groundLightCount: Int? = null,
     /** FR-5.3's derivation, flattened to lines so the audit trail keeps the reasoning. */
     val exposureDerivation: List<String> = emptyList(),
     val latitudeDeg: Double? = null,
@@ -231,6 +307,10 @@ data class SessionLog(
                 "lightCount" to info.plannedLightCount,
                 "darkCount" to info.plannedDarkCount,
                 "exposureDerivation" to info.exposureDerivation,
+                "targetType" to info.targetType.name,
+                "groundIso" to info.groundIso,
+                "groundExposureNs" to info.groundExposureNs,
+                "groundLightCount" to info.groundLightCount,
             ),
             "pointing" to linkedMapOf(
                 "latitude" to info.latitudeDeg,
@@ -291,6 +371,13 @@ data class SessionLog(
                 plannedDarkCount = plan.int("darkCount") ?: 0,
                 exposureDerivation = (plan["exposureDerivation"] as? List<*>)
                     ?.filterIsInstance<String>().orEmpty(),
+                // Absent in every log written before T-11.8, and those were all deep sky.
+                targetType = plan.string("targetType")
+                    ?.let { runCatching { TargetType.valueOf(it) }.getOrNull() }
+                    ?: TargetType.DEEP_SKY,
+                groundIso = plan.int("groundIso"),
+                groundExposureNs = plan.long("groundExposureNs"),
+                groundLightCount = plan.int("groundLightCount"),
                 latitudeDeg = pointing.double("latitude"),
                 longitudeDeg = pointing.double("longitude"),
                 altitudeDeg = pointing.double("altitude"),

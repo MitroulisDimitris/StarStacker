@@ -70,7 +70,7 @@ Two consequences to accept deliberately:
 | **5** | Auto-edit | M6 | Shareable stretched JPEG without a desktop |
 | **6** | Calibration library | M2 | Flats, noise model, hot pixels, intrinsics; Full tier reachable |
 | **7** | Wide-field & second camera | M7 | De-project/re-project; per-camera calibration; recommendation |
-| **7.5** | Moon mode *(proposed §1.45)* | new | A moon that is not clipped: metered short exposures, lucky imaging, aligned on the disc — and bracketed against the ground when the scene is wider than the sensor |
+| **7.5** | Moon mode *(built 2026-09-09, §1.45)* | new | A moon that is not clipped: metered short exposures, lucky imaging, aligned on the disc — and bracketed against the ground when the scene is wider than the sensor |
 | **8** | Post-v1 | §14 deferred | Dithering, star trails, framing assistance |
 
 **Phases 0 → 1C are the priority.** Everything after 1C is sequenced but not yet scheduled.
@@ -4499,7 +4499,7 @@ changes whether someone can run one without being surprised.
 - [ ] **T-9.2** Full per-camera isolation audit — nothing transfers between cameras (FR-11.1).
 - [ ] **T-9.3** Camera recommendation with a stated reason (FR-11.3).
 
-## 12.5 Phase 7.5 — Moon mode *(T-11.1–T-11.7 done 2026-09-09; §1.45)*
+## 12.5 Phase 7.5 — Moon mode *(T-11.1–T-11.11 done 2026-09-09; §1.45)*
 
 > **Why a mode and not a setting.** The 2026-09-06 session overexposed the moon by **14.2 stops**
 > and clipped 1 597 pixels of the disc flat. Metering, focus, frame count, registration, quality
@@ -4608,7 +4608,7 @@ changes whether someone can run one without being surprised.
   which is why the deep-sky path does not do it; an extended object with real recovered detail is
   the case where it earns its place. Conservative by default and applied to the 8-bit render, so
   FR-8.2's master stays sacred and the choice is re-doable without re-stacking.
-- [ ] **T-11.8** **Target type at session setup** — **deep sky**, **moon: disc**, or **moon in
+- [x] **T-11.8** **Target type at session setup** — **deep sky**, **moon: disc**, or **moon in
   scene** — carried into `session.json` so a restack knows which pipeline made the master. The
   camera picker stays exactly where it is: the target type changes how the app *meters and stacks*,
   not what the user is allowed to point.
@@ -4620,7 +4620,13 @@ changes whether someone can run one without being surprised.
   Calibration nearly vanishes — for a *tight* moon. A wide-field moon-in-landscape shot needs the
   full deep-sky calibration, which is another reason the two modes share a pipeline rather than
   forking it.
-- [ ] **T-11.9** **Bracketed capture for *moon in scene*** *(raised 2026-09-08 — **required**, not
+  **Done 2026-09-09** — `session.TargetType`, `session.ExposureSet`, carried through `session.json`
+  and `CaptureEngine.Request`. Defaulted rather than nullable: every session written before this
+  existed was deep sky, so the default is the truth about them rather than a guess, and a log with
+  no target type round-trips as `DEEP_SKY` and unbracketed.
+  `ExposureSet` is a **separate axis from `FrameKind`**, deliberately — light-versus-dark and
+  moon-versus-ground are independent questions, and a bracketed session has darks for both.
+- [x] **T-11.9** **Bracketed capture for *moon in scene*** *(raised 2026-09-08 — **required**, not
   an extension)*. The moon wants sub-millisecond frames, the ground wants seconds, the separation is
   **14.2 stops** against a 10-bit sensor's 10, and stacking closes none of it: averaging buys
   `sqrt(N)` in the shadows and nothing in the highlights, while at the moon's exposure the ground
@@ -4652,14 +4658,37 @@ changes whether someone can run one without being surprised.
     under it, the composite must mask a streak instead of a disc.
   - *Accept:* a frame holding both a legible ground and an unclipped disc, from a scene whose range
     exceeds what one exposure can carry.
-- [ ] **T-11.10** **Register the two masters to each other.** No ephemeris and no new maths: **the
+  **Done 2026-09-09** — `moon/BracketPlan.kt`, `CaptureEngine.captureBracketed`,
+  `SequenceSession.minRawFrameDurationNs`, and `DngFrameSource`/`StackJob` filtering by set.
+  **The capture loop is OI-26's answer, not the obvious one.** The short exposure repeats for the
+  whole session — it keeps RAW streaming, which this HAL will not do without a repeating request
+  (D-20/D-23), and it *is* the moon set — while ground frames are injected as one-shot bursts
+  against it. Alternating a repeating request instead would cost **7.6 s and 5.7 discarded frames
+  per switch**. Frames are filed by **the exposure their own metadata reports**, never by the order
+  they were asked for, because one dropped frame would otherwise mislabel every frame after it.
+  *The ground set is served first when storage is short*, since it is the half that cannot be
+  shortened without failing the rejection window; the moon set can be.
+  *And the required session length is stated up front* — `~6 min` at sidereal on the reference tele,
+  `~11 min` at the rate 2026-09-06 saw — because under it the disc leaves a streak the composite
+  has to mask instead of clean sky it can drop into.
+- [x] **T-11.10** **Register the two masters to each other.** No ephemeris and no new maths: **the
   moon is a clipped white blob in the long exposures**, and a clipped blob has a good centroid.
   Track it in **every** long frame, fit the drift, and evaluate at the ground stack's reference
   epoch — which measures the night's true rate as a by-product, rather than assuming one. Match
   that against the disc centroid of the short stack. Translation-only, as T-11.5.
   *Guard:* if the long set clipped hard enough to bloom past the true limb, the centroid survives
   that but the radius does not — so align on centre, never on edge.
-- [ ] **T-11.11** **Composite, and hand back the layers.** Feathered luminance mask over the disc,
+  **Done 2026-09-09** — `moon/MasterAlign.kt`. The blob is measured in **every** long frame and a
+  drift fitted through them, rather than measured once in the stacked master where a moving disc is
+  a *streak* whose centroid is only the mid-time position — blunt, and wrong the moment one frame is
+  dropped for cloud. The fit is evaluated at the ground stack's own reference epoch, which is the
+  mid-point of that set: the instant the composite is *of*.
+  *The size check is deliberately loose (25x).* A hard-clipped disc **blooms past its true limb**,
+  so the blob in a long frame is much larger than the metered moon; a strict match would refuse
+  every real bracketed session. It is there to catch a detection that is not the moon at all.
+  *And it measures the night's true drift rate as a by-product*, which is what §1.45 insists on
+  after the 2026-09-06 figure turned out to be 54% of sidereal purely because the moon was low.
+- [x] **T-11.11** **Composite, and hand back the layers.** Feathered luminance mask over the disc,
   and **export the two registered masters alongside the merge**. The blend is a taste decision and
   the merged preview is a starting point rather than a verdict — this workflow ends in Photoshop,
   where two aligned layers are worth more than one opinionated flatten.
@@ -4668,6 +4697,19 @@ changes whether someone can run one without being surprised.
 
 ## 13. Phase 8 — Post-v1
 
+  **Done 2026-09-09** — `moon/Composite.kt`, `moon/BracketedStack.kt`. Both registered masters are
+  written alongside the merge (`stack_linear_moon_layer.tif`, `stack_linear_composite.tif`), and
+  the layer is written **first**, because the merge is destructive and a taste decision should not
+  be able to cost the deliverable.
+  *The mask is a radial feather, not a luminance threshold.* Thresholding sounds more principled
+  and is wrong here: the ground master's blob is clipped and bloomed, so a brightness mask selects
+  a region larger than the moon and cuts a halo of sky out with it. The radius comes from the
+  *properly exposed* moon master, which is the one that knows how big the moon actually is.
+  *No brightness matching between the layers.* They were exposed 14 stops apart on purpose, and
+  "correcting" that undoes the bracketing.
+  *The memory is checked rather than hoped for:* the composite holds both masters at once — 151 MB
+  each at 12.6 MP — so it asks the runtime what is free and **declines with a reason** rather than
+  dying of an `OutOfMemoryError` with a queue behind it (§1.41).
 - [-] **T-10.1** OIS dithering (FR-6.5) — investigate controllability during Phase 1A.
 - [-] **T-10.2** Star trail mode — same capture, maximum instead of mean.
 - [-] **T-10.3** Framing assistance: compass + accelerometer + small catalog → "point here" arrow
@@ -4888,6 +4930,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-09-09 | **Moon mode complete: T-11.8–T-11.11, the *moon in scene* half.** `TargetType` and `ExposureSet` thread through `session.json` and the capture engine; `BracketPlan` sizes a two-exposure session; `CaptureEngine.captureBracketed` shoots it; `MasterAlign` places the moon; `Composite` and `BracketedStack` produce the merge and both registered layers. **The capture loop is OI-26's answer rather than the obvious one:** the short exposure repeats for the whole session (it keeps RAW streaming on this HAL *and* it is the moon set) while ground frames are injected as one-shot bursts, against the 7.6 s per switch that alternating a repeating request would cost. Frames are filed by **the exposure their own metadata reports**, never by the order they were asked for, so one dropped frame cannot mislabel the rest. **Three judgement calls worth recording.** *The blob is tracked per long frame, not once in the master* — a moving disc stacks to a streak whose centroid is only the mid-time position, blunt and wrong as soon as a frame is dropped for cloud. *The size check between the two detections is deliberately loose (25x)*, because a clipped disc blooms past its true limb and a strict match would refuse every real bracketed session. *The mask is a radial feather rather than a luminance threshold*, since thresholding the bloomed blob selects a region larger than the moon and cuts a halo of sky out with it — the radius comes from the properly exposed master, the one that knows how big the moon is. Layers are written **before** the merge, which is destructive. Memory is **checked rather than hoped for**: two masters is 302 MB at 12.6 MP, so the composite asks what is free and declines with a reason. **Still true and unchanged: OI-25 will crop the ground stack by 38%** until it is fixed — the bracket is built and correct, and its landscape half runs through the pipeline that is still losing field. |
 | 2026-09-09 | **Moon mode's disc half built: T-11.1–T-11.7 done, with tests.** A new `moon` package — `LunarGeometry` (ranks every camera from the measured profile and refuses to recommend one that cannot expose the disc), `LunarExposure` (Looney 11 from the profile's own aperture, then metered), `Disc`, `Sharpness`, `LunarFocus` + `LunarFocusRunner`, `LunarPlan`, `LunarEdit` — plus `FrameQuality.Mode.LUNAR`, `FrameRecord.sharpness` and `diag/MoonCheck.kt` (`--es diag moon`). Tested against a new `SyntheticMoon` generator with limb darkening, craters, phase, blur and noise, because none of this can be checked on a star field. **Three bugs the tests caught before the sky could.** *One:* a clipped frame reads peak == white whether it is one stop over or fourteen, so `target / measured` asks for **0.7x** on a frame 14.2 stops out — a clipped probe now ignores its own measurement and steps down four stops. *Two:* `Disc` first accepted **pure noise as a moon**, because on a noise-only frame the threshold lands at the median and half the frame passes; an area floor cannot fix that (a moon filling the frame is the goal of *disc* mode), so the guard is contrast against a MAD noise estimate. *Three:* **§1.45's ultrawide row was wrong** — 112.8 arcsec/px and 17 px against the 140.7 and 13 px that §2's own measured device table implies. Corrected, along with the drift table that inherited it. **T-11.4's open decision is settled:** cap the frame count, from a storage budget under a 400-frame diminishing-returns ceiling, with the cadence taken from OI-26's measured 33.2 ms readout floor rather than the 0.13 ms exposure. **Deferred honestly:** T-11.8–T-11.11 (the *moon in scene* half) wait on OI-25, since their ground stack runs through the pipeline that is losing 38% of the field. |
 | 2026-09-08 | **OI-26 resolved on device: interleave by injection, not by switching (`--es diag switch`).** The plan had assumed the question was *block size*. It was not — it was which Camera2 call to use, and three of the four available get it wrong on this HAL. Re-applying a repeating request per frame costs **7.6 s and 5.7 discarded frames per switch**, because the pipeline is ten deep (§1.7) and drains at the old exposure; blocking cuts the number of switches but not the price of one, so blocks of 20 still add **30%** to a session. `setRepeatingBurst` of a `[short, long]` cycle paces it perfectly — frames 2 533 ms apart, exactly 33.2 + 2 500 — and then applies the **first request's exposure to every frame**, silently, with the metadata agreeing. `stopRepeating` + `captureBurst` delivers **nothing at all**, since this HAL will not stream RAW without a repeating request driving it (D-20/D-23), and it fails with no exception and no log — which is why `onCaptureFailed` is now handled in `SequenceSession`. **What works is injecting one-shots over a cheap repeating request:** the short exposure repeats (keeping RAW alive, and it *is* the moon set) while ground frames go in as a `captureBurst`. Measured **2 499.998 ms for a 2 500 ms ask, −1.2 ms per frame, zero frames at the wrong exposure**, with 5.19 s to a submission's first frame paid once rather than per frame. **Correction to yesterday's arithmetic:** short frames are not 2 ms — full-RAW readout floors at **33.2 ms** and the measured cadence is 32.8 ms, so 120 moon frames cost **3.9 s, not 0.26 s** (2.6% of a session rather than 0.2%). The 2 ms figure was real but only at a 1 s sub, where the DNG write hides behind the exposure. |
 | 2026-09-08 | **Moon drift is derived, not remembered; and interleaving costed (§1.45, T-11.9, OI-26).** The ~26 px over 79 s from 2026-09-06 had been written into the design as if it were a device constant. It is not: it works out at 8.16 arcsec/s, **54% of sidereal**, because the moon was at 2° altitude where refraction compresses vertical motion — reusing it on a high moon would underestimate the drift by nearly half. The rule is `15.041 × cos(dec)` arcsec/s worst case over the profile's own `arcsec/px`, which is 0.606 px/s on the tele against 0.107 on the ultrawide. **Interleaving then costs almost nothing**: at the measured 2 ms per-frame overhead, 120 short frames are 0.26 s of a 150 s session — 0.2%. What is *not* measured is per-frame exposure switching, since that 2 ms came from a constant exposure; strict alternation costs 8% at a 50 ms switch and 80% at 500 ms, so the design is **interleave in blocks sized by the measured switch cost** (OI-26, default 20, under 4% even at 500 ms). Also found: **the drifting moon cleans itself out of the ground stack** — registered on the static ground it is a per-pixel outlier and `SigmaClip` already rejects it, provided the set runs several times the disc's crossing time (~6 min at sidereal on the tele, ~11 min at 2026-09-06's rate), which the app should require up front rather than let the user discover. **Overclaim corrected:** back-to-back sets were said to leave “no way to choose” the disc's position; with the blob tracked per frame and a drift fitted they work too, merely extrapolating instead of interpolating. Interleaving is better, not load-bearing. |

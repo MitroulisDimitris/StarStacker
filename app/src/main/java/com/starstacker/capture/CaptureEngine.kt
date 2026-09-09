@@ -10,11 +10,14 @@ import com.starstacker.camera.CameraAccess
 import com.starstacker.camera.FramingSession
 import com.starstacker.camera.SequenceSession
 import com.starstacker.session.FrameDescription
+import com.starstacker.session.ExposureSet
 import com.starstacker.session.FrameKind
 import com.starstacker.session.FrameRecord
 import com.starstacker.session.SessionLog
 import com.starstacker.session.SessionPointing
 import com.starstacker.session.SessionState
+import com.starstacker.moon.BracketPlan
+import com.starstacker.session.TargetType
 import com.starstacker.session.SessionWriter
 import com.starstacker.registration.CommonAreaTracker
 import com.starstacker.registration.LiveRegistration
@@ -80,6 +83,17 @@ class CaptureEngine(
         val focusDiopters: Float?,
         val lightCount: Int,
         val darkCount: Int,
+        /** T-11.8 — decides how the session meters and stacks, never which camera it uses. */
+        val targetType: TargetType = TargetType.DEEP_SKY,
+        /**
+         * T-11.9 — the *ground* exposure of a bracketed session.
+         *
+         * [iso] and [exposureNs] describe the moon set, which is also the repeating request the
+         * whole session runs on. These are only read when [targetType] is bracketed.
+         */
+        val groundIso: Int? = null,
+        val groundExposureNs: Long? = null,
+        val groundLightCount: Int = 0,
         /**
          * Where the camera was pointed when Start was pressed, frozen at that instant — see
          * [SessionPointing]. Null when there was no fix, which is survivable: the trailing limit
@@ -327,6 +341,89 @@ class CaptureEngine(
     }
 
     private suspend fun captureRun(session: SequenceSession, request: Request) {
+        if (request.targetType.isBracketed) {
+            captureBracketed(session, request)
+        } else {
+            captureSingleExposure(session, request)
+        }
+
+        if (stopRequested || request.darkCount <= 0) return
+        captureDarks(session, request)
+    }
+
+    /**
+     * T-11.9 — a *moon in scene* session, which shoots two exposures 14 stops apart.
+     *
+     * ### Why the frames are not simply alternated
+     *
+     * The obvious loop — apply the moon exposure, take a frame, apply the ground exposure, take a
+     * frame — costs **7.6 s and 5.7 discarded frames per switch** on this HAL (OI-26), because a
+     * repeating request is *replaced* and the ten-deep pipeline has to drain at the old exposure
+     * first. Over a bracketed session that is hours of nothing.
+     *
+     * So the **short exposure repeats for the whole session** — it keeps RAW streaming, which this
+     * HAL will not do without a repeating request (D-20/D-23), and it *is* the moon set — while the
+     * ground frames are injected as one-shot bursts against it. Measured at
+     * **2 499.998 ms for a 2 500 ms ask, zero frames at the wrong exposure**, with the only cost
+     * being 5.19 s to a burst's first frame, paid once per burst rather than per frame.
+     *
+     * ### How a frame knows which set it belongs to
+     *
+     * By the exposure its own metadata reports, not by the order it was asked for. Frames come back
+     * interleaved with the repeating short ones by construction, and a loop that assumed an order
+     * would mislabel every ground frame the moment one was dropped.
+     */
+    private suspend fun captureBracketed(session: SequenceSession, request: Request) {
+        val groundExposure = request.groundExposureNs
+        val groundIso = request.groundIso ?: request.iso
+        if (groundExposure == null || groundExposure <= 0) {
+            Log.w(TAG, "bracketed session with no ground exposure — shooting the moon set only")
+            captureSingleExposure(session, request)
+            return
+        }
+
+        var moonTaken = writer.log.lights.count { it.exposureSet != ExposureSet.GROUND }
+        var groundTaken = writer.log.lights.count { it.exposureSet == ExposureSet.GROUND }
+
+        while (!stopRequested && !finishEarly && groundTaken < request.groundLightCount) {
+            awaitUnpaused()
+            if (stopRequested) break
+            pauseForHeatIfNeeded()
+
+            // Ground frames go in as a burst, so the submission latency is paid once for the
+            // whole block rather than once per frame.
+            val remaining = request.groundLightCount - groundTaken
+            val burst = minOf(BracketPlan.GROUND_FRAMES_PER_BURST, remaining)
+            session.injectBurst(
+                iso = groundIso,
+                exposuresNs = List(burst) { groundExposure },
+                focusDiopters = request.focusDiopters,
+                minFrameDurationNs = session.minRawFrameDurationNs,
+            )
+
+            repeat(burst) {
+                if (stopRequested) return@repeat
+                groundTaken++
+                captureOne(
+                    session, request, FrameKind.LIGHT, groundTaken,
+                    exposureNs = groundExposure, iso = groundIso,
+                    exposureSet = ExposureSet.GROUND,
+                )
+            }
+
+            // Between bursts the repeating short request is what the sensor is running, so the
+            // moon set fills the gaps at no cost beyond its own readout.
+            if (!stopRequested && moonTaken < request.lightCount) {
+                moonTaken++
+                captureOne(
+                    session, request, FrameKind.LIGHT, moonTaken,
+                    exposureSet = ExposureSet.MOON,
+                )
+            }
+        }
+    }
+
+    private suspend fun captureSingleExposure(session: SequenceSession, request: Request) {
         val already = writer.log.lights.size
         for (index in (already + 1)..request.lightCount) {
             if (stopRequested || finishEarly) break
@@ -337,8 +434,9 @@ class CaptureEngine(
             captureOne(session, request, FrameKind.LIGHT, index)
         }
 
-        if (stopRequested || request.darkCount <= 0) return
+    }
 
+    private suspend fun captureDarks(session: SequenceSession, request: Request) {
         // FR-4.2.1: darks at the end, at matched ISO and exposure, along the same warming curve
         // the lights were taken on (D-16). **Covering the lens is a thing a person does**, so the
         // sequence stops here and asks rather than rolling on — darks taken through an uncovered
@@ -426,22 +524,30 @@ class CaptureEngine(
         kind: FrameKind,
         index: Int,
         minGeneration: Int = 0,
+        /**
+         * The exposure this frame is taken at, which is [Request.exposureNs] for every session
+         * except a bracketed one — where half the frames are the ground set and four orders of
+         * magnitude longer (T-11.9).
+         */
+        exposureNs: Long = request.exposureNs,
+        iso: Int = request.iso,
+        exposureSet: ExposureSet? = null,
     ) {
         // Published before the wait, not after: this is the only moment the UI can learn that an
         // exposure is running rather than finished.
         _progress.value = _progress.value.copy(
             frameStartedElapsedNs = android.os.SystemClock.elapsedRealtimeNanos(),
-            frameExposureNs = request.exposureNs,
+            frameExposureNs = exposureNs,
         )
 
         val frame = session.nextVerifiedFrame(
-            timeoutMs = timeoutFor(request.exposureNs),
-            exposureNs = request.exposureNs,
+            timeoutMs = timeoutFor(exposureNs),
+            exposureNs = exposureNs,
             minGeneration = minGeneration,
             // Past the sensor's advertised ceiling the app is off-contract by choice (§1.20), so a
             // frame returning the wrong exposure is a decline rather than a settle — and worth
             // failing fast on, because at these lengths every skipped frame costs minutes.
-            refuseAfter = if (request.exposureNs > statedCeilingNs(request.cameraId)) {
+            refuseAfter = if (exposureNs > statedCeilingNs(request.cameraId)) {
                 REFUSE_AFTER_FRAMES
             } else {
                 null
@@ -454,8 +560,8 @@ class CaptureEngine(
         // the camera is one buffer short until it is released, and the next exposure is already
         // running.
         val pixels = buffer ?: ShortArray(frame.width * frame.height).also { buffer = it }
-        val appliedIso = frame.appliedIso ?: request.iso
-        val appliedExposure = frame.appliedExposureNs ?: request.exposureNs
+        val appliedIso = frame.appliedIso ?: iso
+        val appliedExposure = frame.appliedExposureNs ?: exposureNs
         /*
          * The exposure window, and the sign of it is measured rather than read from the docs.
          *
@@ -485,6 +591,7 @@ class CaptureEngine(
                         capturedAtEpochMs = capturedAt,
                         iso = appliedIso,
                         exposureNs = appliedExposure,
+                        exposureSet = exposureSet,
                         temperatureC = reading.batteryTempC,
                         hfr = null,
                         starCount = null,

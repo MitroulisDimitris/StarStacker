@@ -2,6 +2,7 @@ package com.starstacker.stacking
 
 import com.starstacker.edit.AutoEdit
 import com.starstacker.edit.StretchedImage
+import com.starstacker.session.ExposureSet
 import com.starstacker.session.SessionLayout
 import com.starstacker.session.SessionLog
 import java.io.File
@@ -44,6 +45,15 @@ class StackJob(
     private val stretched: StretchedImage? = null,
     /** T-8.3 — the per-camera calibration library, or null to use only the session's own frames. */
     private val calibrationRoot: File? = null,
+    /**
+     * T-11.9 — which half of a bracketed session to stack, or null for an ordinary session.
+     *
+     * Two sets 14 stops apart live in one folder, and stacking them together produces nothing
+     * usable: the moon frames contribute black where the ground is, and the ground frames a
+     * clipped blob where the moon is. Each set gets its own run and its own master file, and
+     * [BracketedStack] puts them back together.
+     */
+    private val exposureSet: ExposureSet? = null,
 ) {
 
     /** Where a run has got to. Coarse on purpose — see [Progress.percent]. */
@@ -174,6 +184,7 @@ class StackJob(
 
         val source = DngFrameSource.open(
             sessionDir, log, settings, calibrationRoot = calibrationRoot,
+            exposureSet = exposureSet,
         )
             ?: return failed(name, "no frames to stack", onProgress)
 
@@ -241,7 +252,7 @@ class StackJob(
             val region = LinearMaster.regionFor(
                 master, frames.width, frames.height, settings.crop, coverageMap, frames.count,
             )
-            val target = File(File(sessionDir, SessionLayout.MASTER), LinearMaster.FILE_NAME)
+            val target = File(File(sessionDir, SessionLayout.MASTER), masterFileName())
             val written = runCatching {
                 LinearMaster.write(
                     file = target,
@@ -295,6 +306,18 @@ class StackJob(
      * Each core combines with its own [Combine.SigmaClip] — the class is stateful — so the rate a
      * stack reports has to be reassembled, or it would describe one core's share of the frame.
      */
+    /**
+     * Where this run's master goes.
+     *
+     * An ordinary session keeps `LinearMaster.FILE_NAME` exactly as it was, so nothing that reads
+     * a existing session needs to know this feature exists. Only a bracketed half is named apart,
+     * because two of them share one folder.
+     */
+    private fun masterFileName(): String = when (exposureSet) {
+        null -> LinearMaster.FILE_NAME
+        else -> LinearMaster.FILE_NAME.replace(".tif", "_${exposureSet.label}.tif")
+    }
+
     private fun rejectionOf(stacker: TiledStacker): String? {
         val stats = stacker.workers.filterIsInstance<Combine.SigmaClip>().map { it.stats }
         if (stats.isEmpty()) return null

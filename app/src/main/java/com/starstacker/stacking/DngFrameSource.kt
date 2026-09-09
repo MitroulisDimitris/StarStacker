@@ -5,8 +5,10 @@ import com.starstacker.dng.DngMetadata
 import com.starstacker.dng.DngReader
 import com.starstacker.registration.RigidTransform
 import com.starstacker.session.FrameRecord
+import com.starstacker.session.ExposureSet
 import com.starstacker.session.SessionLayout
 import com.starstacker.session.SessionLog
+import com.starstacker.session.TargetType
 import java.io.Closeable
 import java.io.File
 
@@ -138,11 +140,23 @@ class DngFrameSource private constructor(
              * a property of the lens, so it is shot once rather than nightly.
              */
             calibrationRoot: File? = null,
+            /**
+             * T-11.9 — which half of a bracketed session to stack, or null for all of it.
+             *
+             * A *moon in scene* session holds two sets 14 stops apart in one folder, and averaging
+             * them together would produce nothing: the moon frames contribute black where the
+             * ground is, and the ground frames contribute a clipped blob where the moon is. They
+             * are stacked separately and composited (T-11.10, T-11.11).
+             */
+            exposureSet: ExposureSet? = null,
         ): DngFrameSource? {
             val skipped = mutableListOf<String>()
             val lightsDir = File(sessionDir, SessionLayout.LIGHTS)
 
             val accepted = log.accepted
+                .let { all ->
+                    if (exposureSet == null) all else all.filter { it.exposureSet == exposureSet }
+                }
             if (accepted.isEmpty()) {
                 skipped += "no accepted light frames in the log"
                 return null
@@ -152,7 +166,14 @@ class DngFrameSource private constructor(
             // keep-best cut, then weight what is left. Scoring after the cut would rescale the
             // survivors against each other and make the best remaining frame a 1.0 by definition,
             // so the weights would depend on what had already been thrown away.
-            val scores = FrameQuality.score(accepted).associateBy { it.index }
+            // The moon set is ranked on sharpness over the disc; a star field's HFR and star
+            // count do not exist on it, and the ground set has no disc to measure (T-11.6).
+            val mode = if (exposureSet == ExposureSet.MOON || log.info.targetType == TargetType.MOON_DISC) {
+                FrameQuality.Mode.LUNAR
+            } else {
+                FrameQuality.Mode.DEEP_SKY
+            }
+            val scores = FrameQuality.score(accepted, mode).associateBy { it.index }
             val candidates = quality(accepted, scores, settings, skipped)
 
             // The first readable frame sets the geometry every other frame is measured against.
