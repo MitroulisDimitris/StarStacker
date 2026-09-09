@@ -73,6 +73,14 @@ object AsterismMatcher {
         /** [SkyDrift]'s prediction plus nearest-neighbour. Needs sensors; needs almost no stars. */
         SEEDED,
 
+        /**
+         * T-4.7 — the whole image, correlated, when neither star route worked.
+         *
+         * Translation only, and recorded as such: it cannot correct field rotation, so a frame
+         * registered this way must not be mistaken for one the star matcher placed.
+         */
+        PHASE_CORRELATION,
+
         /** Neither route produced enough to fit a transform on. */
         NONE,
     }

@@ -62,6 +62,10 @@ class LiveRegistration(
          * reporting one is telling the user their tripod moved when the sky is overcast.
          */
         val tooFewStars: Boolean = false,
+        /** T-4.7 — why the star path gave up, when the fallback was the thing that placed it. */
+        val fallbackReason: String? = null,
+        /** T-4.7 — [PhaseCorrelation.Result.peakRatio], so the confidence is auditable. */
+        val fallbackConfidence: Double? = null,
     ) {
         val failed: Boolean get() = transform == null && !isReference && !tooFewStars
         val bumped: Boolean get() = verdict == ResidualMonitor.Verdict.SPIKE
@@ -93,6 +97,17 @@ class LiveRegistration(
     private var reference: List<AsterismMatcher.Detection>? = null
     private var centreX = 0.0
     private var centreY = 0.0
+
+    /**
+     * The reference frame's pixels, kept for T-4.7's fallback.
+     *
+     * Only the analysis plane, and only a copy of it — the caller's buffer is reused frame to
+     * frame, so holding the reference means holding a copy or holding nothing. At bin 2 that is
+     * about 12 MB, which is the price of being able to register a session that has no stars in it.
+     */
+    private var referencePlane: FloatArray? = null
+    private var referencePlaneWidth = 0
+    private var referencePlaneHeight = 0
 
     /** True once a frame good enough to register against has been seen. */
     val hasReference: Boolean get() = reference != null
@@ -126,6 +141,9 @@ class LiveRegistration(
             reference = detections
             centreX = (sensorWidth - 1) / 2.0
             centreY = (sensorHeight - 1) / 2.0
+            referencePlane = plane.data.copyOf(plane.width * plane.height)
+            referencePlaneWidth = plane.width
+            referencePlaneHeight = plane.height
             return Outcome.REFERENCE
         }
 
@@ -136,7 +154,7 @@ class LiveRegistration(
             frameWidth = sensorWidth.toDouble(),
             frameHeight = sensorHeight.toDouble(),
         )
-        if (!match.usable) return Outcome.FAILED
+        if (!match.usable) return correlate(plane, "no usable star match")
 
         val fit = RigidFit.fit(
             reference = existing,
@@ -147,7 +165,7 @@ class LiveRegistration(
             seed = seed,
             tolerancePx = tolerancePx,
         )
-        if (!fit.succeeded) return Outcome.FAILED
+        if (!fit.succeeded) return correlate(plane, "the star fit did not converge")
 
         return Outcome(
             transform = fit.transform,
@@ -159,11 +177,83 @@ class LiveRegistration(
         )
     }
 
+    /**
+     * T-4.7 — the whole-image fallback, taken only once star matching has already given up.
+     *
+     * ### Why it is worth having
+     *
+     * Session `2026-09-06_0118` lost **34 of 67 frames** to "could not be registered", on a scene
+     * that whole-image correlation places at a shift of exactly **(0, 0)** — it was aligned to the
+     * pixel and there was nothing to fail at. The scene is a crescent moon over a harbour: two
+     * rigid bodies, no point sources, and a detection set that reshuffled as glare thickened.
+     * DeepSkyStacker fails on the same frames and fails worse, at 0 of 67.
+     *
+     * ### Why a normal session pays nothing
+     *
+     * This runs **only on the failure path**. A session whose stars match never reaches it, so the
+     * cost is a transform on frames that would otherwise have been thrown away.
+     *
+     * ### The limit, which is recorded rather than hidden
+     *
+     * The answer is a **translation**, and a translation cannot correct field rotation. So the
+     * outcome carries [AsterismMatcher.Method.PHASE_CORRELATION] into the frame log, and the guard
+     * against misuse is [PhaseCorrelation.MIN_PEAK_RATIO]: a rotating field smears the correlation
+     * peak and the confidence collapses, so a session the star matcher *should* have handled is
+     * refused here too rather than quietly rescued with the wrong model.
+     */
+    private fun correlate(plane: BinnedPlane, why: String): Outcome {
+        val referencePixels = referencePlane ?: return Outcome.FAILED
+        if (plane.width != referencePlaneWidth || plane.height != referencePlaneHeight) {
+            // A different analysis geometry mid-session. Nothing sane to correlate against.
+            return Outcome.FAILED
+        }
+
+        val result = PhaseCorrelation.between(
+            reference = referencePixels,
+            target = plane.data,
+            width = plane.width,
+            height = plane.height,
+        )
+        if (!result.usable) return Outcome.FAILED
+
+        // The correlation works in analysis-plane pixels; transforms are in sensor pixels.
+        val dx = plane.toSensorPixels(result.dx)
+        val dy = plane.toSensorPixels(result.dy)
+
+        return Outcome(
+            transform = RigidTransform(
+                rotationDeg = 0.0,
+                dx = dx,
+                dy = dy,
+                centreX = centreX,
+                centreY = centreY,
+            ),
+            // No stars were fitted, so there is no residual to report. NaN rather than 0, which
+            // would read as a perfect fit in every summary that averages these.
+            residualRmsPx = Double.NaN,
+            inlierCount = 0,
+            method = AsterismMatcher.Method.PHASE_CORRELATION,
+            // Deliberately not fed to the monitor: it tracks a *star* residual, and handing it a
+            // frame with none would poison the baseline every later frame is judged against.
+            verdict = ResidualMonitor.Verdict.UNKNOWN,
+            isReference = false,
+            fallbackReason = why,
+            fallbackConfidence = result.peakRatio,
+        )
+    }
+
     /** One line for the frame log, so a rejection can be argued with later (**D-10**). */
     fun describe(outcome: Outcome): String = when {
         outcome.isReference -> "reference frame"
         outcome.tooFewStars -> "too few stars to start a session on"
         outcome.failed -> "could not be registered against the reference frame"
+        outcome.method == AsterismMatcher.Method.PHASE_CORRELATION ->
+            // Says *translation only* out loud. A frame placed this way is not equivalent to one
+            // the star matcher placed, and a log that did not distinguish them would hide it.
+            "whole-image correlation, translation only (%s; peak %.0fx)".format(
+                outcome.fallbackReason ?: "star matching failed",
+                outcome.fallbackConfidence ?: Double.NaN,
+            )
         else -> "%s · %d stars matched · %s".format(
             outcome.method.name.lowercase(),
             outcome.inlierCount,
