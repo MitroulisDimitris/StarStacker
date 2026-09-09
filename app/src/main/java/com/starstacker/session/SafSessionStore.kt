@@ -262,6 +262,19 @@ private class SafSessionFolder(
     override fun sizeBytes(): Long =
         (listOf(sessionUri) + directories.values).sumOf { parent -> childBytes(parent) }
 
+    override fun sizeBytes(directory: String): Long =
+        directories[directory]?.let { childBytes(it) } ?: 0L
+
+    /**
+     * Not implemented, and it says so rather than reporting success.
+     *
+     * Recursive deletion of a document tree is a different API from the one this class uses to
+     * write, and T-6.7's actions are irreversible — so the honest state for a SAF root is "this
+     * cannot be done here" rather than a false `true` that leaves the files on disk while the UI
+     * reports the space reclaimed. Tracked with the rest of SAF under T-0.5.
+     */
+    override fun deleteDirectory(directory: String): Boolean = false
+
     private fun childBytes(parent: Uri): Long {
         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
             parent,

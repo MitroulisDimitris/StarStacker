@@ -725,6 +725,18 @@ class MainActivity : ComponentActivity() {
                                     sessionsController.askDelete(listOf(detail.summary))
                                     nav = nav.pop()
                                 },
+                                // Phase 4's library controls (T-6.3, T-6.5, T-6.7). All of them
+                                // write through the controller so the disk and the screen cannot
+                                // disagree about what was decided.
+                                onFrameOverride = { index, include ->
+                                    sessionsController.setFrameOverride(index, include)
+                                },
+                                onSelectVersion = { sessionsController.selectVersion(it) },
+                                onDeleteVersion = { sessionsController.deleteVersion(it) },
+                                pendingStorage = sessionsController.pendingStorage,
+                                onAskStorage = { sessionsController.askStorageAction(it) },
+                                onConfirmStorage = { sessionsController.confirmStorageAction() },
+                                onCancelStorage = { sessionsController.cancelStorageAction() },
                                 onBack = {
                                     sessionsController.closeDetail()
                                     nav = nav.pop()

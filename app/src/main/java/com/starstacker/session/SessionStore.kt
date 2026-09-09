@@ -88,6 +88,17 @@ interface SessionFolder {
      * session pane loads it off the main thread.
      */
     fun sizeBytes(): Long
+
+    /**
+     * Bytes under one of the session's own subdirectories — `lights`, `darks`, `master`.
+     *
+     * T-6.7 needs the three separately, because "delete subs, keep the master" has to state what
+     * it would free and what it would cost, and a single total cannot say either.
+     */
+    fun sizeBytes(directory: String): Long
+
+    /** Deletes one of the session's subdirectories and everything under it. Explicit only. */
+    fun deleteDirectory(directory: String): Boolean
 }
 
 /**
@@ -172,6 +183,19 @@ private class FileSessionFolder(private val dir: File) : SessionFolder {
     override fun sizeBytes(): Long =
         runCatching { dir.walkTopDown().filter { it.isFile }.sumOf { it.length() } }
             .getOrDefault(0L)
+
+    override fun sizeBytes(directory: String): Long =
+        runCatching {
+            File(dir, directory).walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        }.getOrDefault(0L)
+
+    override fun deleteDirectory(directory: String): Boolean =
+        runCatching {
+            // Named, never matched. §1.29: a glob destroyed 5 GB of irreplaceable field data, and
+            // the fix is that nothing in this app takes a pattern.
+            val target = File(dir, directory)
+            !target.exists() || target.deleteRecursively()
+        }.getOrDefault(false)
 
     private companion object {
         const val BUFFER = 1 shl 16

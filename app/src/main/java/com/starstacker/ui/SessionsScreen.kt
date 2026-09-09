@@ -1,6 +1,7 @@
 package com.starstacker.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
@@ -26,6 +27,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -33,7 +36,9 @@ import androidx.compose.ui.unit.sp
 import com.starstacker.exposure.ExposureSolver
 import com.starstacker.session.FrameKind
 import com.starstacker.session.SessionState
+import com.starstacker.session.SessionFilter
 import com.starstacker.session.SessionSummary
+import com.starstacker.session.StoragePlan
 import com.starstacker.stacking.Combine
 import com.starstacker.stacking.FrameQuality
 import com.starstacker.stacking.LinearMaster
@@ -76,6 +81,7 @@ fun SessionsScreen(
     onBack: () -> Unit,
 ) {
     val sessions = controller.sessions
+    val visible = controller.visibleSessions
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -112,6 +118,7 @@ fun SessionsScreen(
         controller.lastAction?.let { item { Banner(it, color = Night.Txt3) } }
         controller.error?.let { item { Banner(it, color = Night.Red) } }
 
+        // T-6.7 — the whole root's usage, where someone with a full phone will look for it.
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.weight(1f)) {
@@ -119,7 +126,13 @@ fun SessionsScreen(
                         when {
                             selection.isActive -> selection.describe()
                             controller.loading && sessions.isEmpty() -> "Reading the root"
-                            else -> "${sessions.size} on this phone"
+                            // The filtered count, and the total when they differ — a list that
+                            // silently shows fewer rows than the phone holds is a list that looks
+                            // like it has lost sessions.
+                            visible.size != sessions.size ->
+                                "${visible.size} of ${sessions.size} · " +
+                                    SessionSummary.formatBytes(controller.totals.totalBytes)
+                            else -> controller.totals.describe()
                         },
                     )
                 }
@@ -176,9 +189,36 @@ fun SessionsScreen(
             }
         }
 
-        items(sessions, key = { it.folderName }) { session ->
+        // T-6.2 — the controls, above the rows they narrow.
+        if (sessions.size > 1) {
+            item {
+                SessionFilterBar(
+                    filter = controller.filter,
+                    cameras = SessionFilter.camerasIn(sessions),
+                    onChange = { controller.applyFilter(it) },
+                )
+            }
+        }
+
+        // T-6.8 — whether the selected nights could go together. A preview, not an action.
+        if (selection.count > 1) {
+            item {
+                CombinePreview(
+                    controller.combinePlan(sessions.filter { it.folderName in selection }),
+                )
+            }
+        }
+
+        if (visible.isEmpty() && sessions.isNotEmpty()) {
+            item {
+                Banner("No session matches this filter.", color = Night.Txt3)
+            }
+        }
+
+        items(visible, key = { it.folderName }) { session ->
             SessionPaneRow(
                 session = session,
+                preview = controller.thumbnails.get(session),
                 selected = session.folderName in selection,
                 selecting = selection.isActive,
                 onOpen = { onOpen(session) },
@@ -223,6 +263,7 @@ fun SessionsScreen(
 @Composable
 private fun SessionPaneRow(
     session: SessionSummary,
+    preview: androidx.compose.ui.graphics.ImageBitmap?,
     selected: Boolean,
     selecting: Boolean,
     onOpen: () -> Unit,
@@ -249,12 +290,13 @@ private fun SessionPaneRow(
         // Top, not centre: the description wraps to two lines on a long session, and a centred
         // badge then floats halfway down the row looking like it belongs to neither line.
         Row(verticalAlignment = Alignment.Top) {
-            // The thumbnail slot the prototype fills from a stacked master. There is no stacking
-            // until Phase 3, so it says so rather than showing an empty square that reads as a
-            // failed image load. Doubles as the selection mark, which needs no second control.
+            // T-6.1 — the thumbnail, now that Phase 3 produces one. Still doubles as the
+            // selection mark, which needs no second control: the tick draws *over* the picture
+            // rather than instead of it, so a selected session stays recognisable.
             Box(
                 Modifier
                     .size(44.dp)
+                    .clip(RoundedCornerShape(8.dp))
                     .border(
                         1.dp,
                         if (selected) Night.Red else Night.LineSoft,
@@ -262,11 +304,21 @@ private fun SessionPaneRow(
                     ),
                 contentAlignment = Alignment.Center,
             ) {
-                if (selected) {
-                    Text("✓", fontSize = 18.sp, color = Night.Hot)
-                } else {
-                    Text(
-                        "NO\nSTACK",
+                if (preview != null) {
+                    Image(
+                        bitmap = preview,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+                when {
+                    selected -> Text("✓", fontSize = 18.sp, color = Night.Hot)
+                    preview != null -> Unit
+                    else -> Text(
+                        // The honest state for a session with no master. A spinner would
+                        // imply a picture is coming, and for an unstacked session none is.
+                        if (session.stacked) "…" else "NO\nSTACK",
                         fontFamily = NumFamily,
                         fontSize = 6.5.sp,
                         lineHeight = 8.sp,
@@ -602,6 +654,16 @@ fun SessionDetailScreen(
     onViewResult: () -> Unit,
     onDelete: () -> Unit,
     onBack: () -> Unit,
+    /** T-6.3 — include or exclude one light by hand. Null clears the override. */
+    onFrameOverride: (Int, Boolean?) -> Unit = { _, _ -> },
+    /** T-6.5 */
+    onSelectVersion: (Int) -> Unit = {},
+    onDeleteVersion: (Int) -> Unit = {},
+    /** T-6.7 */
+    pendingStorage: StoragePlan.Action? = null,
+    onAskStorage: (StoragePlan.Action) -> Unit = {},
+    onConfirmStorage: () -> Unit = {},
+    onCancelStorage: () -> Unit = {},
 ) {
     val log = detail.log
     val info = log.info
@@ -651,6 +713,9 @@ fun SessionDetailScreen(
                 )
             }
         }
+
+        // T-6.6 — says nothing while the calibration is unchanged, which is the common case.
+        item { StalenessBanner(detail.staleness) }
 
         item { Eyebrow("Result") }
         item {
@@ -745,7 +810,45 @@ fun SessionDetailScreen(
             )
         }
 
-        item { Eyebrow("Frame log · ${log.frames.size} frames") }
+        // T-6.5 — every master this session has produced, and which one the result screen shows.
+        if (detail.versions.versions.isNotEmpty()) {
+            item { Eyebrow("Masters · ${detail.versions.versions.size}") }
+            item {
+                VersionsCard(
+                    index = detail.versions,
+                    onSelect = onSelectVersion,
+                    onDelete = onDeleteVersion,
+                )
+            }
+            detail.comparison()?.let { pair -> item { VersionComparison(pair) } }
+        }
+
+        // T-6.7 — what it costs, and what could be freed. The confirmation sits directly above the
+        // actions rather than in a dialog, where it cannot be dismissed by a tap outside it.
+        detail.storage?.let { plan ->
+            item { Eyebrow("On disk · ${SessionSummary.formatBytes(plan.totalBytes)}") }
+            pendingStorage?.let { action ->
+                item {
+                    StorageConfirmation(
+                        action = action,
+                        onConfirm = onConfirmStorage,
+                        onCancel = onCancelStorage,
+                    )
+                }
+            }
+            item { StorageCard(plan, onAsk = onAskStorage) }
+        }
+
+        item {
+            Eyebrow(
+                buildString {
+                    append("Frame log · ${log.frames.size} frames")
+                    // T-6.3 — a session someone has curated should say so, since it changes what
+                    // a restack would do.
+                    if (detail.overridden > 0) append(" · ${detail.overridden} overridden")
+                },
+            )
+        }
         if (log.frames.isEmpty()) {
             item {
                 Card {
@@ -758,7 +861,19 @@ fun SessionDetailScreen(
             }
         } else {
             items(log.frames, key = { "${it.kind}-${it.index}-${it.fileName}" }) { frame ->
-                FrameRow(frame)
+                FrameRow(
+                    frame = frame,
+                    // Darks are not a choice — a dark is either matched to the lights or it is
+                    // not, and excluding one by hand is not a thing anyone means to do.
+                    onToggle = if (frame.kind == FrameKind.LIGHT) {
+                        {
+                            val stacked = frame.included ?: frame.accepted
+                            onFrameOverride(frame.index, !stacked)
+                        }
+                    } else {
+                        null
+                    },
+                )
             }
         }
 
@@ -811,16 +926,25 @@ fun SessionDetailLoading(folderName: String, onBack: () -> Unit) {
  * measurement someone can argue with.
  */
 @Composable
-private fun FrameRow(frame: com.starstacker.session.FrameRecord) {
+private fun FrameRow(
+    frame: com.starstacker.session.FrameRecord,
+    onToggle: (() -> Unit)? = null,
+) {
+    // What the stacker will actually do with it: the gate's verdict, with the user's override
+    // applied over it (T-6.3). The row is drawn against *this*, not against `accepted`, or a
+    // frame someone had rescued would still read as cut.
+    val stacked = frame.included ?: frame.accepted
+    val overridden = frame.included != null && frame.included != frame.accepted
     Row(
         Modifier
             .fillMaxWidth()
+            .then(if (onToggle != null) Modifier.clickable(onClick = onToggle) else Modifier)
             .padding(vertical = 3.dp),
         verticalAlignment = Alignment.Top,
     ) {
         Mono(
             "%04d".format(frame.index),
-            color = if (frame.accepted) Night.Txt2 else Night.Dim,
+            color = if (stacked) Night.Txt2 else Night.Dim,
             size = 10.sp,
         )
         Spacer(Modifier.size(9.dp))
@@ -832,9 +956,12 @@ private fun FrameRow(frame: com.starstacker.session.FrameRecord) {
                     frame.starCount?.let { append(" · $it stars") }
                     frame.temperatureC?.let { append(" · %.1f°C".format(it)) }
                 },
-                color = if (frame.accepted) Night.Txt2 else Night.Txt3,
+                color = if (stacked) Night.Txt2 else Night.Txt3,
                 size = 10.sp,
             )
+            // The gate's reasoning is shown whether or not the frame was rescued — that is the
+            // point of keeping `accepted` and `included` apart, and hiding it once someone
+            // overrode it would leave them unable to see what they overrode.
             if (!frame.accepted) {
                 Mono(
                     listOfNotNull(frame.rejectReason?.name?.lowercase(), frame.rejectDetail)
@@ -845,10 +972,21 @@ private fun FrameRow(frame: com.starstacker.session.FrameRecord) {
             }
         }
         Mono(
-            if (frame.accepted) "kept" else "cut",
-            color = if (frame.accepted) Night.Txt3 else Night.Warn,
+            when {
+                overridden && stacked -> "kept ·"
+                overridden -> "cut ·"
+                stacked -> "kept"
+                else -> "cut"
+            },
+            color = if (stacked) Night.Txt3 else Night.Warn,
             size = 9.5.sp,
         )
+        if (overridden) {
+            Spacer(Modifier.size(3.dp))
+            // Marks it as a human decision rather than the gate's, so a log read later is not
+            // mysterious.
+            Mono("by hand", color = Night.Txt3, size = 8.5.sp)
+        }
     }
 }
 

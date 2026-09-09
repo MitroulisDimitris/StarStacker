@@ -4394,8 +4394,13 @@ changes whether someone can run one without being surprised.
   **from the log rather than the filesystem** (D-5): it is the source of truth, it survives a trip
   to a PC and back, and a list that stat'd a file per row would pay for a season of nights to draw
   five. It also carries `cameraId`, which T-6.2 needs to filter by lens.
-  *Remaining:* the row that actually decodes and shows it, and the cached index — which still waits
-  on OI-5 saying the scan is slow enough to need one.
+  **Screen done 2026-09-09** — the row's existing 44 dp slot now draws the preview, decoded on
+  demand by `ui/SessionThumbnails.kt`. Two passes with `inSampleSize`, because a stretched master is
+  a full-resolution JPEG and decoding one at full size to draw it 44 dp wide is how a list dies
+  rather than how it is slow. **Absences are cached too**, or the cheapest state to be in — no
+  previews at all — would be the most expensive to draw, retried on every scroll. The tick draws
+  *over* the picture rather than instead of it, so a selected session stays recognisable.
+  *Remaining:* the cached index, still waiting on OI-5 saying the scan is slow enough to need one.
 - [~] **T-6.2** Sort/filter by date, target, camera, status.
   **Logic done 2026-09-09** — `session/SessionFilter.kt`. One serialisable value holding the sort
   and every filter, so a screen restores what someone had set up rather than resetting to
@@ -4404,7 +4409,13 @@ changes whether someone can run one without being surprised.
   started in the same minute reshuffles on every scan. And **sorting by target puts unlabelled
   sessions last**: an unnamed session's label *is* its start time, so alphabetical order would file
   them as a block of "02:14, 02:31" in the middle of the alphabet.
-  *Remaining:* the controls.
+  **Screen done 2026-09-09** — `ui/SessionLibrary.kt`. A horizontal strip of chips rather than a
+  dialog: narrowing the list costs one tap where a dialog costs three, and sort *cycles* because six
+  options is few enough that tapping through beats choosing from a menu.
+  *Only the cameras actually present get a chip* — one for a lens this phone has never used is a
+  control that can only ever empty the list. And when a filter is hiding rows the header says
+  "**7 of 23**", because a list quietly showing fewer sessions than the phone holds reads as a list
+  that has lost some.
 - [~] **T-6.3** Session detail with the full frame log and manual include/exclude (FR-10.2.2).
   **The detail screen and its frame log are T-3.27.** What is left here is **manual
   include/exclude**, which is meaningless until something reads the flags — that is T-6.4's
@@ -4417,7 +4428,13 @@ changes whether someone can run one without being surprised.
   *And agreeing with the gate clears the override rather than storing it* — an override that says
   the same thing is not an override, and keeping it would silently pin the frame against a later
   improvement to the gate.
-  *Remaining:* the toggle in the frame list.
+  **Screen done 2026-09-09** — tapping a light in the frame log toggles it, written to
+  `session.json` immediately rather than held in memory, since an override lost to a process death
+  would be lost *after* the person had decided.
+  *The row is drawn against the override and the gate's reasoning is kept visible*: a rescued frame
+  reads "kept · by hand" and still shows why the gate cut it, because hiding that would leave
+  someone unable to see what they overrode. **Darks are not offered** — a dark is matched to the
+  lights or it is not, and excluding one by hand is not a thing anyone means to do.
 - [~] **T-6.4** Deferred stacking service — a **separate** FGS from capture, per **D-12**:
   `mediaProcessing` on API 35+, `dataSync` on API 34. Must implement `onTimeout()` → `stopSelf()`
   or the system throws `RemoteServiceException` at the 6 h budget. Progress, cancellable,
@@ -4451,8 +4468,13 @@ changes whether someone can run one without being surprised.
   there is no index, which is where every session already on the phone has its files.
   *The last version cannot be deleted*, since an index with no versions reads as never-stacked and
   would point the fallback at an empty folder.
-  *Remaining:* the side-by-side viewer. The comparison itself — what differs between two versions,
-  in words — is `differences()`.
+  **Screen done 2026-09-09** — the detail screen lists every version with the settings that made
+  it, taps switch which one the result screen reads, and the two newest are compared in words.
+  *Drawn even when there is only one version*, because the count is the thing that tells someone
+  restacking is safe — a control appearing only after the second stack teaches nobody that the
+  first one was non-destructive.
+  *Remaining:* showing the two images side by side, which wants the result screen rather than this
+  one.
 - [~] **T-6.6** `Stale` detection when calibration masters change (FR-10.4.2). Never auto-restack.
   **Done 2026-09-09** — `calibration/Staleness.kt`, recorded at stack time in
   `SessionInfo.calibrationVersions`. **Recorded rather than looked up later**, because the library
@@ -4464,7 +4486,10 @@ changes whether someone can run one without being surprised.
   state, and reporting it as fresh would be exactly the lie this exists to prevent.
   *Never auto-restacks*, per FR-10.4.2: a newer flat is only better on average, and one shot through
   a smeared lens is worse than the one it replaced.
-  *Remaining:* the badge.
+  **Screen done 2026-09-09** — a banner at the top of the detail screen, and **only when the
+  answer is `STALE`**. `FRESH` needs no row, and `UNKNOWN` — which every session stacked before
+  today is — must not be dressed up as either. It states what changed and offers nothing: FR-10.4.2
+  is explicit that this never restacks by itself.
 - [~] **T-6.7** Storage management: per-session and total usage, "delete subs, keep masters"
   (FR-10.6.2), explicit deletion only.
   **Whole-session deletion is T-3.28** (**D-26**). What is left here is the *partial* case — keeping
@@ -4475,7 +4500,17 @@ changes whether someone can run one without being surprised.
   says so in those words rather than greying a button out.
   *Deleting the masters is the only reversible action here*, and is marked as such; everything else
   is a one-way door. Nothing takes a pattern (§1.29).
-  *Remaining:* the screen, and the actual deletion, which is `SessionStore`'s.
+  **Screen and deletion done 2026-09-09.** `SessionStore` gained `sizeBytes(directory)` and
+  `deleteDirectory(directory)` — **named directories, never a pattern** (§1.29). The detail screen
+  shows lights, darks and masters separately with an action against each, and the root's total sits
+  in the list header where someone with a full phone will look for it.
+  *A blocked action is drawn with its reason rather than greyed out*: "there is no master yet — this
+  would delete the whole session" is the answer to the question a disabled button provokes.
+  *Confirmation before anything is removed*, worded like T-3.28's so the two cannot describe a loss
+  differently, and every irreversible action is marked "one-way".
+  **The SAF path returns `false` rather than a false success** — recursive deletion of a document
+  tree is a different API from the one this writes with, and reporting space reclaimed while the
+  files remain is the worse failure. Tracked under T-0.5.
 - [~] **T-6.8** Multi-night stacking (FR-10.5): camera hard-reject, overlap check, per-session
   darks, background/scale normalisation, cold-start registration over a wide search range,
   composite session referencing its constituents, cumulative integration time.
@@ -4502,7 +4537,13 @@ changes whether someone can run one without being surprised.
   **The cold-start wide search is T-4.7's `PhaseCorrelation`, unchanged.** Between nights there is
   no seed — the tripod moved and the target rose to a different altitude — which is exactly the
   case that primitive was built for. Built once, consumed three times now (T-4.7, T-11.5, here).
-  *Remaining:* the composite session folder itself, and the UI to pick nights.
+  **Preview screen done 2026-09-09** — selecting two or more sessions shows what combining them
+  *would* give: cumulative integration, which nights were rejected and why, and any warnings. It
+  says plainly that combining is not built yet rather than offering a button that does nothing.
+  It earns its place anyway: whether two nights can go together is answerable from their logs
+  alone, the answer is often no, and the reason is worth knowing before anyone plans a second night
+  around it.
+  *Remaining:* the composite session folder and the stack itself.
 - [~] **T-7.1** Gradient removal — polynomial or RBF background model (FR-8.1.5).
   **Built 2026-09-03** as `edit/Gradient.kt`, §1.41. Low-order polynomial fitted to per-tile
   background percentiles, with one-sided rejection so a galaxy is not mistaken for sky, and a
@@ -5109,6 +5150,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-09-09 | **Phase 4's screens: the session library is usable.** `ui/SessionLibrary.kt` and `ui/SessionThumbnails.kt`, wired through `SessionsController` and the two existing screens. Filter chips over the list, thumbnails in the row slot that has said `NO STACK` since the prototype, and in the detail screen: a staleness banner, the master versions with their settings, per-directory storage with actions, and tap-to-toggle on every light frame. **Choices worth recording.** *Thumbnails cache their absences* — otherwise the cheapest state, no previews at all, is the most expensive to draw, re-decoded on every scroll — and decode through `inSampleSize`, since a stretched master is a full-resolution JPEG and drawing one at full size in a 44 dp box is how a list dies rather than how it is slow. *The frame row is drawn against the override but still shows the gate's reasoning*, because hiding why a frame was cut would leave someone unable to see what they overrode; a rescued frame reads “kept · by hand”. *A blocked storage action states its reason rather than greying out* — “there is no master yet, this would delete the whole session” is the answer to the question a disabled button provokes. *The staleness banner appears only for `STALE`*: `UNKNOWN` is what every session stacked before today is, and dressing it as either answer is the lie the check exists to prevent. *And the multi-night card is a preview, not an action* — it says combining is not built rather than offering a button that does nothing. `SessionStore` gained `sizeBytes(directory)` and `deleteDirectory(directory)`, both taking **named directories and never a pattern** (§1.29); the SAF implementation returns `false` rather than a false success, because reporting space reclaimed while the files remain is the worse failure. **None of this has been on a phone** — it compiles and the logic under it is tested, but no screen here has been looked at. |
 | 2026-09-09 | **Phase 4's session library: the logic behind T-6.1–T-6.3 and T-6.5–T-6.8.** `SessionFilter` (sort/filter), `FrameRecord.included` + `SessionLog.stackable` (manual include/exclude), `MasterVersions` (versioned non-destructive restacking), `Staleness` (calibration drift), `StoragePlan` (what is safe to delete) and `MultiNight` (combining nights). All pure and tested; the screens are what remain. **Four decisions worth keeping.** *The manual override is a separate field from `accepted`*, because `accepted` plus `rejectReason` is the record of why the gate dropped a frame, and overwriting it would destroy the reasoning a restack needs — and an override that *agrees* with the gate is cleared rather than stored, or it would silently pin the frame against a later improvement. *Masters now live in `master/vN/`*, so a restack cannot destroy the one someone is still deciding about; sessions stacked before today keep working because `currentDir` falls back to `master/` itself. *“No calibration recorded” is `UNKNOWN`, not `FRESH`* — every session stacked before today is in that state and calling it fresh would be the exact lie the check exists to prevent. *And “delete subs, keep the master” is offered only where a master exists*: a master is derived and the subs are a night that happened, so without one that action deletes the session. **T-6.8's cold-start wide search is T-4.7's `PhaseCorrelation` unchanged** — between nights there is no seed to start from, which is the case it was built for. Three consumers now, one implementation. |
 | 2026-09-09 | **T-4.7 done: whole-image registration for scenes with no stars in them.** `PhaseCorrelation` is pure Kotlin down to the radix-2 FFT, so it is JVM-testable rather than needing OpenCV and a phone, and `LiveRegistration` falls back to it on both star-path failures — a normal session never reaches it. **The tests had to be corrected twice about the same thing, and it is the interesting part.** A synthetic nightscape built from smooth sinusoids let the *moon* win the correlation; so did one with more sinusoids. That is not a quirk of the test: phase correlation normalises every frequency to unit magnitude, so a feature's weight is **the number of frequencies it occupies**, not its brightness or area — six sinusoids occupy six, one hard-edged disc occupies thousands. Only with **broadband** landscape texture, which a real shoreline has, did the scene reproduce the real session and put a moving moon at (0, 0). Worth knowing as a limit of the method. Measurement also moved two numbers: the **sign was inverted** (`A · conj(B)` peaks at the shift taking target back onto reference, the negative of what callers want, and silent when wrong), and `MIN_PEAK_RATIO` was **guessed at 4.0 and would have accepted pure noise**, which measures 8.8 against 207–10 000 for a real translation — now 50. The honest limit is enforced rather than merely written down: a rotating field smears the peak, the confidence collapses, and the fallback refuses it. The log says “translation only” in as many words, and the residual monitor is not fed, since it tracks a star residual and a starless frame would poison the baseline. |
 | 2026-09-09 | **OI-25 narrowed without the phone: the loss is not a band.** The crop is a pure function of the coverage map, so the two surviving numbers — 683 291 deficient pixels and a 2804×2417 crop at (876, 476) — are enough to test candidate shapes through the real `LinearMaster.regionFor`. **A uniform ring holding every deficient pixel is 48 px thick and leaves a 3999×2975 crop**, near the whole frame; scattered single pixels leave slivers. The observed crop keeps **57% of the covered area** where a ring keeps over 95%. Since a ring is exactly what geometry produces — displaced frames not all covering the edge — **the explanation needing no new mechanism is ruled out.** Better still, the crop's own edges name where the deficiency reaches: the first excluded column on each side is `x = 875` and `x = 3680`, the first excluded row `y = 475` and `y = 2893`, and a deficiency touching those four lines reproduces the observed rectangle **to the pixel** for ~28 000 pixels — **4%** of the deficient set. So the thing to look for is not a thicker border but a few **deficient lines reaching deep into the frame**, and if they are evenly spaced they are **band boundaries from the register pass** — the one structure here that runs in straight lines, and one the flat can move, since holding a 50 MB flat changes the memory budget `registerRowsFor` divides into bands. `coverageNote` now names the five worst rows and columns so the next run points straight at them. Pinned in `CoverageShapeTest`. |
