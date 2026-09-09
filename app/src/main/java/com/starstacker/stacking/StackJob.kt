@@ -269,6 +269,11 @@ class StackJob(
             // OI-25 — where coverage is being lost. Reasoning about this on paper has now failed
             // twice, so the run says what it actually saw.
             coverageMap?.let { notes += coverageNote(it, frames.width, frames.height, frames.count) }
+            // Two non-finite counts, and the gap between them is the measurement. The first is
+            // what calibration produced; the second is what the gather saw. They could never have
+            // agreed before the pedestal fix, because the integer round-trip turned every NaN into
+            // a zero in between — which is why "0 non-finite" was not the exoneration it looked.
+            notes += "calibration produced ${stacker.calibrationNonFinite} non-finite value(s)"
             notes += "dropped samples: ${stacker.skippedNonFinite} non-finite, " +
                 "${stacker.skippedSentinel} sentinel, ${stacker.nearSentinel} near-sentinel kept"
 
@@ -383,48 +388,118 @@ class StackJob(
     }
 
     /**
-     * What the coverage map looks like, for OI-25.
+     * What the coverage map looks like, for OI-25 — **shaped**, not just counted.
      *
-     * The crop is "the largest rectangle every frame reached", so when it shrinks, coverage has
-     * fallen below the frame count somewhere. This says where and by how much, rather than leaving
-     * it to be deduced.
+     * ### Why the previous version could not settle the question
+     *
+     * It reported a total, a minimum and a bounding box. On the run that mattered those said
+     * "683 291 pixels short, box (0,0)-(4095,3071)", which is compatible with a thin ring, a deep
+     * wedge, and scattered holes alike — a ring has exactly that bounding box, and reading it as
+     * "scattered everywhere" was one of the wrong turns this issue has already taken.
+     *
+     * The distinction decides the mechanism. **A ring** is geometry: every frame is displaced, so
+     * a band around the edge is not covered by all of them, and the crop should lose about twice
+     * the ring's thickness in each dimension. **A wedge or a spur** is not geometry — it is one
+     * frame, or one region, losing samples for a reason of its own, and it costs the crop far more
+     * than its own area because the largest inscribed rectangle has to clear it entirely.
+     *
+     * On the 2026-09-04 run the crop gave up **5 805 644** pixels to a deficient set of **683 291**
+     * — a factor of eight. That is the signature of a spur, not a ring, and this reports the number
+     * that says so directly: how far in from each edge the deficiency reaches, as a median across
+     * the edge and as a worst case.
      */
     private fun coverageNote(coverage: ShortArray, width: Int, height: Int, frames: Int): String {
+        fun covered(x: Int, y: Int) = coverage[y * width + x].toInt() >= frames
+
         var full = 0L
         var zero = 0L
         var min = Int.MAX_VALUE
-        var left = width; var right = -1; var top = height; var bottom = -1
-        var sampleX = -1; var sampleY = -1; var sampleN = -1
-        for (y in 0 until height) {
-            val row = y * width
-            for (x in 0 until width) {
-                val n = coverage[row + x].toInt()
-                if (n < min) min = n
-                when {
-                    n >= frames -> full++
-                    else -> {
-                        if (n == 0) zero++
-                        if (x < left) left = x
-                        if (x > right) right = x
-                        if (y < top) top = y
-                        if (y > bottom) bottom = y
-                        // A pixel well inside the frame is the interesting one: an edge shortfall
-                        // is geometry, an interior one is not.
-                        if (sampleN < 0 && x in width / 4..(3 * width / 4) && y in height / 4..(3 * height / 4)) {
-                            sampleX = x; sampleY = y; sampleN = n
-                        }
-                    }
-                }
-            }
+        for (i in 0 until width * height) {
+            val n = coverage[i].toInt()
+            if (n < min) min = n
+            if (n >= frames) full++ else if (n == 0) zero++
         }
         val short = width.toLong() * height - full
+        if (short == 0L) {
+            return "coverage: every pixel saw all $frames frames"
+        }
+
+        // How far the deficiency reaches in from each edge, per row and per column.
+        val leftRun = IntArray(height)
+        val rightRun = IntArray(height)
+        for (y in 0 until height) {
+            var x = 0
+            while (x < width && !covered(x, y)) x++
+            leftRun[y] = x
+            if (x == width) {
+                // The whole row is deficient; a trailing run would double-count it.
+                rightRun[y] = 0
+                continue
+            }
+            var r = width - 1
+            while (r >= 0 && !covered(r, y)) r--
+            rightRun[y] = width - 1 - r
+        }
+        val topRun = IntArray(width)
+        val bottomRun = IntArray(width)
+        for (x in 0 until width) {
+            var y = 0
+            while (y < height && !covered(x, y)) y++
+            topRun[x] = y
+            if (y == height) {
+                bottomRun[x] = 0
+                continue
+            }
+            var b = height - 1
+            while (b >= 0 && !covered(x, b)) b--
+            bottomRun[x] = height - 1 - b
+        }
+
+        // Deficient pixels that are *not* part of an edge run: real holes rather than a border.
+        var interior = 0L
+        for (y in 0 until height) {
+            val from = leftRun[y]
+            val until = width - rightRun[y]
+            for (x in from until until) {
+                if (!covered(x, y)) interior++
+            }
+        }
+
+        fun describe(name: String, runs: IntArray): String {
+            val sorted = runs.clone().also { it.sort() }
+            val median = sorted[sorted.size / 2]
+            val worst = sorted.last()
+            val at = runs.indexOfFirst { it == worst }
+            return "$name median $median, worst $worst at ${if (name == "left" || name == "right") "row" else "column"} $at"
+        }
+
         return buildString {
             append("coverage: %.1f%% of pixels saw all %d frames".format(100.0 * full / (width.toLong() * height), frames))
             append(", %d short".format(short))
             if (zero > 0) append(", $zero saw none")
             append(", min $min")
-            if (right >= 0) append(", shortfall spans (${left},${top})-(${right},${bottom})")
-            if (sampleN >= 0) append(", e.g. ($sampleX,$sampleY) saw $sampleN")
+            append("\n  edge insets: ")
+            append(describe("left", leftRun)).append(" | ")
+            append(describe("right", rightRun)).append(" | ")
+            append(describe("top", topRun)).append(" | ")
+            append(describe("bottom", bottomRun))
+            append("\n  $interior deficient pixel(s) are interior — not part of any edge run")
+            // The line that decides it: a ring's worst inset is close to its median, a spur's is
+            // many times it.
+            val medians = listOf(leftRun, rightRun, topRun, bottomRun)
+                .map { it.clone().also { c -> c.sort() }[it.size / 2] }
+            val worsts = listOf(leftRun, rightRun, topRun, bottomRun).map { it.max() }
+            val ratio = if (medians.max() == 0) Double.NaN else worsts.max().toDouble() / medians.max()
+            append(
+                "\n  worst inset is %.1fx the thickest median — %s".format(
+                    ratio,
+                    when {
+                        ratio.isNaN() -> "no edge band at all, so the loss is interior"
+                        ratio < 2.0 -> "a band, which is the geometry of displaced frames"
+                        else -> "a spur, which geometry does not explain"
+                    },
+                ),
+            )
         }
     }
 

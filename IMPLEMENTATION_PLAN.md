@@ -4755,9 +4755,16 @@ map and the gather's two skip reasons:
     coverage: 94.6% of pixels saw all 114 frames, 683291 short, min 1
     dropped samples: 0 non-finite, 137246410 sentinel, 4944916 near-sentinel kept
 
-- **Zero non-finite.** The flat is not producing `NaN`, which the flat itself confirms: its minimum
-  gain is 0.193 against a hole threshold of 0.05, so *no* pixel can take that branch. Four separate
-  attempts to pin this on `Calibration.apply` were all wrong.
+- **~~Zero non-finite, so the flat is not producing `NaN`.~~ RETRACTED 2026-09-09 — the counter
+  could not fire.** Between `Calibration.apply` and the gather sits the debayer's integer
+  round-trip, which was `calibrated[i].toInt().coerceIn(0, 65535)`. **`Float.NaN.toInt()` is 0 in
+  Kotlin**, so every NaN the flat produced arrived at the gather as a legitimate-looking zero, and
+  `skippedNonFinite` was structurally incapable of reporting one. The reading "0 non-finite" was
+  never evidence about the flat; it was evidence that a laundering step sat in front of the
+  instrument. The supporting argument — minimum gain 0.193 against a 0.05 threshold — still stands
+  on its own, but it was doing all the work and the counter none of it.
+  *This is a plausible reason four paper diagnoses in a row failed: one of the numbers they reasoned
+  from could not have been anything else.*
 - **The shortfall is a border ring, not scattered.** The note prints an example only for a
   deficient pixel in the central half of the frame, and printed none — so the centre is clean. An
   earlier reading of the bounding box `(0,0)-(4095,3071)` as "scattered everywhere" was wrong: a
@@ -4770,10 +4777,58 @@ so the deficient set must reach inward asymmetrically rather than sitting in a u
 mechanism is known by which dividing by a smooth gain of 0.193–2.31 changes which pixels the warp
 marks as outside the source, since the geometry is identical in both runs.
 
-**The next experiment, one 17-minute run:** the same two counters with the flat removed, so the
-sentinel count can be diffed against 137 246 410. If it is materially lower, the flat is adding
-sentinel hits and the question becomes how; if it is the same, the loss is in the coverage
-bookkeeping rather than in the gather.
+**What reading the code establishes, without a run (2026-09-09).** Coverage is `counts[]` from the
+gather, and a pixel's count falls short only when a sample is dropped — and there are exactly two
+drop paths, non-finite and an exact match against `Resample.UNCOVERED`. With the non-finite counter
+now known to have been blind, **every deficient pixel lost its samples to an exact `-1.0f`**.
+
+Those come from the warp's `BORDER_CONSTANT`, which is geometric and identical between the two
+runs, so the arithmetic says the loss should be identical too — and it is not. One of three things
+must therefore be true, and the instrumentation added below distinguishes them:
+
+1. the flat *is* producing non-finite values, which the laundering hid and which now get counted;
+2. calibrated data is landing on exactly `-1.0f`, which float arithmetic makes vanishingly unlikely
+   but which is no longer impossible now that negatives survive the round-trip;
+3. the deficiency is not an edge band at all, and the crop is being driven by something interior.
+
+**The shape is the discriminator, and the old note could not see it.** It reported a total, a
+minimum and a bounding box — and a ring, a wedge and scattered holes all have the bounding box
+`(0,0)-(4095,3071)`, which is how that box came to be misread as "scattered everywhere" earlier in
+this issue. `coverageNote` now reports **how far the deficiency reaches in from each edge**, as a
+median across the edge and as a worst case, plus a count of deficient pixels that belong to no edge
+run at all. A ring's worst inset is close to its median; a spur's is many times it. The crop losing
+**eight times** the deficient area already points at a spur, and one run now says so outright.
+
+**The next experiment, one 17-minute run**, now worth more than it was: the same run reports a
+non-finite count that can actually fire, a second count taken at the point calibration produces the
+value, and the shape of the deficiency. Diff the sentinel count against 137 246 410 as before — but
+the number to read first is `calibration produced N non-finite value(s)`, because if that is not
+zero the answer is already in hand and the remaining question is only which pixels.
+
+*Blocked on hardware rather than on thought:* attempted 2026-09-09 with no phone connected, and
+session `2026-08-23_0006` is not on the PC.
+
+**Two bugs fixed on the way, both found by reading rather than running (2026-09-09).**
+
+- **NaN was laundered into zero** before it could be counted, as above. The register pass now tests
+  `isFinite()` first and counts what it finds, so `skippedNonFinite` and the new
+  `calibrationNonFinite` mean what they say.
+- **Every negative calibrated value was clamped to zero.** The sky is faint and the dark master is
+  a mean, so roughly half the noise about it falls below zero; `coerceIn(0, 65535)` kept the
+  positive half and discarded the negative one. That biases the background upward and hands sigma
+  clipping precisely the asymmetry it must not have — a real correctness bug in its own right,
+  independent of OI-25. Replaced with a **pedestal**: debayer interpolation is a weighted mean with
+  weights summing to one, so adding 4096 before the integer round-trip and removing it after is
+  exact, and the negatives survive intact.
+
+**And a hazard recorded rather than fixed:** `Resample.UNCOVERED` is **-1.0**, which is *inside* the
+range a calibrated pixel can legitimately take — more so now that negatives survive. A real sample
+of exactly `-1.0f` is indistinguishable from an uncovered one and is dropped as border. Float
+equality makes that vanishingly rare, but it is rare **by luck rather than by construction**, and
+the honest sentinel for "no data" is `NaN`, which no measurement can produce. Changing it is not a
+free swap — `INTER_CUBIC` against a NaN border would propagate NaN through the interpolation zone
+that currently yields the 4 944 916 kept near-sentinel values — so it waits until the mechanism is
+known.
 
 **Worth considering either way:** requiring *every* frame to have reached a pixel is a brittle rule.
 One badly-drifted frame dictates the crop for all 114, and a threshold of, say, 95% of frames would
@@ -4792,7 +4847,7 @@ when the number comes back.
 
 | ID | Issue | Default until measured | Experiment | Needed by |
 |---|---|---|---|---|
-| **OI-25** | **A stack lost 38% of its field** (§1.44). **Half answered 2026-09-07: the flat causes it, the register band does not** — without the flat the crop returns to exactly 3887×2828. Instrumentation rules out `NaN` (zero non-finite samples; the flat's minimum gain is 0.193 against a 0.05 threshold) and shows the shortfall is a border *ring*, not scattered. No mechanism is yet known by which a smooth gain changes which pixels the warp marks as outside the source | **Blocking.** No default: the output is being cropped by something nobody chose | The same two gather counters with the flat removed, to diff against 137 246 410 sentinel drops. 17 minutes | 6 |
+| **OI-25** | **A stack lost 38% of its field** (§1.44). **Half answered 2026-09-07: the flat causes it, the register band does not** — without the flat the crop returns to exactly 3887×2828. **The `NaN` exoneration was retracted 2026-09-09**: the counter sat downstream of an integer round-trip that turned every NaN into a zero, so it could not have fired. Two bugs fixed on the way (NaN laundering, and negatives clamped away); `coverageNote` now reports the *shape* of the deficiency, which is what distinguishes geometry from a spur. No mechanism is yet known by which a smooth gain changes which pixels the warp marks as outside the source | **Blocking.** No default: the output is being cropped by something nobody chose | The same two gather counters with the flat removed, to diff against 137 246 410 sentinel drops. 17 minutes | 6 |
 | **OI-19** | **Will the hidden cameras also *capture*, not just open?** All five IDs open, but only camera 0 has completed a real RAW capture. An ID that opens can still fail session configuration or never deliver a frame | Assume the tele and ultrawide work; verify before promising them to the user | Run the T-1.4 capture against IDs 2, 3 and 4 — cheap now the harness exists | 7 |
 | **OI-20** | **Screen-off capture needs a foreground service, not just a surface-free session.** Measured 2026-08-17: the framing loop is frozen a few seconds after the screen goes off, process still alive. D-22 dissolved the *surface* problem but not the *lifecycle* one (§1.7) | Assume the `camera`-type FGS of D-12 is sufficient — it is what the type exists for | T-3.6's own acceptance: a 45-minute sequence with the screen off and the app backgrounded, then repeated with battery optimisation left on | 1C |
 | **OI-22** | **A configured session occasionally delivers no frames at all.** Measured 2026-08-18 (§1.16): one session in 78 returned 0 of 2 frames inside a 12.4 s budget, immediately after a rapid open/close loop, while the other 77 configured in ~100 ms and delivered at once. It opens, configures and closes cleanly — only the frames never arrive, so nothing throws and nothing downstream is told anything is wrong | Accept and log. At 1 in 78 it costs a framing preview that stays black for a few seconds, not a session | Re-run `--es diag lifecycle --ei sessions 30` several times over and count. If it reproduces, the remedy is a deadline on the first frame and a re-configure, which is a shape change to `FramingSession` rather than a tuning constant | 1B |
@@ -4930,6 +4985,7 @@ to catch them.
 
 | Date | Change |
 |---|---|
+| 2026-09-09 | **OI-25: the evidence was wrong, and two real bugs found by reading it.** The issue's central exculpatory fact — *“zero non-finite samples, so the flat is not producing NaN”* — **is retracted**. Between `Calibration.apply` and the gather sat the debayer's integer round-trip, `calibrated[i].toInt().coerceIn(0, 65535)`, and **`Float.NaN.toInt()` is 0 in Kotlin**: every NaN arrived as a legitimate-looking zero, so `skippedNonFinite` was structurally incapable of reporting one. That is a plausible reason four paper diagnoses in a row failed — one of the numbers they reasoned from could not have been anything else. **The same line was also destroying half the sky noise**: the dark master is a mean, so roughly half the residual falls below zero, and clamping at zero kept the positive half and discarded the negative one, biasing the background up and handing sigma clipping the one asymmetry it must not have. Both fixed — non-finite values are now tested and counted *before* conversion, and the clamp is replaced by a **pedestal of 4096**, which round-trips exactly because debayer interpolation is a weighted mean with weights summing to one. **`coverageNote` now reports shape rather than size:** how far the deficiency reaches in from each edge, median and worst, plus how many deficient pixels belong to no edge run — because a ring, a wedge and scattered holes all share the bounding box `(0,0)-(4095,3071)`, which is exactly how that box was misread earlier in this issue. A crop losing **eight times** the deficient area already points at a spur rather than a band. **Hazard recorded, not fixed:** `UNCOVERED` is `-1.0`, inside the range legitimate calibrated data can take — rare by luck rather than construction, and `NaN` is the honest sentinel, but swapping it would propagate NaN through the cubic border zone, so it waits for the mechanism. **Still open:** the decisive run needs the phone, which was not connected, and session `2026-08-23_0006` is not on the PC. |
 | 2026-09-09 | **Moon mode complete: T-11.8–T-11.11, the *moon in scene* half.** `TargetType` and `ExposureSet` thread through `session.json` and the capture engine; `BracketPlan` sizes a two-exposure session; `CaptureEngine.captureBracketed` shoots it; `MasterAlign` places the moon; `Composite` and `BracketedStack` produce the merge and both registered layers. **The capture loop is OI-26's answer rather than the obvious one:** the short exposure repeats for the whole session (it keeps RAW streaming on this HAL *and* it is the moon set) while ground frames are injected as one-shot bursts, against the 7.6 s per switch that alternating a repeating request would cost. Frames are filed by **the exposure their own metadata reports**, never by the order they were asked for, so one dropped frame cannot mislabel the rest. **Three judgement calls worth recording.** *The blob is tracked per long frame, not once in the master* — a moving disc stacks to a streak whose centroid is only the mid-time position, blunt and wrong as soon as a frame is dropped for cloud. *The size check between the two detections is deliberately loose (25x)*, because a clipped disc blooms past its true limb and a strict match would refuse every real bracketed session. *The mask is a radial feather rather than a luminance threshold*, since thresholding the bloomed blob selects a region larger than the moon and cuts a halo of sky out with it — the radius comes from the properly exposed master, the one that knows how big the moon is. Layers are written **before** the merge, which is destructive. Memory is **checked rather than hoped for**: two masters is 302 MB at 12.6 MP, so the composite asks what is free and declines with a reason. **Still true and unchanged: OI-25 will crop the ground stack by 38%** until it is fixed — the bracket is built and correct, and its landscape half runs through the pipeline that is still losing field. |
 | 2026-09-09 | **Moon mode's disc half built: T-11.1–T-11.7 done, with tests.** A new `moon` package — `LunarGeometry` (ranks every camera from the measured profile and refuses to recommend one that cannot expose the disc), `LunarExposure` (Looney 11 from the profile's own aperture, then metered), `Disc`, `Sharpness`, `LunarFocus` + `LunarFocusRunner`, `LunarPlan`, `LunarEdit` — plus `FrameQuality.Mode.LUNAR`, `FrameRecord.sharpness` and `diag/MoonCheck.kt` (`--es diag moon`). Tested against a new `SyntheticMoon` generator with limb darkening, craters, phase, blur and noise, because none of this can be checked on a star field. **Three bugs the tests caught before the sky could.** *One:* a clipped frame reads peak == white whether it is one stop over or fourteen, so `target / measured` asks for **0.7x** on a frame 14.2 stops out — a clipped probe now ignores its own measurement and steps down four stops. *Two:* `Disc` first accepted **pure noise as a moon**, because on a noise-only frame the threshold lands at the median and half the frame passes; an area floor cannot fix that (a moon filling the frame is the goal of *disc* mode), so the guard is contrast against a MAD noise estimate. *Three:* **§1.45's ultrawide row was wrong** — 112.8 arcsec/px and 17 px against the 140.7 and 13 px that §2's own measured device table implies. Corrected, along with the drift table that inherited it. **T-11.4's open decision is settled:** cap the frame count, from a storage budget under a 400-frame diminishing-returns ceiling, with the cadence taken from OI-26's measured 33.2 ms readout floor rather than the 0.13 ms exposure. **Deferred honestly:** T-11.8–T-11.11 (the *moon in scene* half) wait on OI-25, since their ground stack runs through the pipeline that is losing 38% of the field. |
 | 2026-09-08 | **OI-26 resolved on device: interleave by injection, not by switching (`--es diag switch`).** The plan had assumed the question was *block size*. It was not — it was which Camera2 call to use, and three of the four available get it wrong on this HAL. Re-applying a repeating request per frame costs **7.6 s and 5.7 discarded frames per switch**, because the pipeline is ten deep (§1.7) and drains at the old exposure; blocking cuts the number of switches but not the price of one, so blocks of 20 still add **30%** to a session. `setRepeatingBurst` of a `[short, long]` cycle paces it perfectly — frames 2 533 ms apart, exactly 33.2 + 2 500 — and then applies the **first request's exposure to every frame**, silently, with the metadata agreeing. `stopRepeating` + `captureBurst` delivers **nothing at all**, since this HAL will not stream RAW without a repeating request driving it (D-20/D-23), and it fails with no exception and no log — which is why `onCaptureFailed` is now handled in `SequenceSession`. **What works is injecting one-shots over a cheap repeating request:** the short exposure repeats (keeping RAW alive, and it *is* the moon set) while ground frames go in as a `captureBurst`. Measured **2 499.998 ms for a 2 500 ms ask, −1.2 ms per frame, zero frames at the wrong exposure**, with 5.19 s to a submission's first frame paid once rather than per frame. **Correction to yesterday's arithmetic:** short frames are not 2 ms — full-RAW readout floors at **33.2 ms** and the measured cadence is 32.8 ms, so 120 moon frames cost **3.9 s, not 0.26 s** (2.6% of a session rather than 0.2%). The 2 ms figure was real but only at a 1 s sub, where the DNG write hides behind the exposure. |

@@ -215,6 +215,7 @@ class TiledStacker(
         // Decided once for the whole stack rather than per pixel, and a stack with nothing to
         // weight — every stack before T-5.5, and every session whose log has no quality metrics —
         // pays neither the memory nor the branch.
+        calibrationNonFinite = 0
         skippedNonFinite = 0
         skippedSentinel = 0
         nearSentinel = 0
@@ -299,16 +300,48 @@ class TiledStacker(
                         cfa, frames.masters, frames.blackLevel, calibrated, frames.cfaCodes,
                         band.first, got,
                     )
-                    // The debayer takes integers; calibration produced floats that may be negative.
-                    // Rounding back is lossy by well under an ADU and keeps the CFA path honest.
+                    // The debayer takes unsigned 16-bit integers; calibration produced floats that
+                    // are routinely negative — the sky is faint, the dark master is a mean, and
+                    // half the noise about it falls below zero.
+                    //
+                    // **This conversion used to be `toInt().coerceIn(0, 65535)`, and it was
+                    // destroying two different things silently (OI-25).**
+                    //
+                    // *One:* `Float.NaN.toInt()` is 0 in Kotlin, so the flat's hole path — the one
+                    // place calibration deliberately produces NaN — arrived at the gather as a
+                    // legitimate-looking zero. `skippedNonFinite` was therefore **structurally
+                    // incapable of firing**, and the run that read "0 non-finite" and concluded
+                    // "the flat is not producing NaN" was reading a counter that could not have
+                    // said anything else.
+                    //
+                    // *Two:* clamping at zero threw away the negative half of the sky noise, which
+                    // biases the background upward and is exactly the asymmetry sigma clipping
+                    // must not be handed.
+                    //
+                    // The fix is a pedestal rather than a clamp. Debayer interpolation is linear
+                    // with weights summing to one, so adding a constant before and removing it
+                    // after is exact, and the negatives survive the integer round-trip intact.
                     for (i in 0 until w * got) {
-                        calibratedShorts[i] = calibrated[i].toInt().coerceIn(0, 65535).toShort()
+                        val v = calibrated[i]
+                        if (!v.isFinite()) {
+                            calibrationNonFinite++
+                            // Still has to become *something* an unsigned Mat accepts. Zero, and
+                            // now counted, so the number is visible instead of being laundered.
+                            calibratedShorts[i] = 0
+                            continue
+                        }
+                        calibratedShorts[i] =
+                            (v + DEBAYER_PEDESTAL).toInt().coerceIn(0, 65535).toShort()
                     }
 
                     // 3. Debayer.
                     if (!resampler.debayer(calibratedShorts, w, got, frames.cfaCodes, colour)) {
                         return false
                     }
+                    // And back out of the pedestal, before the warp — so everything downstream,
+                    // including the uncovered sentinel the warp is about to write, is in the same
+                    // space it always was.
+                    for (i in 0 until w * got * CHANNELS) colour[i] -= DEBAYER_PEDESTAL
 
                     // 4. Into reference coordinates — only the rows being produced, which is
                     // §1.38's fix. The reference frame has no transform and needs no warp.
@@ -551,6 +584,16 @@ class TiledStacker(
         origin = IntArray(0)
     }
 
+    /**
+     * OI-25 — calibrated values that were not finite, counted **where they happen**.
+     *
+     * Not the same number as [skippedNonFinite], and the difference is the point. This counts what
+     * calibration produced; that counts what the gather saw. Until the pedestal fix they could
+     * never agree, because the integer round-trip turned every NaN into a zero in between.
+     */
+    var calibrationNonFinite = 0L
+        private set
+
     /** OI-25 — why samples were dropped in the gather. Reset per stack. */
     var skippedNonFinite = 0L
         private set
@@ -721,6 +764,17 @@ class TiledStacker(
          * `rows + 2 × margin`. Cheaper to allocate than to reason about at every call site.
          */
         private const val BAND_SLACK_ROWS = 2
+
+        /**
+         * Added before the debayer's unsigned integer round-trip and removed after it.
+         *
+         * Large enough to carry any negative calibration can plausibly produce: the sky sits tens
+         * of ADU above the dark, noise is a few ADU, and the flat multiplies the corners by about
+         * five (gain 0.193 on the reference device), so a few hundred is the honest worst case.
+         * 4096 is comfortably past it and leaves the top of the 16-bit range untouched — the
+         * brightest calibrated value on a 10-bit sensor amplified fivefold is about 5 300.
+         */
+        internal const val DEBAYER_PEDESTAL = 4096f
 
         /**
          * Output rows produced per band in the register pass.
