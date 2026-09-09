@@ -473,6 +473,30 @@ class StackJob(
             return "$name median $median, worst $worst at ${if (name == "left" || name == "right") "row" else "column"} $at"
         }
 
+        // Which rows and columns carry the most deficiency. This is the localisation that matters:
+        // a *line* of deficient pixels costs the crop hundreds of times its own area, so a handful
+        // of bad rows explains the observed collapse where a band cannot (`CoverageShapeTest`).
+        // If these cluster at regular intervals they are band boundaries from the register pass.
+        val perRow = IntArray(height)
+        val perColumn = IntArray(width)
+        for (y in 0 until height) {
+            val base = y * width
+            for (x in 0 until width) {
+                if (coverage[base + x].toInt() < frames) {
+                    perRow[y]++
+                    perColumn[x]++
+                }
+            }
+        }
+        fun worst(counts: IntArray, name: String, span: Int): String {
+            val top = counts.indices.sortedByDescending { counts[it] }.take(5)
+                .filter { counts[it] > 0 }
+            if (top.isEmpty()) return "no $name is deficient"
+            return top.joinToString(", ", prefix = "worst ${name}s: ") {
+                "$it (%.0f%% deficient)".format(100.0 * counts[it] / span)
+            }
+        }
+
         return buildString {
             append("coverage: %.1f%% of pixels saw all %d frames".format(100.0 * full / (width.toLong() * height), frames))
             append(", %d short".format(short))
@@ -484,6 +508,8 @@ class StackJob(
             append(describe("top", topRun)).append(" | ")
             append(describe("bottom", bottomRun))
             append("\n  $interior deficient pixel(s) are interior — not part of any edge run")
+            append("\n  ").append(worst(perRow, "row", width))
+            append("\n  ").append(worst(perColumn, "column", height))
             // The line that decides it: a ring's worst inset is close to its median, a spur's is
             // many times it.
             val medians = listOf(leftRun, rightRun, topRun, bottomRun)
